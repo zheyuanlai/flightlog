@@ -1,6 +1,7 @@
 name = "flightlog-flight-status"
 main = "index.js"
-compatibility_date = "2026-06-02"
+compatibility_date = "2026-06-03"
 
 [vars]
-MOCK_FLIGHT_STATUS = "true"
+FLIGHTLOG_PROVIDER_MODE = "real"
+AERODATABOX_API_HOST = "aerodatabox.p.rapidapi.com"

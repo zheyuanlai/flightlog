@@ -3,6 +3,7 @@ import { lookupAirport, normalizeIata } from '../utils/airports'
 import { parseFlightsCsv, flightsToCsv } from '../utils/csv'
 import { durationMinutes } from '../utils/dates'
 import { haversineDistanceKm } from '../utils/distance'
+import { buildFlightStatusUrl, mockLiveStatus, readFlightStatusError } from '../utils/liveStatus'
 import { aggregateStats } from '../utils/stats'
 import { sampleFlights } from '../sampleData'
 
@@ -35,4 +36,21 @@ describe('flight utilities', () => {
     expect(stats.airportsVisited.map((airport) => airport.iata)).toContain('SFO')
     expect(stats.longestFlight?.flightNumber).toBe('SQ38')
   })
+
+  it('builds the live status worker URL', () => {
+    expect(buildFlightStatusUrl('https://worker.example/', 'SQ 38', '2026-06-02')).toBe('https://worker.example/flight-status?flightNumber=SQ+38&date=2026-06-02')
+  })
+
+  it('reads JSON worker errors', async () => {
+    const response = new Response(JSON.stringify({ error: 'No flight found.' }), { status: 404 })
+    await expect(readFlightStatusError(response)).resolves.toBe('No flight found.')
+  })
+
+  it('returns deterministic mock live status', () => {
+    const status = mockLiveStatus('SQ38', '2026-06-02')
+    expect(status.provider).toBe('mock')
+    expect(status.departureAirport?.iata).toBe('SFO')
+    expect(status.arrivalAirport?.iata).toBe('SIN')
+  })
+
 })

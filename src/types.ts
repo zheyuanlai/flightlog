@@ -8,8 +8,20 @@ export type LiveStatus =
   | 'diverted'
   | 'unknown'
 
+export interface FlightLiveAirport {
+  iata?: string
+  icao?: string
+  name?: string
+}
+
 export interface FlightLiveStatus {
   status: LiveStatus
+  airlineName?: string
+  airlineIata?: string
+  airlineIcao?: string
+  flightNumber?: string
+  departureAirport?: FlightLiveAirport
+  arrivalAirport?: FlightLiveAirport
   scheduledDeparture?: string
   estimatedDeparture?: string
   actualDeparture?: string
@@ -25,6 +37,7 @@ export interface FlightLiveStatus {
   aircraftRegistration?: string
   provider?: string
   rawProviderStatus?: string
+  warning?: string
 }
 
 export interface FlightLogEntry {

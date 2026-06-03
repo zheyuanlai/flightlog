@@ -84,6 +84,10 @@ nav button.active,
   color: #b42318;
 }
 
+.warning {
+  color: #92400e;
+}
+
 .brand {
   color: #0f172a;
   background: transparent;
@@ -310,6 +314,11 @@ dd {
   border-radius: 8px;
   color: #0f172a;
   background: #e0f2fe;
+}
+
+.notice.warning {
+  color: #92400e;
+  background: #fef3c7;
 }
 
 .search {

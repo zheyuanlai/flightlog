@@ -41,10 +41,10 @@ Live flight status is optional. FlightLog works fully without it.
 Create `.env` from `.env.example` and set:
 
 ```sh
-VITE_FLIGHTLOG_API_BASE_URL=https://your-worker.example.workers.dev
+VITE_FLIGHTLOG_API_BASE_URL=https://flightlog-flight-status.ryanlai-zheyuan.workers.dev
 ```
 
-The frontend only calls this proxy URL. Do not put third-party aviation API keys in Vite environment variables or frontend source code. Configure provider secrets in the Cloudflare Worker environment instead.
+The frontend only calls this proxy URL. Do not put RapidAPI or other third-party aviation API keys in Vite environment variables or frontend source code. Configure provider secrets in the Cloudflare Worker environment instead.
 
 For development demos without a real provider, set:
 
@@ -58,9 +58,8 @@ The optional proxy lives in `workers/flight-status-worker`.
 
 ```sh
 cd workers/flight-status-worker
-wrangler dev --var MOCK_FLIGHT_STATUS:true
-wrangler deploy
-wrangler secret put AERODATABOX_API_KEY
+cp .dev.vars.example .dev.vars
+npx wrangler dev
 ```
 
 The Worker exposes:
@@ -70,6 +69,38 @@ GET /flight-status?flightNumber=SQ38&date=2026-06-02
 ```
 
 It validates input, adds CORS for localhost and GitHub Pages, reads provider keys from Worker secrets, normalizes responses into `FlightLiveStatus`, and supports mock mode.
+
+The real provider mode uses AeroDataBox RapidAPI:
+
+```txt
+GET https://aerodatabox.p.rapidapi.com/flights/number/{flightNumber}/{dateLocal}?dateLocalRole=Departure
+```
+
+Flight plan data is not requested.
+
+Local Worker variables:
+
+```sh
+AERODATABOX_API_HOST=aerodatabox.p.rapidapi.com
+AERODATABOX_API_KEY=replace_me
+FLIGHTLOG_PROVIDER_MODE=real
+```
+
+Configure production secrets and deploy:
+
+```sh
+cd workers/flight-status-worker
+npx wrangler secret put AERODATABOX_API_KEY
+npx wrangler secret put AERODATABOX_API_HOST
+npx wrangler deploy
+```
+
+Test locally or in production:
+
+```sh
+curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02"
+curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?flightNumber=SQ38&date=2026-06-02"
+```
 
 ## Data Privacy
 

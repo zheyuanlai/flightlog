@@ -1,0 +1,3 @@
+AERODATABOX_API_HOST=aerodatabox.p.rapidapi.com
+AERODATABOX_API_KEY=replace_me
+FLIGHTLOG_PROVIDER_MODE=real

@@ -19,7 +19,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { bulkSaveFlights, deleteFlight, getFlights, saveFlight } from './db'
 import { sampleFlights } from './sampleData'
-import type { FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed } from './types'
+import type { FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed } from './types'
 import { lookupAirport, normalizeIata, searchAirports } from './utils/airports'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { formatDate, formatDateTime, formatDistance, formatDuration } from './utils/dates'
@@ -78,6 +78,48 @@ function downloadFile(filename: string, contents: string, type: string): void {
   URL.revokeObjectURL(url)
 }
 
+function bundledAirportIata(airport?: FlightLiveStatus['departureAirport']): string {
+  const iata = normalizeIata(airport?.iata ?? '')
+  return iata && lookupAirport(iata) ? iata : ''
+}
+
+function liveStatusWarnings(liveStatus: FlightLiveStatus): string[] {
+  const warnings = liveStatus.warning ? [liveStatus.warning] : []
+  const airports = [
+    ['Departure', liveStatus.departureAirport],
+    ['Arrival', liveStatus.arrivalAirport],
+  ] as const
+  for (const [label, airport] of airports) {
+    const iata = normalizeIata(airport?.iata ?? '')
+    if (iata && !lookupAirport(iata)) warnings.push(`${label} airport ${iata} is not in the bundled airport dataset; it was kept in live status but not autofilled.`)
+  }
+  return warnings
+}
+
+function liveStatusMessage(liveStatus: FlightLiveStatus): string {
+  const details = liveStatusWarnings(liveStatus)
+  return [`Live status loaded: ${liveStatus.status}`, ...details].join(' ')
+}
+
+function formWithLiveStatus(form: FlightFormState, liveStatus: FlightLiveStatus): FlightFormState {
+  const origin = bundledAirportIata(liveStatus.departureAirport)
+  const destination = bundledAirportIata(liveStatus.arrivalAirport)
+  return {
+    ...form,
+    flightNumber: form.flightNumber || liveStatus.flightNumber || '',
+    airline: form.airline || liveStatus.airlineName || liveStatus.airlineIata || liveStatus.airlineIcao || '',
+    origin: form.origin || origin,
+    destination: form.destination || destination,
+    aircraftType: form.aircraftType || liveStatus.aircraftType || '',
+    aircraftRegistration: form.aircraftRegistration || liveStatus.aircraftRegistration || '',
+    scheduledDeparture: form.scheduledDeparture || liveStatus.scheduledDeparture || '',
+    scheduledArrival: form.scheduledArrival || liveStatus.scheduledArrival || '',
+    actualDeparture: form.actualDeparture || liveStatus.actualDeparture || '',
+    actualArrival: form.actualArrival || liveStatus.actualArrival || '',
+    source: 'live-import',
+  }
+}
+
 function StatCard({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
     <article className="stat-card">
@@ -113,6 +155,8 @@ function AirportInput({ label, value, onChange }: { label: string; value: string
 
 function FlightForm({ editing, onCancel, onSaved }: { editing?: FlightLogEntry; onCancel: () => void; onSaved: () => Promise<void> }) {
   const [form, setForm] = useState<FlightFormState>(() => formFromFlight(editing))
+  const [fetchedLiveStatus, setFetchedLiveStatus] = useState<FlightLiveStatus | undefined>(() => editing?.liveStatus)
+  const [fetchedAt, setFetchedAt] = useState(editing?.lastFetchedAt ?? '')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const errors = validateFlightInput(form)
@@ -124,7 +168,8 @@ function FlightForm({ editing, onCancel, onSaved }: { editing?: FlightLogEntry; 
       setMessage(errors.join('. '))
       return
     }
-    await saveFlight(flightFromInput(form, editing))
+    const flight = flightFromInput(form, editing)
+    await saveFlight(fetchedLiveStatus ? { ...flight, liveStatus: fetchedLiveStatus, lastFetchedAt: fetchedAt || new Date().toISOString(), source: 'live-import' } : flight)
     await onSaved()
     onCancel()
   }
@@ -134,21 +179,16 @@ function FlightForm({ editing, onCancel, onSaved }: { editing?: FlightLogEntry; 
     setMessage('')
     try {
       const liveStatus = await fetchLiveStatus(form.flightNumber, form.date)
-      setForm((current) => ({
-        ...current,
-        aircraftType: current.aircraftType || liveStatus.aircraftType || '',
-        aircraftRegistration: current.aircraftRegistration || liveStatus.aircraftRegistration || '',
-        scheduledDeparture: current.scheduledDeparture || liveStatus.scheduledDeparture || '',
-        scheduledArrival: current.scheduledArrival || liveStatus.scheduledArrival || '',
-        actualDeparture: current.actualDeparture || liveStatus.actualDeparture || '',
-        actualArrival: current.actualArrival || liveStatus.actualArrival || '',
-        source: 'live-import',
-      }))
+      const nextFetchedAt = new Date().toISOString()
+      const nextForm = formWithLiveStatus(form, liveStatus)
+      setForm(nextForm)
+      setFetchedLiveStatus(liveStatus)
+      setFetchedAt(nextFetchedAt)
       if (editing) {
-        await saveFlight({ ...flightFromInput(form, editing), liveStatus, lastFetchedAt: new Date().toISOString(), source: 'live-import' })
+        await saveFlight({ ...flightFromInput(nextForm, editing), liveStatus, lastFetchedAt: nextFetchedAt, source: 'live-import' })
         await onSaved()
       }
-      setMessage(`Live status loaded: ${liveStatus.status}`)
+      setMessage(liveStatusMessage(liveStatus))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to fetch live status')
     } finally {
@@ -231,9 +271,12 @@ function Dashboard({ flights, onAddDemo }: { flights: FlightLogEntry[]; onAddDem
 function FlightCard({ flight, onEdit, onDelete, onRefresh }: { flight: FlightWithComputed; onEdit: (flight: FlightLogEntry) => void; onDelete: (id: string) => Promise<void>; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
   const origin = lookupAirport(flight.origin)
   const destination = lookupAirport(flight.destination)
+  const liveStatusLabel = flight.liveStatus?.status ?? 'manual'
+  const providerLabel = flight.liveStatus?.provider ? ` via ${flight.liveStatus.provider}` : ''
+  const lastFetchedLabel = flight.lastFetchedAt ? `Last fetched ${formatDateTime(flight.lastFetchedAt)}` : 'Not fetched'
   return (
     <article className="flight-card">
-      <div className="flight-main"><div><p className="eyebrow">{formatDate(flight.date)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span></div>
+      <div className="flight-main"><div><p className="eyebrow">{formatDate(flight.date)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{liveStatusLabel}{providerLabel}</span></div>
       <div className="route-line"><strong>{flight.origin}</strong><span>{origin?.city}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{destination?.city}</span></div>
       <dl className="meta-grid">
         <div><dt>Distance</dt><dd>{formatDistance(flight.distanceKm)}</dd></div>
@@ -241,7 +284,8 @@ function FlightCard({ flight, onEdit, onDelete, onRefresh }: { flight: FlightWit
         <div><dt>Aircraft</dt><dd>{flight.aircraftType || 'Not set'}</dd></div>
         <div><dt>Cabin / seat</dt><dd>{[flight.cabin, flight.seat].filter(Boolean).join(' - ') || 'Not set'}</dd></div>
       </dl>
-      {flight.liveStatus && <p className="notice">Gate {flight.liveStatus.departureGate ?? 'TBD'} - Arrival {formatDateTime(flight.liveStatus.estimatedArrival ?? flight.liveStatus.actualArrival)}</p>}
+      {flight.liveStatus && <p className="notice">Gate {flight.liveStatus.departureGate ?? 'TBD'} - Arrival {formatDateTime(flight.liveStatus.estimatedArrival ?? flight.liveStatus.actualArrival)} - {lastFetchedLabel}</p>}
+      {flight.liveStatus?.warning && <p className="notice warning">{flight.liveStatus.warning}</p>}
       <div className="actions">
         <button type="button" className="ghost" onClick={() => onEdit(flight)}>Edit</button>
         <button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button>
