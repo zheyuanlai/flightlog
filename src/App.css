@@ -767,7 +767,7 @@ a {
     bottom: 0;
     z-index: 25;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     background: rgba(248, 250, 252, 0.96);
@@ -777,8 +777,8 @@ a {
 
   .bottom-nav button {
     min-height: 48px;
-    padding: 8px;
-    font-size: 13px;
+    padding: 8px 6px;
+    font-size: 12px;
   }
 
   .bottom-add {

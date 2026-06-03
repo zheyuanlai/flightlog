@@ -1,6 +1,7 @@
 export type FlightPurpose = 'personal' | 'work' | 'school' | 'other'
 export type FlightSource = 'manual' | 'live-import' | 'mock-live' | 'aerodatabox'
 export type LookupDateRole = 'Departure' | 'Arrival'
+export type TripType = 'personal' | 'work' | 'school' | 'other'
 export type LiveStatus =
   | 'scheduled'
   | 'active'
@@ -127,6 +128,22 @@ export interface ProviderAirportSnapshot {
   timeZone?: string
   source?: string
   updatedAt?: string
+}
+
+export interface TripMetadata {
+  id: string
+  name?: string
+  notes?: string
+  type: TripType
+  isFavorite: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AppMetadata {
+  key: string
+  value: string
+  updatedAt: string
 }
 
 export interface FlightLogEntry {

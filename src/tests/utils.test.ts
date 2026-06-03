@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { Settings } from 'luxon'
-import type { FlightLogEntry } from '../types'
+import { DateTime, Settings } from 'luxon'
+import type { FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
 import { loadGeneratedAirports, lookupAirport, normalizeIata, searchAirports, setProviderAirports } from '../utils/airports'
+import { airlineDisplayName, airlineSearchUrl, lookupAirline } from '../utils/airlines'
+import { createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport } from '../utils/backup'
 import { buildCalendarEventDetails, calendarDescription } from '../utils/calendarLinks'
 import { parseFlightsCsv, flightsToCsv } from '../utils/csv'
+import { analyzeDataHealth, repairFlightsFromAirportDataset } from '../utils/dataHealth'
 import { durationMinutes } from '../utils/dates'
 import { haversineDistanceKm } from '../utils/distance'
 import { externalFlightLinks } from '../utils/externalFlightLinks'
@@ -12,6 +15,7 @@ import { computeFlight } from '../utils/flights'
 import { buildFlightStatusUrl, mockLiveStatus, normalizeLiveStatus, readFlightStatusError, refreshStatusLabel } from '../utils/liveStatus'
 import { aggregateStats } from '../utils/stats'
 import { groupFlightsIntoTrips } from '../utils/trips'
+import { flightStaleStatus, formatCountdown, listUpcomingFlights } from '../utils/upcomingFlights'
 import { sampleFlights } from '../sampleData'
 import { escapeIcsText } from '../utils/ics'
 
@@ -197,20 +201,162 @@ describe('flight utilities', () => {
   })
 
   it('builds external flight links for normalized and spaced flight numbers', () => {
-    expect(externalFlightLinks(flight({ flightNumber: 'SQ38' })).map((link) => link.url).join(' ')).toContain('SQ38')
-    expect(externalFlightLinks(flight({ flightNumber: 'SQ 38' }))[1].url).toContain('sq38')
-    expect(externalFlightLinks(flight({ flightNumber: '', airlineIata: undefined }))).toHaveLength(3)
+    const sqLinks = externalFlightLinks(flight({ flightNumber: 'SQ38' }))
+    expect(sqLinks.map((link) => link.url).join(' ')).toContain('SQ38')
+    expect(sqLinks.map((link) => link.label)).toContain('Singapore Airlines official site')
+    expect(externalFlightLinks(flight({ flightNumber: 'SQ 38' })).map((link) => link.url).join(' ')).toContain('sq38')
+    const fallback = externalFlightLinks(flight({ flightNumber: '', airline: 'Unknown Carrier', airlineIata: undefined }))
+    expect(fallback.map((link) => link.label)).toContain('Airline official site search')
+    expect(fallback.map((link) => link.label)).toContain('Google flight status search')
+  })
+
+  it('creates full backups with v1.5 metadata and parses them', () => {
+    const tripMetadata: TripMetadata[] = [{
+      id: 'trip-a-b',
+      name: 'Pacific run',
+      notes: 'Client visit',
+      type: 'work',
+      isFavorite: true,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    }]
+    const providerAirports: ProviderAirportSnapshot[] = [{ iata: 'SIN', name: 'Singapore Changi Airport', timezone: 'Asia/Singapore', source: 'aerodatabox' }]
+    const backup = createFullBackup({
+      flights: [flight({ id: 'backup-flight' })],
+      tripMetadata,
+      providerAirports,
+      appMetadata: [{ key: 'lastBackupAt', value: '2026-06-03T00:00:00.000Z', updatedAt: '2026-06-03T00:00:00.000Z' }],
+      exportedAt: '2026-06-03T12:00:00.000Z',
+    })
+    expect(backup.schemaVersion).toBe(3)
+    expect(backup.tripMetadata[0].name).toBe('Pacific run')
+    expect(backup.providerAirports[0].iata).toBe('SIN')
+    expect(parseFullBackupJson(JSON.stringify(backup)).exportedAt).toBe('2026-06-03T12:00:00.000Z')
+  })
+
+  it('previews backup imports and skips likely duplicates on merge', () => {
+    const existing = flight({
+      id: 'existing',
+      flightNumber: 'SQ 38',
+      origin: 'SIN',
+      destination: 'LAX',
+      scheduledDepartureUtc: '2026-06-02T14:30:00Z',
+      scheduledDepartureLocal: '2026-06-02T22:30',
+      originTimeZone: 'Asia/Singapore',
+    })
+    const duplicate = flight({
+      id: 'duplicate',
+      flightNumber: 'SQ38',
+      scheduledDepartureUtc: '2026-06-02T14:30:00Z',
+      scheduledDepartureLocal: '2026-06-02T22:30',
+      originTimeZone: 'Asia/Singapore',
+    })
+    const newFlight = flight({
+      id: 'new',
+      flightNumber: 'UA1',
+      airline: 'United Airlines',
+      origin: 'LAX',
+      destination: 'JFK',
+      scheduledDepartureUtc: '2026-06-04T18:00:00Z',
+      scheduledDepartureLocal: '2026-06-04T11:00',
+      originTimeZone: 'America/Los_Angeles',
+    })
+    const backup = createFullBackup({ flights: [duplicate, newFlight], tripMetadata: [], providerAirports: [], appMetadata: [] })
+    const preview = previewBackupImport(backup, [existing])
+    expect(flightDuplicateKey(existing)).toBe(flightDuplicateKey(duplicate))
+    expect(preview.duplicateFlights).toBe(1)
+    expect(preview.flightsToAdd).toBe(1)
+    expect(preview.mergeFlights[0].id).toBe('new')
+  })
+
+  it('reports data health and repairs safe airport snapshots', () => {
+    const unhealthy = flight({
+      id: 'unhealthy',
+      origin: 'ZZZ',
+      destination: 'YYY',
+      scheduledDepartureLocal: undefined,
+      scheduledArrivalLocal: undefined,
+      providerWarnings: ['Provider timezone missing'],
+    })
+    const health = analyzeDataHealth([unhealthy])
+    expect(health.missingTimezoneCount).toBe(1)
+    expect(health.missingAirportCoordinateCount).toBe(1)
+    expect(health.providerWarningCount).toBe(1)
+    expect(health.missingTimeCount).toBe(1)
+
+    const repairable = flight({ id: 'repairable', origin: 'LAX', destination: 'SIN', originTimeZone: undefined, destinationTimeZone: undefined })
+    const repaired = repairFlightsFromAirportDataset([repairable])[0]
+    expect(repaired.originAirportSnapshot?.iata).toBe('LAX')
+    expect(repaired.destinationAirportSnapshot?.iata).toBe('SIN')
+    expect(repaired.originTimeZone).toBe('America/Los_Angeles')
+    expect(repaired.destinationTimeZone).toBe('Asia/Singapore')
+  })
+
+  it('detects and labels upcoming flights using origin-local time', () => {
+    const now = DateTime.fromISO('2026-06-03T12:00:00Z', { zone: 'utc' })
+    const sameDay = flight({
+      id: 'same-day',
+      flightNumber: 'SQ37',
+      airline: 'Singapore Airlines',
+      origin: 'LAX',
+      destination: 'SIN',
+      scheduledDepartureLocal: '2026-06-03T08:30',
+      scheduledDepartureUtc: '2026-06-03T15:30:00Z',
+      scheduledArrivalLocal: '2026-06-05T07:30',
+      scheduledArrivalUtc: '2026-06-04T23:30:00Z',
+      originTimeZone: 'America/Los_Angeles',
+      destinationTimeZone: 'Asia/Singapore',
+      lastFetchedAt: '2026-06-03T09:00:00Z',
+      liveStatus: { status: 'scheduled' },
+    })
+    const later = flight({
+      id: 'later',
+      flightNumber: 'UA1',
+      airline: 'United Airlines',
+      origin: 'SFO',
+      destination: 'JFK',
+      scheduledDepartureLocal: '2026-06-04T09:00',
+      scheduledDepartureUtc: '2026-06-04T16:00:00Z',
+      originTimeZone: 'America/Los_Angeles',
+      destinationTimeZone: 'America/New_York',
+      lastFetchedAt: '2026-06-03T00:00:00Z',
+    })
+    const upcoming = listUpcomingFlights([later, sameDay], now)
+    expect(upcoming.map((item) => item.flight.id)).toEqual(['same-day', 'later'])
+    expect(upcoming[0].isSameDay).toBe(true)
+    expect(formatCountdown(sameDay, now)).toBe('Departs in 3h 30m')
+    expect(flightStaleStatus(sameDay, now)).toMatchObject({ staleLabel: 'Refresh recommended', staleSeverity: 'strong', gateHint: 'Gate may not be assigned yet.' })
+    expect(flightStaleStatus(later, now)).toMatchObject({ staleLabel: 'Status may be stale', staleSeverity: 'subtle' })
+  })
+
+  it('looks up airline metadata and falls back to safe search links', () => {
+    expect(lookupAirline({ iata: 'SQ' })?.website).toBe('https://www.singaporeair.com/')
+    expect(airlineDisplayName('UA')).toBe('United Airlines')
+    expect(lookupAirline({ name: 'Not A Real Airline' })).toBeUndefined()
+    expect(airlineSearchUrl('Unknown Carrier')).toContain('Unknown%20Carrier%20airline%20official%20website')
   })
 
   it('groups flights into trips within 3 days', () => {
-    const trips = groupFlightsIntoTrips([
+    const flights = [
       flight({ id: 'a', date: '2026-06-02', scheduledDepartureUtc: '2026-06-02T14:30:00Z', scheduledArrivalUtc: '2026-06-03T02:15:00Z', originTimeZone: 'Asia/Singapore', destinationTimeZone: 'America/Los_Angeles' }),
       flight({ id: 'b', date: '2026-06-04', flightNumber: 'UA1', origin: 'LAX', destination: 'JFK', scheduledDepartureUtc: '2026-06-04T18:00:00Z', scheduledArrivalUtc: '2026-06-04T23:00:00Z', originTimeZone: 'America/Los_Angeles', destinationTimeZone: 'America/New_York' }),
       flight({ id: 'c', date: '2026-06-10', flightNumber: 'DL1', origin: 'JFK', destination: 'LAX', scheduledDepartureUtc: '2026-06-10T18:00:00Z', scheduledArrivalUtc: '2026-06-10T23:00:00Z', originTimeZone: 'America/New_York', destinationTimeZone: 'America/Los_Angeles' }),
-    ])
+    ]
+    const trips = groupFlightsIntoTrips(flights)
     expect(trips).toHaveLength(2)
     expect(trips[0].flights).toHaveLength(2)
     expect(trips[0].routeSummary).toBe('SIN -> LAX -> JFK')
+    const tripMetadata: TripMetadata[] = [{
+      id: trips[0].id,
+      name: 'Westbound work trip',
+      notes: 'Two-leg client run',
+      type: 'work',
+      isFavorite: true,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    }]
+    const tripsWithMetadata = groupFlightsIntoTrips(flights, tripMetadata)
+    expect(tripsWithMetadata[0]).toMatchObject({ name: 'Westbound work trip', notes: 'Two-leg client run', type: 'work', isFavorite: true })
   })
 
   it('reports refresh guard labels', () => {

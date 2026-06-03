@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon'
-import type { FlightLogEntry, FlightWithComputed } from '../types'
+import type { FlightLogEntry, FlightWithComputed, TripMetadata } from '../types'
 import { getBestDepartureTime, getFlightDepartureLocalDate } from './flightTime'
 import { computeFlight } from './flights'
 
@@ -13,6 +13,10 @@ export interface TripGroup {
   distanceKm: number
   airports: string[]
   countries: string[]
+  metadata?: TripMetadata
+  notes?: string
+  type: TripMetadata['type']
+  isFavorite: boolean
   warning?: string
 }
 
@@ -38,7 +42,8 @@ function routeSummary(flights: FlightWithComputed[]): string {
   return [flights[0].origin, ...flights.map((flight) => flight.destination)].join(' -> ')
 }
 
-export function groupFlightsIntoTrips(flights: FlightLogEntry[], names: Record<string, string> = {}): TripGroup[] {
+export function groupFlightsIntoTrips(flights: FlightLogEntry[], metadata: TripMetadata[] = []): TripGroup[] {
+  const metadataById = new Map(metadata.map((item) => [item.id, item]))
   const sorted = flights
     .map((flight) => ({ flight: computeFlight(flight), departure: sortableDeparture(flight) }))
     .sort((a, b) => a.departure.instantMs - b.departure.instantMs || a.flight.flightNumber.localeCompare(b.flight.flightNumber))
@@ -57,6 +62,7 @@ export function groupFlightsIntoTrips(flights: FlightLogEntry[], names: Record<s
   return groups.map((items, index) => {
     const tripFlights = items.map((item) => item.flight)
     const id = stableTripId(tripFlights) || `trip-${index + 1}`
+    const tripMetadata = metadataById.get(id)
     const startDate = getFlightDepartureLocalDate(tripFlights[0])
     const endDate = getFlightDepartureLocalDate(tripFlights.at(-1) ?? tripFlights[0])
     const airports = [...new Set(tripFlights.flatMap((flight) => [flight.origin, flight.destination]))]
@@ -64,7 +70,7 @@ export function groupFlightsIntoTrips(flights: FlightLogEntry[], names: Record<s
     const warning = items.map((item) => item.departure.warning).find(Boolean)
     return {
       id,
-      name: names[id] ?? `Trip ${index + 1}`,
+      name: tripMetadata?.name ?? `Trip ${index + 1}`,
       flights: tripFlights,
       startDate,
       endDate,
@@ -72,6 +78,10 @@ export function groupFlightsIntoTrips(flights: FlightLogEntry[], names: Record<s
       distanceKm: tripFlights.reduce((sum, flight) => sum + flight.distanceKm, 0),
       airports,
       countries,
+      metadata: tripMetadata,
+      notes: tripMetadata?.notes,
+      type: tripMetadata?.type ?? 'personal',
+      isFavorite: tripMetadata?.isFavorite ?? false,
       warning,
     }
   })

@@ -17,11 +17,35 @@ import {
   Upload,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { bulkSaveFlights, deleteFlight, getFlights, getProviderAirports, providerAirportSnapshotsFromLiveStatus, saveFlight, saveProviderAirports } from './db'
+import { DateTime } from 'luxon'
+import {
+  bulkSaveFlights,
+  bulkSaveTripMetadata,
+  bulkSetAppMetadata,
+  deleteFlight,
+  getAllAppMetadata,
+  getFlights,
+  getProviderAirports,
+  getTripMetadata,
+  LOCAL_SCHEMA_VERSION,
+  migrateLegacyTripNames,
+  providerAirportSnapshotsFromLiveStatus,
+  replaceAppMetadata,
+  replaceFlights,
+  replaceProviderAirports,
+  replaceTripMetadata,
+  saveFlight,
+  saveProviderAirports,
+  saveTripMetadata,
+  setAppMetadata,
+} from './db'
 import { sampleFlights } from './sampleData'
-import type { FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot } from './types'
+import type { AppMetadata, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, TripMetadata, TripType } from './types'
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
+import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
+import { createFullBackup, parseFullBackupJson, previewBackupImport, type BackupImportPreview } from './utils/backup'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
+import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { formatDate, formatDateTime, formatDistance, formatDuration } from './utils/dates'
 import { computeFlight, routeKey } from './utils/flights'
 import { canRefreshLiveStatus, fetchLiveStatus, normalizeFlightNumber, refreshStatusLabel } from './utils/liveStatus'
@@ -37,9 +61,10 @@ import {
   resolveFlightTime,
 } from './utils/flightTime'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
+import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import './App.css'
 
-type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'import' | 'flight-detail' | 'trip-detail'
+type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'flight-detail' | 'trip-detail'
 interface AppRoute {
   page: Page
   flightId?: string
@@ -72,7 +97,7 @@ const navItems: Array<{ page: Page; label: string }> = [
   { page: 'trips', label: 'Trips' },
   { page: 'map', label: 'Map' },
   { page: 'passport', label: 'Passport' },
-  { page: 'import', label: 'Import/Export' },
+  { page: 'backup', label: 'Backup' },
 ]
 
 function routeFromHash(): AppRoute {
@@ -80,6 +105,7 @@ function routeFromHash(): AppRoute {
   const [section, id] = hash.split('/')
   if (section === 'flights' && id) return { page: 'flight-detail', flightId: decodeURIComponent(id) }
   if (section === 'trips' && id) return { page: 'trip-detail', tripId: decodeURIComponent(id) }
+  if (section === 'import') return { page: 'backup' }
   return navItems.some((item) => item.page === section) ? { page: section as Page } : { page: 'dashboard' }
 }
 
@@ -102,6 +128,27 @@ function downloadFile(filename: string, contents: string, type: string): void {
   link.download = filename
   link.click()
   URL.revokeObjectURL(url)
+}
+
+function appMetadataValue(metadata: AppMetadata[], key: string): string | undefined {
+  return metadata.find((item) => item.key === key)?.value
+}
+
+function backupWarning(flights: FlightLogEntry[], appMetadata: AppMetadata[]): string | undefined {
+  if (flights.length === 0) return undefined
+  const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
+  if (!lastBackupAt) return 'You have saved flights but no full backup yet.'
+  const lastBackup = DateTime.fromISO(lastBackupAt, { setZone: true })
+  if (!lastBackup.isValid) return 'Your last backup timestamp could not be read.'
+  return DateTime.utc().diff(lastBackup.toUTC(), 'days').days > 30 ? 'Your last full backup is older than 30 days.' : undefined
+}
+
+function legacyTripNamesFromLocalStorage(): Record<string, string> {
+  try {
+    return JSON.parse(window.localStorage.getItem('flightlog-trip-names') ?? '{}') as Record<string, string>
+  } catch {
+    return {}
+  }
 }
 
 function liveAirport(liveStatus: FlightLiveStatus, role: 'origin' | 'destination'): FlightLiveAirport | undefined {
@@ -272,6 +319,7 @@ function AirportInput({ label, value, onChange }: { label: string; value: string
 function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveStatus; fetchedAt: string }) {
   const origin = liveAirport(liveStatus, 'origin')
   const destination = liveAirport(liveStatus, 'destination')
+  const airline = airlineForLiveStatus(liveStatus)
   const departureTime = formatAirportLocalTime(
     liveStatus.scheduledDepartureLocal ?? liveStatus.times?.scheduledDepartureLocal ?? liveStatus.scheduledDeparture ?? liveStatus.times?.scheduledDeparture,
     liveStatus.originTimeZone ?? origin?.timezone ?? origin?.timeZone,
@@ -298,7 +346,7 @@ function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveSt
       <div className="flight-main">
         <div>
           <p className="eyebrow">{liveStatus.provider ?? 'Live lookup'}</p>
-          <h3>{liveStatus.flightNumber} - {liveStatus.airlineName || liveStatus.airline?.name || 'Unknown airline'}</h3>
+          <h3>{liveStatus.flightNumber} - {airline?.name || liveStatus.airlineName || liveStatus.airline?.name || 'Unknown airline'}</h3>
         </div>
         <span className={`status ${liveStatus.status}`}>{liveStatus.status}</span>
       </div>
@@ -317,6 +365,7 @@ function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveSt
         <div><dt>Departure</dt><dd>{[liveStatus.departureTerminal || liveStatus.terminalGate?.departureTerminal, liveStatus.departureGate || liveStatus.terminalGate?.departureGate].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
         <div><dt>Arrival</dt><dd>{[liveStatus.arrivalTerminal || liveStatus.terminalGate?.arrivalTerminal, liveStatus.arrivalGate || liveStatus.terminalGate?.arrivalGate, liveStatus.baggageClaim || liveStatus.terminalGate?.baggageClaim].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
         <div><dt>Aircraft</dt><dd>{[liveStatus.aircraftType || liveStatus.aircraft?.type, liveStatus.aircraftRegistration || liveStatus.aircraft?.registration].filter(Boolean).join(' - ') || 'Not set'}</dd></div>
+        <div><dt>Airline</dt><dd>{airline ? [airline.iata, airline.country].filter(Boolean).join(' / ') : 'Metadata unavailable'}</dd></div>
         <div><dt>Fetched</dt><dd>{formatDateTime(fetchedAt)}</dd></div>
       </dl>
       {[departureTime.warning, arrivalTime.warning, estimatedDeparture.local ? estimatedDeparture.warning : undefined, estimatedArrival.local ? estimatedArrival.warning : undefined].filter((warning): warning is string => Boolean(warning)).map((warning, index) => <p className="notice warning" key={`time-${index}-${warning}`}>{warning}</p>)}
@@ -507,8 +556,60 @@ function FlightForm({
   )
 }
 
-function Dashboard({ flights, airportDatasetLabel, onAddDemo, onQuickAdd }: { flights: FlightLogEntry[]; airportDatasetLabel: string; onAddDemo: () => Promise<void>; onQuickAdd: () => void }) {
+function UpcomingFlightCard({ info, onOpen, onRefresh }: { info: UpcomingFlightInfo; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
+  const { flight } = info
+  const departure = formatDepartureLocalTime(flight)
+  const arrival = formatArrivalLocalTime(flight)
+  const airline = airlineForFlight(flight)
+  const detailsUrl = `${window.location.href.split('#')[0]}#/flights/${encodeURIComponent(flight.id)}`
+  const calendar = buildCalendarEventDetails(flight, detailsUrl)
+  const links = externalFlightLinks(flight)
+  return (
+    <article className="flight-card upcoming-card">
+      <div className="flight-main">
+        <div><p className="eyebrow">{info.countdownLabel}</p><h3>{flight.flightNumber} - {airline?.name ?? flight.airline}</h3></div>
+        <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
+      </div>
+      <div className="route-line"><strong>{flight.origin}</strong><span>{flight.originAirport?.city || flight.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{flight.destinationAirport?.city || flight.destinationAirport?.name}</span></div>
+      <dl className="meta-grid">
+        <div><dt>Departure</dt><dd>{departure.label}</dd></div>
+        <div><dt>Arrival</dt><dd>{arrival.label}</dd></div>
+        <div><dt>Terminal / gate</dt><dd>{[flight.liveStatus?.departureTerminal, flight.liveStatus?.departureGate].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+        <div><dt>Aircraft</dt><dd>{[flight.aircraftType, flight.aircraftRegistration].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+        <div><dt>Last checked</dt><dd>{refreshStatusLabel(flight.lastFetchedAt)}</dd></div>
+      </dl>
+      {info.staleLabel && <p className={`notice ${info.staleSeverity === 'strong' ? 'warning' : ''}`}>{info.staleLabel}</p>}
+      {info.gateHint && <p className="notice">{info.gateHint}</p>}
+      <div className="actions">
+        <button type="button" onClick={() => onOpen(flight)}>View details</button>
+        <button type="button" className="secondary" disabled={!canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
+        {calendar.googleUrl && <a className="button-link secondary-link" href={calendar.googleUrl} target="_blank" rel="noopener noreferrer"><CalendarDays aria-hidden="true" /> Add to calendar</a>}
+        {links[0] && <a className="button-link secondary-link" href={links[0].url} target="_blank" rel="noopener noreferrer">External links</a>}
+      </div>
+    </article>
+  )
+}
+
+function Dashboard({
+  flights,
+  airportDatasetLabel,
+  appMetadata,
+  onAddDemo,
+  onQuickAdd,
+  onOpenFlight,
+  onRefresh,
+}: {
+  flights: FlightLogEntry[]
+  airportDatasetLabel: string
+  appMetadata: AppMetadata[]
+  onAddDemo: () => Promise<void>
+  onQuickAdd: () => void
+  onOpenFlight: (flight: FlightLogEntry) => void
+  onRefresh: (flight: FlightLogEntry) => Promise<void>
+}) {
   const stats = aggregateStats(flights)
+  const warning = backupWarning(flights, appMetadata)
+  const upcoming = listUpcomingFlights(flights).slice(0, 6)
   return (
     <main className="page">
       <section className="hero-shell">
@@ -533,6 +634,14 @@ function Dashboard({ flights, airportDatasetLabel, onAddDemo, onQuickAdd }: { fl
           <StatCard icon={CalendarDays} label="Most recent" value={stats.mostRecentFlight ? formatDate(stats.mostRecentFlight.date) : 'None'} />
         </section>
       )}
+      {warning && <section className="notice warning backup-warning"><strong>Backup recommended.</strong> {warning}</section>}
+      <section className="panel upcoming-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
+        <div className="stack">
+          {upcoming.map((info) => <UpcomingFlightCard key={info.flight.id} info={info} onOpen={onOpenFlight} onRefresh={onRefresh} />)}
+          {upcoming.length === 0 && <p className="empty-inline">No upcoming flights yet.</p>}
+        </div>
+      </section>
     </main>
   )
 }
@@ -557,9 +666,10 @@ function FlightCard({
   const departure = formatDepartureLocalTime(flight)
   const arrival = formatArrivalLocalTime(flight)
   const refreshAvailable = canRefreshLiveStatus(flight.lastFetchedAt)
+  const airline = airlineForFlight(flight)
   return (
     <article className="flight-card">
-      <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p><h3><button type="button" className="link-button" onClick={() => onOpen(flight)}>{flight.flightNumber} - {flight.airline}</button></h3></div><span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{liveStatusLabel}{providerLabel}</span></div>
+      <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}{airline?.country ? ` · ${airline.country}` : ''}</p><h3><button type="button" className="link-button" onClick={() => onOpen(flight)}>{flight.flightNumber} - {airline?.name ?? flight.airline}</button></h3></div><span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{liveStatusLabel}{providerLabel}</span></div>
       <div className="route-line"><strong>{flight.origin}</strong><span>{flight.originAirport?.city || flight.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{flight.destinationAirport?.city || flight.destinationAirport?.name}</span></div>
       <dl className="meta-grid">
         <div><dt>Departure local</dt><dd>{departure.label}</dd></div>
@@ -567,6 +677,7 @@ function FlightCard({
         <div><dt>Distance</dt><dd>{flight.hasRouteCoordinates ? formatDistance(flight.distanceKm) : 'Unavailable'}</dd></div>
         <div><dt>Duration</dt><dd>{formatDuration(flight.durationMinutes)}</dd></div>
         <div><dt>Aircraft</dt><dd>{flight.aircraftType || 'Not set'}</dd></div>
+        <div><dt>Airline code</dt><dd>{[airline?.iata ?? flight.airlineIata, airline?.icao ?? flight.airlineIcao].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
         <div><dt>Cabin / seat</dt><dd>{[flight.cabin, flight.seat].filter(Boolean).join(' - ') || 'Not set'}</dd></div>
       </dl>
       {flight.liveStatus && <p className="notice">Gate {flight.liveStatus.departureGate ?? flight.liveStatus.terminalGate?.departureGate ?? 'TBD'} - {lastFetchedLabel}</p>}
@@ -695,24 +806,26 @@ function CalendarSection({ flight }: { flight: FlightLogEntry }) {
   )
 }
 
-function TripCard({ trip, onOpen, onRename }: { trip: TripGroup; onOpen: (trip: TripGroup) => void; onRename: (tripId: string, name: string) => void }) {
+function TripCard({ trip, onOpen, onUpdate }: { trip: TripGroup; onOpen: (trip: TripGroup) => void; onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void }) {
   return (
     <article className="flight-card trip-card">
       <div className="flight-main">
         <div>
           <p className="eyebrow">{trip.startDate} to {trip.endDate}</p>
-          <input className="inline-name-input" value={trip.name} onChange={(event) => onRename(trip.id, event.target.value)} aria-label="Trip name" />
+          <input className="inline-name-input" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
         </div>
-        <span className="status scheduled">{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
+        <span className="status scheduled">{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
       </div>
       <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
       <dl className="meta-grid">
         <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm)}</dd></div>
         <div><dt>Airports</dt><dd>{trip.airports.join(', ')}</dd></div>
         <div><dt>Countries</dt><dd>{trip.countries.join(', ') || 'Not set'}</dd></div>
+        <div><dt>Trip type</dt><dd>{trip.type}</dd></div>
       </dl>
+      {trip.notes && <p className="notice">{trip.notes}</p>}
       {trip.warning && <p className="notice warning">{trip.warning}</p>}
-      <div className="actions"><button type="button" onClick={() => onOpen(trip)}>View trip</button></div>
+      <div className="actions"><button type="button" onClick={() => onOpen(trip)}>View trip</button><button type="button" className="secondary" onClick={() => onUpdate(trip.id, { isFavorite: !trip.isFavorite })}>{trip.isFavorite ? 'Unpin' : 'Pin trip'}</button></div>
     </article>
   )
 }
@@ -720,17 +833,17 @@ function TripCard({ trip, onOpen, onRename }: { trip: TripGroup; onOpen: (trip: 
 function TripsPage({
   trips,
   onOpen,
-  onRename,
+  onUpdate,
 }: {
   trips: TripGroup[]
   onOpen: (trip: TripGroup) => void
-  onRename: (tripId: string, name: string) => void
+  onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
 }) {
   return (
     <main className="page">
       <div className="section-heading"><div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div></div>
       <div className="stack">
-        {trips.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={onOpen} onRename={onRename} />)}
+        {trips.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={onOpen} onUpdate={onUpdate} />)}
         {trips.length === 0 && <p className="empty-inline">Log flights to build your first trip.</p>}
       </div>
     </main>
@@ -741,12 +854,12 @@ function TripDetailPage({
   trip,
   onBack,
   onOpenFlight,
-  onRename,
+  onUpdate,
 }: {
   trip?: TripGroup
   onBack: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
-  onRename: (tripId: string, name: string) => void
+  onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
 }) {
   if (!trip) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Trip not found</h2><button type="button" onClick={onBack}>Back to trips</button></section></main>
@@ -761,14 +874,17 @@ function TripDetailPage({
         <button type="button" className="ghost" onClick={onBack}>Back to trips</button>
       </div>
       <section className="panel">
-        <input className="inline-name-input large" value={trip.name} onChange={(event) => onRename(trip.id, event.target.value)} aria-label="Trip name" />
+        <input className="inline-name-input large" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
         <div className="route-mini-map trip-route"><span>{trip.routeSummary}</span></div>
         <dl className="meta-grid">
           <div><dt>Flights</dt><dd>{trip.flights.length}</dd></div>
           <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm)}</dd></div>
           <div><dt>Airports</dt><dd>{trip.airports.join(', ')}</dd></div>
           <div><dt>Countries</dt><dd>{trip.countries.join(', ') || 'Not set'}</dd></div>
+          <div><dt>Trip type</dt><dd><select value={trip.type} onChange={(event) => onUpdate(trip.id, { type: event.target.value as TripType })}><option value="personal">Personal</option><option value="work">Work</option><option value="school">School</option><option value="other">Other</option></select></dd></div>
+          <div><dt>Favorite</dt><dd><label className="checkbox-row"><input type="checkbox" checked={trip.isFavorite} onChange={(event) => onUpdate(trip.id, { isFavorite: event.target.checked })} /> Pin trip</label></dd></div>
         </dl>
+        <label className="wide trip-notes">Trip notes<textarea value={trip.notes ?? ''} onChange={(event) => onUpdate(trip.id, { notes: event.target.value })} rows={3} placeholder="Trip notes, purpose, memories..." /></label>
       </section>
       <div className="stack">
         {trip.flights.map((flight) => (
@@ -924,9 +1040,19 @@ function ListPanel({ title, rows }: { title: string; rows: string[] }) {
   return <article className="panel"><h3>{title}</h3>{rows.length === 0 ? <p className="muted">No data yet.</p> : <ul>{rows.map((row) => <li key={row}>{row}</li>)}</ul>}</article>
 }
 
-function PassportPage({ flights }: { flights: FlightLogEntry[] }) {
+function tripHasUpcomingFlight(trip: TripGroup): boolean {
+  return trip.flights.some((flight) => listUpcomingFlights([flight]).length > 0)
+}
+
+function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: TripGroup[] }) {
   const stats = aggregateStats(flights)
   const longestFlights = flights.map(computeFlight).filter((flight) => flight.distanceKm > 0).sort((a, b) => b.distanceKm - a.distanceKm).slice(0, 5)
+  const favoriteAirline = stats.topAirlines[0]
+  const favoriteRoute = stats.topRoutes[0]
+  const upcomingTripCount = trips.filter(tripHasUpcomingFlight).length
+  const latestTrip = trips[0]
+  const longestTrip = trips.slice().sort((a, b) => b.distanceKm - a.distanceKm)[0]
+  const mostFlightsTrip = trips.slice().sort((a, b) => b.flights.length - a.flights.length)[0]
   return (
     <main className="page passport">
       <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div></div>
@@ -938,34 +1064,144 @@ function PassportPage({ flights }: { flights: FlightLogEntry[] }) {
         <StatCard icon={Plane} label="Aircraft types" value={String(stats.aircraftTypes.length)} />
         <StatCard icon={ArrowRight} label="Longest flight" value={stats.longestFlight ? routeKey(stats.longestFlight) : 'None'} />
         <StatCard icon={CalendarDays} label="Best travel year" value={stats.bestTravelYear ?? 'None'} />
+        <StatCard icon={Plane} label="Favorite airline" value={favoriteAirline ? airlineDisplayName(favoriteAirline.airline) : 'None'} />
+        <StatCard icon={ArrowRight} label="Favorite route" value={favoriteRoute ? favoriteRoute.route : 'None'} />
+        <StatCard icon={CalendarDays} label="Upcoming trips" value={String(upcomingTripCount)} />
       </section>
       <section className="stamp-grid">
         {stats.airportsVisited.slice(0, 12).map((airport) => <article className="passport-stamp" key={airport.iata}><strong>{airport.iata}</strong><span>{airport.city || airport.name}</span><small>{airport.country}</small></article>)}
+        {flights.length === 0 && <article className="passport-stamp empty-stamp"><strong>---</strong><span>No stamps yet</span><small>Add a flight to unlock airports.</small></article>}
       </section>
-      <section className="three-columns"><ListPanel title="Yearly summary" rows={stats.yearly.map((row) => `${row.year}: ${row.flights} flights - ${formatDistance(row.distanceKm)}`)} /><ListPanel title="Top airports" rows={stats.topAirports.slice(0, 8).map((row) => `${row.code}: ${row.count} visits - ${row.label}`)} /><ListPanel title="Top airlines" rows={stats.topAirlines.slice(0, 8).map((row) => `${row.airline}: ${row.count}`)} /></section>
-      <section className="three-columns"><ListPanel title="Most frequent routes" rows={stats.topRoutes.slice(0, 8).map((row) => `${row.route}: ${row.count} - ${formatDistance(row.distanceKm)}`)} /><ListPanel title="Longest flights" rows={longestFlights.map((flight) => `${routeKey(flight)} - ${formatDistance(flight.distanceKm)}`)} /><ListPanel title="Aircraft" rows={stats.aircraftTypes} /></section>
+      <section className="three-columns">
+        <ListPanel title="Trip stamps" rows={[
+          latestTrip ? `Latest: ${latestTrip.name} - ${latestTrip.routeSummary}` : '',
+          longestTrip ? `Longest: ${longestTrip.name} - ${formatDistance(longestTrip.distanceKm)}` : '',
+          mostFlightsTrip ? `Most flights: ${mostFlightsTrip.name} - ${mostFlightsTrip.flights.length}` : '',
+        ].filter(Boolean)} />
+        <ListPanel title="Unlocked" rows={[`${stats.countriesVisited.length} countries`, `${stats.airportsVisited.length} airports`, `${stats.airlines.length} airlines`]} />
+        <ListPanel title="Top airlines" rows={stats.topAirlines.slice(0, 8).map((row) => `${airlineDisplayName(row.airline)}: ${row.count}`)} />
+      </section>
+      <section className="three-columns"><ListPanel title="Yearly summary" rows={stats.yearly.map((row) => `${row.year}: ${row.flights} flights - ${formatDistance(row.distanceKm)}`)} /><ListPanel title="Top airports" rows={stats.topAirports.slice(0, 8).map((row) => `${row.code}: ${row.count} visits - ${row.label}`)} /><ListPanel title="Most frequent routes" rows={stats.topRoutes.slice(0, 8).map((row) => `${row.route}: ${row.count} - ${formatDistance(row.distanceKm)}`)} /></section>
+      <section className="three-columns"><ListPanel title="Longest flights" rows={longestFlights.map((flight) => `${routeKey(flight)} - ${formatDistance(flight.distanceKm)}`)} /><ListPanel title="Aircraft" rows={stats.aircraftTypes} /><ListPanel title="Favorite trips" rows={trips.filter((trip) => trip.isFavorite).slice(0, 8).map((trip) => `${trip.name}: ${trip.routeSummary}`)} /></section>
       <section className="two-columns"><ListPanel title="Countries unlocked" rows={stats.countriesVisited} /><ListPanel title="First-time badges" rows={stats.airportsVisited.slice(0, 8).map((airport) => `First logged ${airport.iata} - ${airport.country}`)} /></section>
     </main>
   )
 }
 
-function ImportExportPage({ flights, onImported }: { flights: FlightLogEntry[]; onImported: () => Promise<void> }) {
+function BackupCenterPage({
+  flights,
+  trips,
+  tripMetadata,
+  providerAirports,
+  appMetadata,
+  onImported,
+  onExportBackup,
+  onMergeBackup,
+  onReplaceBackup,
+  onRepairData,
+}: {
+  flights: FlightLogEntry[]
+  trips: TripGroup[]
+  tripMetadata: TripMetadata[]
+  providerAirports: ProviderAirportSnapshot[]
+  appMetadata: AppMetadata[]
+  onImported: () => Promise<void>
+  onExportBackup: () => Promise<void>
+  onMergeBackup: (preview: BackupImportPreview) => Promise<void>
+  onReplaceBackup: (preview: BackupImportPreview) => Promise<void>
+  onRepairData: () => Promise<void>
+}) {
   const [preview, setPreview] = useState<{ valid: FlightLogEntry[]; errors: string[] }>({ valid: [], errors: [] })
+  const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
+  const [backupMessage, setBackupMessage] = useState('')
+  const health = analyzeDataHealth(flights)
+  const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
+  const lastImportAt = appMetadataValue(appMetadata, 'lastImportAt')
   async function handleFile(file: File) {
     const text = await file.text()
     setPreview(file.name.endsWith('.json') ? parseFlightsJson(text) : parseFlightsCsv(text))
+  }
+  async function handleBackupFile(file: File) {
+    setBackupMessage('')
+    try {
+      const backup = parseFullBackupJson(await file.text())
+      setBackupPreview(previewBackupImport(backup, flights))
+    } catch (error) {
+      setBackupPreview(undefined)
+      setBackupMessage(error instanceof Error ? error.message : 'Unable to read backup file')
+    }
   }
   async function savePreview() {
     await bulkSaveFlights(preview.valid)
     setPreview({ valid: [], errors: [] })
     await onImported()
   }
+  async function mergeBackup() {
+    if (!backupPreview) return
+    await onMergeBackup(backupPreview)
+    setBackupMessage(`Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`)
+    setBackupPreview(undefined)
+  }
+  async function replaceBackup() {
+    if (!backupPreview) return
+    await onReplaceBackup(backupPreview)
+    setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
+    setBackupPreview(undefined)
+  }
   return (
     <main className="page">
-      <div className="section-heading"><div><p className="eyebrow">Portability</p><h2>Import and export</h2></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Data safety</p><h2>Backup Center</h2></div></div>
+      <section className="stats-grid">
+        <StatCard icon={Plane} label="Flights" value={String(flights.length)} />
+        <StatCard icon={Map} label="Trips" value={String(trips.length)} />
+        <StatCard icon={Gauge} label="Trip metadata" value={String(tripMetadata.length)} />
+        <StatCard icon={Globe2} label="Provider airports" value={String(providerAirports.length)} />
+        <StatCard icon={CalendarDays} label="Schema version" value={`v${LOCAL_SCHEMA_VERSION}`} />
+        <StatCard icon={Download} label="Last backup" value={lastBackupAt ? formatDateTime(lastBackupAt) : 'Never'} />
+        <StatCard icon={Import} label="Last import" value={lastImportAt ? formatDateTime(lastImportAt) : 'Never'} />
+      </section>
       <section className="two-columns">
-        <article className="panel"><h3>Export</h3><p className="muted">Create a browser-local backup anytime.</p><div className="actions"><button type="button" onClick={() => downloadFile('flightlog.json', JSON.stringify({ flights }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export JSON</button><button type="button" className="secondary" onClick={() => downloadFile('flightlog.csv', flightsToCsv(flights), 'text/csv')}><Download aria-hidden="true" /> Export CSV</button></div></article>
-        <article className="panel"><h3>Import</h3><p className="muted">CSV core columns: {csvColumns.join(', ')}</p><label className="file-drop"><Upload aria-hidden="true" /><span>Choose CSV or JSON</span><input type="file" accept=".csv,.json,text/csv,application/json" onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} /></label></article>
+        <article className="panel">
+          <h3>Full backup</h3>
+          <p className="muted">Exports flights, trip metadata, provider airports, app metadata, schema version, and export time.</p>
+          <div className="actions"><button type="button" onClick={() => void onExportBackup()}><Download aria-hidden="true" /> Export full backup</button></div>
+        </article>
+        <article className="panel">
+          <h3>Restore backup</h3>
+          <p className="muted">Preview a full backup before merging or replacing local data.</p>
+          <label className="file-drop"><Upload aria-hidden="true" /><span>Choose backup JSON</span><input type="file" accept=".json,application/json" onChange={(event) => event.target.files?.[0] && void handleBackupFile(event.target.files[0])} /></label>
+        </article>
+      </section>
+      {backupMessage && <p className="notice">{backupMessage}</p>}
+      {backupPreview && (
+        <section className="panel">
+          <h3>Backup import preview</h3>
+          <dl className="meta-grid">
+            <div><dt>Flights to add</dt><dd>{backupPreview.flightsToAdd}</dd></div>
+            <div><dt>Existing flights</dt><dd>{backupPreview.existingFlights}</dd></div>
+            <div><dt>Likely duplicates</dt><dd>{backupPreview.duplicateFlights}</dd></div>
+            <div><dt>Trip metadata</dt><dd>{backupPreview.tripMetadata}</dd></div>
+            <div><dt>Provider airports</dt><dd>{backupPreview.providerAirports}</dd></div>
+            <div><dt>Exported</dt><dd>{formatDateTime(backupPreview.backup.exportedAt)}</dd></div>
+          </dl>
+          {backupPreview.warnings.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
+          <div className="actions"><button type="button" onClick={() => void mergeBackup()}>Merge new records</button><button type="button" className="secondary" onClick={() => void replaceBackup()}>Replace all local data</button><button type="button" className="ghost" onClick={() => setBackupPreview(undefined)}>Cancel</button></div>
+        </section>
+      )}
+      <section className="panel">
+        <h3>Data Health</h3>
+        <dl className="meta-grid">
+          <div><dt>Missing timezone</dt><dd>{health.missingTimezoneCount}</dd></div>
+          <div><dt>Missing coordinates</dt><dd>{health.missingAirportCoordinateCount}</dd></div>
+          <div><dt>Provider warnings</dt><dd>{health.providerWarningCount}</dd></div>
+          <div><dt>Missing times</dt><dd>{health.missingTimeCount}</dd></div>
+          <div><dt>Safe repairs</dt><dd>{health.repairableAirportSnapshotCount}</dd></div>
+        </dl>
+        <div className="actions"><button type="button" className="secondary" disabled={health.repairableAirportSnapshotCount === 0} onClick={() => void onRepairData()}>Re-resolve airport snapshots</button></div>
+      </section>
+      <section className="two-columns">
+        <article className="panel"><h3>Legacy export</h3><p className="muted">Keep old JSON and CSV exports available for portability.</p><div className="actions"><button type="button" onClick={() => downloadFile('flightlog.json', JSON.stringify({ flights }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export JSON</button><button type="button" className="secondary" onClick={() => downloadFile('flightlog.csv', flightsToCsv(flights), 'text/csv')}><Download aria-hidden="true" /> Export CSV</button></div></article>
+        <article className="panel"><h3>Legacy import</h3><p className="muted">CSV core columns: {csvColumns.join(', ')}</p><label className="file-drop"><Upload aria-hidden="true" /><span>Choose CSV or JSON</span><input type="file" accept=".csv,.json,text/csv,application/json" onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} /></label></article>
       </section>
       {(preview.errors.length > 0 || preview.valid.length > 0) && <section className="panel"><h3>Import preview</h3><p>{preview.valid.length} valid flights - {preview.errors.length} errors</p>{preview.errors.length > 0 && <ul className="errors">{preview.errors.map((error) => <li key={error}>{error}</li>)}</ul>}<button type="button" disabled={preview.valid.length === 0 || preview.errors.length > 0} onClick={savePreview}><Import aria-hidden="true" /> Save imported flights</button></section>}
       <section className="panel"><h3>Samples</h3><p><a href={`${import.meta.env.BASE_URL}samples/sample_flights.csv`}>Download sample CSV</a> - <a href={`${import.meta.env.BASE_URL}samples/sample_flights.json`}>Download sample JSON</a></p></section>
@@ -981,14 +1217,10 @@ function App() {
   const [toast, setToast] = useState('')
   const [airportVersion, setAirportVersion] = useState(0)
   const [airportDatasetLabel, setAirportDatasetLabel] = useState(`${airportCount()} airport fallback loaded`)
-  const [tripNames, setTripNames] = useState<Record<string, string>>(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem('flightlog-trip-names') ?? '{}') as Record<string, string>
-    } catch {
-      return {}
-    }
-  })
-  const trips = useMemo(() => groupFlightsIntoTrips(flights, tripNames), [flights, tripNames])
+  const [providerAirportState, setProviderAirportState] = useState<ProviderAirportSnapshot[]>([])
+  const [tripMetadata, setTripMetadataState] = useState<TripMetadata[]>([])
+  const [appMetadata, setAppMetadataState] = useState<AppMetadata[]>([])
+  const trips = useMemo(() => groupFlightsIntoTrips(flights, tripMetadata), [flights, tripMetadata])
   const currentFlight = route.flightId ? flights.find((flight) => flight.id === route.flightId) : undefined
   const currentTrip = route.tripId ? trips.find((trip) => trip.id === route.tripId) : undefined
 
@@ -996,9 +1228,23 @@ function App() {
     setFlights(await getFlights())
   }
 
+  async function loadTripMetadata() {
+    setTripMetadataState(await getTripMetadata())
+  }
+
+  async function loadAppMetadata() {
+    setAppMetadataState(await getAllAppMetadata())
+  }
+
   async function refreshProviderAirports() {
-    setProviderAirports(await getProviderAirports())
+    const airports = await getProviderAirports()
+    setProviderAirports(airports)
+    setProviderAirportState(airports)
     setAirportVersion((version) => version + 1)
+  }
+
+  async function reloadLocalData() {
+    await Promise.all([loadFlights(), refreshProviderAirports(), loadTripMetadata(), loadAppMetadata()])
   }
 
   async function cacheProviderAirports(liveStatus: FlightLiveStatus) {
@@ -1016,7 +1262,14 @@ function App() {
     void getProviderAirports().then((airports) => {
       if (!mounted) return
       setProviderAirports(airports)
+      setProviderAirportState(airports)
       setAirportVersion((version) => version + 1)
+    })
+    void migrateLegacyTripNames(legacyTripNamesFromLocalStorage()).then((metadata) => {
+      if (mounted) setTripMetadataState(metadata)
+    })
+    void getAllAppMetadata().then((metadata) => {
+      if (mounted) setAppMetadataState(metadata)
     })
     void loadGeneratedAirports()
       .then((count) => {
@@ -1089,10 +1342,61 @@ function App() {
     if (savedFlightId) navigateToFlight(savedFlightId)
   }
 
-  function renameTrip(tripId: string, name: string) {
-    const next = { ...tripNames, [tripId]: name }
-    setTripNames(next)
-    window.localStorage.setItem('flightlog-trip-names', JSON.stringify(next))
+  async function handleTripMetadataUpdate(tripId: string, patch: Partial<TripMetadata>) {
+    await saveTripMetadata({ id: tripId, ...patch })
+    await loadTripMetadata()
+  }
+
+  async function handleExportFullBackup() {
+    const now = new Date().toISOString()
+    const appMetadataForBackup = [
+      ...(await getAllAppMetadata()).filter((item) => item.key !== 'lastBackupAt'),
+      { key: 'lastBackupAt', value: now, updatedAt: now },
+    ]
+    const backup = createFullBackup({
+      flights: await getFlights(),
+      tripMetadata: await getTripMetadata(),
+      providerAirports: await getProviderAirports(),
+      appMetadata: appMetadataForBackup,
+      exportedAt: now,
+    })
+    downloadFile(`flightlog-backup-${now.slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json')
+    await setAppMetadata('lastBackupAt', now)
+    await loadAppMetadata()
+    setToast('Full backup exported.')
+  }
+
+  async function handleMergeBackup(preview: BackupImportPreview) {
+    const now = new Date().toISOString()
+    if (preview.mergeFlights.length > 0) await bulkSaveFlights(preview.mergeFlights)
+    await saveProviderAirports(preview.backup.providerAirports)
+    await bulkSaveTripMetadata(preview.backup.tripMetadata)
+    await bulkSetAppMetadata([
+      ...preview.backup.appMetadata.filter((item) => item.key !== 'lastBackupAt' && item.key !== 'lastImportAt'),
+      { key: 'lastImportAt', value: now, updatedAt: now },
+    ])
+    await reloadLocalData()
+    setToast(`Imported ${preview.flightsToAdd} new flights and skipped ${preview.duplicateFlights} duplicate flights.`)
+  }
+
+  async function handleReplaceBackup(preview: BackupImportPreview) {
+    const now = new Date().toISOString()
+    await replaceFlights(preview.backup.flights)
+    await replaceProviderAirports(preview.backup.providerAirports)
+    await replaceTripMetadata(preview.backup.tripMetadata)
+    await replaceAppMetadata([
+      ...preview.backup.appMetadata.filter((item) => item.key !== 'lastImportAt'),
+      { key: 'lastImportAt', value: now, updatedAt: now },
+    ])
+    await reloadLocalData()
+    setToast(`Restored ${preview.backup.flights.length} flights from backup.`)
+  }
+
+  async function handleRepairData() {
+    await bulkSaveFlights(repairFlightsFromAirportDataset(flights))
+    await loadFlights()
+    setAirportVersion((version) => version + 1)
+    setToast('Airport snapshots re-resolved where local data was available.')
   }
 
   return (
@@ -1104,18 +1408,19 @@ function App() {
       </header>
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       {showForm && <FlightForm editing={editing} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
-      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onRename={renameTrip} />}
-      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRename={renameTrip} />}
+      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
+      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
-      {route.page === 'passport' && <PassportPage flights={flights} />}
-      {route.page === 'import' && <ImportExportPage flights={flights} onImported={loadFlights} />}
+      {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} trips={trips} tripMetadata={tripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} />}
       <nav className="bottom-nav" aria-label="Mobile navigation">
         <button type="button" className={navPage(route) === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>Home</button>
         <button type="button" className={navPage(route) === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}>Flights</button>
         <button type="button" className={navPage(route) === 'trips' ? 'active' : ''} onClick={() => navigate('trips')}>Trips</button>
+        <button type="button" className={navPage(route) === 'backup' ? 'active' : ''} onClick={() => navigate('backup')}>Backup</button>
         <button type="button" className="bottom-add" onClick={openQuickAdd}><Plus aria-hidden="true" /> Add</button>
       </nav>
       <footer><strong>FlightLog</strong><span>personal flight passport</span><span>data stored locally in your browser</span></footer>

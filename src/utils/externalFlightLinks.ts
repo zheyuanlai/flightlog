@@ -1,4 +1,5 @@
 import type { FlightLogEntry } from '../types'
+import { airlineForFlight, airlineSearchUrl } from './airlines'
 import { getFlightDepartureLocalDate } from './flightTime'
 import { normalizeFlightNumber } from './liveStatus'
 
@@ -23,8 +24,12 @@ export function externalFlightLinks(flight: FlightLogEntry): ExternalFlightLink[
   const lower = normalized.toLowerCase()
   const query = `${flightSearchParts(flight).join(' ')} flight status`.trim()
   const googleQuery = query || `${flight.flightNumber} flight status`
+  const airline = airlineForFlight(flight)
 
   return [
+    airline?.website ? { label: `${airline.name} official site`, url: airline.website } : undefined,
+    airline?.checkInUrl ? { label: `${airline.name} check-in`, url: airline.checkInUrl } : undefined,
+    !airline ? { label: 'Airline official site search', url: airlineSearchUrl(flight.airline || flight.flightNumber) } : undefined,
     {
       label: 'FlightAware',
       url: normalized
@@ -41,5 +46,5 @@ export function externalFlightLinks(flight: FlightLogEntry): ExternalFlightLink[
       label: 'Google flight status search',
       url: `https://www.google.com/search?q=${encodeURIComponent(googleQuery)}`,
     },
-  ]
+  ].filter((link): link is ExternalFlightLink => Boolean(link))
 }

@@ -9,11 +9,11 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Generated airport coverage from OurAirports-style CSVs with more than 9,000 IATA airports.
 - Provider-derived airport fallback for live lookups when an airport is missing locally.
 - Local persistence through IndexedDB; no backend is required for the main app.
-- Dashboard, searchable flight list, route map, passport-style statistics, and import/export tools.
+- Dashboard with upcoming flights, searchable flight list, route map, passport-style statistics, trips, and a Backup Center.
 - Automatic route distance and duration calculation.
-- JSON and CSV import/export with sample data.
+- Full local backup export/import preview, plus backward-compatible JSON and CSV import/export with sample data.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
-- Flight detail pages, trip grouping, external flight-info links, and no-login calendar export.
+- Flight detail pages, trip grouping with local trip metadata, external flight-info links, and no-login calendar export.
 - Installable PWA app shell with conservative offline caching.
 - GitHub Pages deployment through GitHub Actions.
 
@@ -130,7 +130,7 @@ On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, 
 
 ## Data Privacy
 
-FlightLog stores flight data in your browser. There is no core backend. Export your data periodically if you want a backup. Clearing browser storage can delete local FlightLog data.
+FlightLog stores flight data in your browser. There is no core backend. The Backup Center can export a full local backup with flights, trip metadata, provider-derived airports, app metadata, schema version, and export time. Clearing browser storage can delete local FlightLog data, so export a backup periodically.
 
 ## CSV Import Format
 
@@ -149,6 +149,6 @@ Sample files are available at:
 
 ## Roadmap
 
-- Richer airline and aircraft metadata.
-- More complete live-status provider adapters.
-- iOS-focused interaction polish.
+- Supabase Auth for v1.6.
+- Google login and email magic link login.
+- Optional cloud backup snapshots built on the full backup format.
