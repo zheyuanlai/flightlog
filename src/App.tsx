@@ -287,13 +287,13 @@ function MapPage({ flights }: { flights: FlightLogEntry[] }) {
     const map = leafletRef.current
     if (!map) return
     const layer = L.layerGroup().addTo(map)
-    const bounds: L.LatLngExpression[] = []
+    const bounds: L.LatLngTuple[] = []
     const markerIcon = L.divIcon({ className: 'airport-marker', html: '<span></span>', iconSize: [16, 16] })
     for (const flight of computed) {
       const origin = lookupAirport(flight.origin)
       const destination = lookupAirport(flight.destination)
       if (!origin || !destination) continue
-      const points: L.LatLngExpression[] = [[origin.lat, origin.lon], [destination.lat, destination.lon]]
+      const points: L.LatLngTuple[] = [[origin.lat, origin.lon], [destination.lat, destination.lon]]
       bounds.push(...points)
       L.polyline(points, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${flight.flightNumber}: ${flight.origin} to ${flight.destination}`).addTo(layer)
       for (const airport of [origin, destination]) L.marker([airport.lat, airport.lon], { icon: markerIcon }).bindPopup(`<strong>${airport.iata}</strong><br>${airport.name}<br>${airport.city}, ${airport.country}`).addTo(layer)
@@ -366,10 +366,16 @@ function App() {
   }
 
   useEffect(() => {
-    void loadFlights()
+    let mounted = true
+    void getFlights().then((loadedFlights) => {
+      if (mounted) setFlights(loadedFlights)
+    })
     const onHashChange = () => setPage(pageFromHash())
     window.addEventListener('hashchange', onHashChange)
-    return () => window.removeEventListener('hashchange', onHashChange)
+    return () => {
+      mounted = false
+      window.removeEventListener('hashchange', onHashChange)
+    }
   }, [])
 
   function navigate(next: Page) {
