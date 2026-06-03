@@ -1,0 +1,34 @@
+{
+  "flights": [
+    {
+      "date": "2026-06-02",
+      "flightNumber": "SQ38",
+      "airline": "Singapore Airlines",
+      "origin": "SIN",
+      "destination": "LAX",
+      "scheduledDeparture": "2026-06-02T20:45",
+      "scheduledArrival": "2026-06-02T21:55",
+      "aircraftType": "Airbus A350-900ULR",
+      "cabin": "Business",
+      "seat": "17A",
+      "purpose": "personal",
+      "notes": "Long-haul sample flight for demo stats.",
+      "source": "manual"
+    },
+    {
+      "date": "2025-11-18",
+      "flightNumber": "UA1200",
+      "airline": "United Airlines",
+      "origin": "SFO",
+      "destination": "JFK",
+      "scheduledDeparture": "2025-11-18T08:10",
+      "scheduledArrival": "2025-11-18T16:35",
+      "aircraftType": "Boeing 757-200",
+      "cabin": "Economy",
+      "seat": "24F",
+      "purpose": "work",
+      "notes": "Coast-to-coast meeting trip.",
+      "source": "manual"
+    }
+  ]
+}

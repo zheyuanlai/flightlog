@@ -1,0 +1,4 @@
+date,flightNumber,airline,origin,destination,scheduledDeparture,scheduledArrival,actualDeparture,actualArrival,aircraftType,aircraftRegistration,cabin,seat,purpose,notes,source
+2026-06-02,SQ38,Singapore Airlines,SIN,LAX,2026-06-02T20:45,2026-06-02T21:55,,,Airbus A350-900ULR,,Business,17A,personal,Long-haul sample flight for demo stats.,manual
+2025-11-18,UA1200,United Airlines,SFO,JFK,2025-11-18T08:10,2025-11-18T16:35,,,Boeing 757-200,,Economy,24F,work,Coast-to-coast meeting trip.,manual
+2024-07-04,BA286,British Airways,SFO,LHR,2024-07-04T19:20,2024-07-05T13:45,,,Airbus A380,,Premium Economy,62K,personal,Summer London trip.,manual
