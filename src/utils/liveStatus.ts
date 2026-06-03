@@ -15,6 +15,16 @@ export function canRefreshLiveStatus(lastFetchedAt?: string): boolean {
   return Date.now() - last >= FIVE_MINUTES_MS
 }
 
+export function refreshStatusLabel(lastFetchedAt?: string, nowMs = Date.now()): string {
+  if (!lastFetchedAt) return 'Not checked yet'
+  const last = new Date(lastFetchedAt).getTime()
+  if (Number.isNaN(last)) return 'Refresh available'
+  const elapsedMinutes = Math.max(0, Math.floor((nowMs - last) / 60000))
+  if (elapsedMinutes < 1) return 'Updated just now'
+  if (elapsedMinutes < 5) return `Refresh available in ${5 - elapsedMinutes} minute${5 - elapsedMinutes === 1 ? '' : 's'}`
+  return `Last checked ${elapsedMinutes} minute${elapsedMinutes === 1 ? '' : 's'} ago`
+}
+
 export function normalizeFlightNumber(value: string): string {
   return value.trim().toUpperCase().replace(/\s+/g, '')
 }
@@ -30,8 +40,16 @@ export function buildFlightStatusUrl(baseUrl: string, flightNumber: string, date
 
 function normalizeDateTimeInput(value?: string): string | undefined {
   if (!value) return undefined
-  const match = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/)
-  return match ? `${match[1]}T${match[2]}` : value
+  return value.trim().replace(' ', 'T') || undefined
+}
+
+function firstString(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => typeof value === 'string' && value.trim())
+}
+
+function addDays(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map((value) => Number(value))
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
 }
 
 export async function readFlightStatusError(response: Response): Promise<string> {
@@ -61,14 +79,38 @@ export function normalizeLiveStatus(liveStatus: FlightLiveStatus): FlightLiveSta
     scheduledArrival: liveStatus.scheduledArrival,
     estimatedArrival: liveStatus.estimatedArrival,
     actualArrival: liveStatus.actualArrival,
+    scheduledDepartureLocal: liveStatus.scheduledDepartureLocal,
+    estimatedDepartureLocal: liveStatus.estimatedDepartureLocal,
+    actualDepartureLocal: liveStatus.actualDepartureLocal,
+    scheduledArrivalLocal: liveStatus.scheduledArrivalLocal,
+    estimatedArrivalLocal: liveStatus.estimatedArrivalLocal,
+    actualArrivalLocal: liveStatus.actualArrivalLocal,
+    scheduledDepartureUtc: liveStatus.scheduledDepartureUtc,
+    estimatedDepartureUtc: liveStatus.estimatedDepartureUtc,
+    actualDepartureUtc: liveStatus.actualDepartureUtc,
+    scheduledArrivalUtc: liveStatus.scheduledArrivalUtc,
+    estimatedArrivalUtc: liveStatus.estimatedArrivalUtc,
+    actualArrivalUtc: liveStatus.actualArrivalUtc,
   }
   const times = {
-    scheduledDeparture: normalizeDateTimeInput(rawTimes.scheduledDeparture),
-    estimatedDeparture: normalizeDateTimeInput(rawTimes.estimatedDeparture),
-    actualDeparture: normalizeDateTimeInput(rawTimes.actualDeparture),
-    scheduledArrival: normalizeDateTimeInput(rawTimes.scheduledArrival),
-    estimatedArrival: normalizeDateTimeInput(rawTimes.estimatedArrival),
-    actualArrival: normalizeDateTimeInput(rawTimes.actualArrival),
+    scheduledDeparture: normalizeDateTimeInput(firstString(rawTimes.scheduledDeparture, rawTimes.scheduledDepartureLocal, liveStatus.scheduledDepartureLocal)),
+    estimatedDeparture: normalizeDateTimeInput(firstString(rawTimes.estimatedDeparture, rawTimes.estimatedDepartureLocal, liveStatus.estimatedDepartureLocal)),
+    actualDeparture: normalizeDateTimeInput(firstString(rawTimes.actualDeparture, rawTimes.actualDepartureLocal, liveStatus.actualDepartureLocal)),
+    scheduledArrival: normalizeDateTimeInput(firstString(rawTimes.scheduledArrival, rawTimes.scheduledArrivalLocal, liveStatus.scheduledArrivalLocal)),
+    estimatedArrival: normalizeDateTimeInput(firstString(rawTimes.estimatedArrival, rawTimes.estimatedArrivalLocal, liveStatus.estimatedArrivalLocal)),
+    actualArrival: normalizeDateTimeInput(firstString(rawTimes.actualArrival, rawTimes.actualArrivalLocal, liveStatus.actualArrivalLocal)),
+    scheduledDepartureLocal: normalizeDateTimeInput(firstString(rawTimes.scheduledDepartureLocal, liveStatus.scheduledDepartureLocal, rawTimes.scheduledDeparture)),
+    estimatedDepartureLocal: normalizeDateTimeInput(firstString(rawTimes.estimatedDepartureLocal, liveStatus.estimatedDepartureLocal, rawTimes.estimatedDeparture)),
+    actualDepartureLocal: normalizeDateTimeInput(firstString(rawTimes.actualDepartureLocal, liveStatus.actualDepartureLocal, rawTimes.actualDeparture)),
+    scheduledArrivalLocal: normalizeDateTimeInput(firstString(rawTimes.scheduledArrivalLocal, liveStatus.scheduledArrivalLocal, rawTimes.scheduledArrival)),
+    estimatedArrivalLocal: normalizeDateTimeInput(firstString(rawTimes.estimatedArrivalLocal, liveStatus.estimatedArrivalLocal, rawTimes.estimatedArrival)),
+    actualArrivalLocal: normalizeDateTimeInput(firstString(rawTimes.actualArrivalLocal, liveStatus.actualArrivalLocal, rawTimes.actualArrival)),
+    scheduledDepartureUtc: normalizeDateTimeInput(firstString(rawTimes.scheduledDepartureUtc, liveStatus.scheduledDepartureUtc)),
+    estimatedDepartureUtc: normalizeDateTimeInput(firstString(rawTimes.estimatedDepartureUtc, liveStatus.estimatedDepartureUtc)),
+    actualDepartureUtc: normalizeDateTimeInput(firstString(rawTimes.actualDepartureUtc, liveStatus.actualDepartureUtc)),
+    scheduledArrivalUtc: normalizeDateTimeInput(firstString(rawTimes.scheduledArrivalUtc, liveStatus.scheduledArrivalUtc)),
+    estimatedArrivalUtc: normalizeDateTimeInput(firstString(rawTimes.estimatedArrivalUtc, liveStatus.estimatedArrivalUtc)),
+    actualArrivalUtc: normalizeDateTimeInput(firstString(rawTimes.actualArrivalUtc, liveStatus.actualArrivalUtc)),
   }
   const terminalGate = liveStatus.terminalGate ?? {
     departureTerminal: liveStatus.departureTerminal,
@@ -94,6 +136,10 @@ export function normalizeLiveStatus(liveStatus: FlightLiveStatus): FlightLiveSta
     aircraft,
     warnings,
     warning: liveStatus.warning ?? warnings[0],
+    originTimeZone: liveStatus.originTimeZone ?? origin?.timezone ?? origin?.timeZone,
+    destinationTimeZone: liveStatus.destinationTimeZone ?? destination?.timezone ?? destination?.timeZone,
+    providerUpdatedAt: liveStatus.providerUpdatedAt,
+    providerFetchedAt: liveStatus.providerFetchedAt,
     airlineName: liveStatus.airlineName ?? airline.name,
     airlineIata: liveStatus.airlineIata ?? airline.iata,
     airlineIcao: liveStatus.airlineIcao ?? airline.icao,
@@ -105,6 +151,18 @@ export function normalizeLiveStatus(liveStatus: FlightLiveStatus): FlightLiveSta
     scheduledArrival: liveStatus.scheduledArrival ?? times.scheduledArrival,
     estimatedArrival: liveStatus.estimatedArrival ?? times.estimatedArrival,
     actualArrival: liveStatus.actualArrival ?? times.actualArrival,
+    scheduledDepartureLocal: liveStatus.scheduledDepartureLocal ?? times.scheduledDepartureLocal,
+    estimatedDepartureLocal: liveStatus.estimatedDepartureLocal ?? times.estimatedDepartureLocal,
+    actualDepartureLocal: liveStatus.actualDepartureLocal ?? times.actualDepartureLocal,
+    scheduledArrivalLocal: liveStatus.scheduledArrivalLocal ?? times.scheduledArrivalLocal,
+    estimatedArrivalLocal: liveStatus.estimatedArrivalLocal ?? times.estimatedArrivalLocal,
+    actualArrivalLocal: liveStatus.actualArrivalLocal ?? times.actualArrivalLocal,
+    scheduledDepartureUtc: liveStatus.scheduledDepartureUtc ?? times.scheduledDepartureUtc,
+    estimatedDepartureUtc: liveStatus.estimatedDepartureUtc ?? times.estimatedDepartureUtc,
+    actualDepartureUtc: liveStatus.actualDepartureUtc ?? times.actualDepartureUtc,
+    scheduledArrivalUtc: liveStatus.scheduledArrivalUtc ?? times.scheduledArrivalUtc,
+    estimatedArrivalUtc: liveStatus.estimatedArrivalUtc ?? times.estimatedArrivalUtc,
+    actualArrivalUtc: liveStatus.actualArrivalUtc ?? times.actualArrivalUtc,
     departureTerminal: liveStatus.departureTerminal ?? terminalGate.departureTerminal,
     departureGate: liveStatus.departureGate ?? terminalGate.departureGate,
     arrivalTerminal: liveStatus.arrivalTerminal ?? terminalGate.arrivalTerminal,
@@ -145,7 +203,13 @@ export function mockLiveStatus(flightNumber: string, date: string): FlightLiveSt
     times: {
       scheduledDeparture: `${date}T20:45`,
       estimatedDeparture: `${date}T20:55`,
-      scheduledArrival: `${date}T23:35`,
+      scheduledArrival: `${addDays(date, 2)}T06:15`,
+      scheduledDepartureLocal: `${date}T20:45`,
+      estimatedDepartureLocal: `${date}T20:55`,
+      scheduledArrivalLocal: `${addDays(date, 2)}T06:15`,
+      scheduledDepartureUtc: `${addDays(date, 1)}T03:45:00Z`,
+      estimatedDepartureUtc: `${addDays(date, 1)}T03:55:00Z`,
+      scheduledArrivalUtc: `${addDays(date, 1)}T22:15:00Z`,
     },
     terminalGate: {
       departureTerminal: '1',

@@ -51,14 +51,15 @@ describe('flight status worker utilities', () => {
       status: 'Arrived',
       airline: { name: 'Singapore Airlines', iata: 'SQ', icao: 'SIA' },
       departure: {
-        airport: { iata: 'SIN', icao: 'WSSS', name: 'Singapore Changi Airport', municipalityName: 'Singapore', countryCode: 'SG', countryName: 'Singapore', location: { lat: 1.3644, lon: 103.9915 } },
-        scheduledTime: { local: '2026-06-02T20:45' },
+        airport: { iata: 'SIN', icao: 'WSSS', name: 'Singapore Changi Airport', municipalityName: 'Singapore', countryCode: 'SG', countryName: 'Singapore', location: { lat: 1.3644, lon: 103.9915 }, timeZone: 'Asia/Singapore' },
+        scheduledTime: { local: '2026-06-02T20:45', utc: '2026-06-02T12:45:00Z' },
+        revisedTime: { local: '2026-06-02T20:55', utc: '2026-06-02T12:55:00Z' },
         terminal: '3',
         gate: 'A12',
       },
       arrival: {
-        airport: { iata: 'LAX', icao: 'KLAX', name: 'Los Angeles International Airport', municipalityName: 'Los Angeles', countryCode: 'US', countryName: 'United States', location: { lat: 33.9425, lon: -118.4081 } },
-        scheduledTime: { local: '2026-06-02T21:55' },
+        airport: { iata: 'LAX', icao: 'KLAX', name: 'Los Angeles International Airport', municipalityName: 'Los Angeles', countryCode: 'US', countryName: 'United States', location: { lat: 33.9425, lon: -118.4081 }, timeZone: 'America/Los_Angeles' },
+        scheduledTime: { local: '2026-06-02T21:55', utc: '2026-06-03T04:55:00Z' },
         baggageBelt: '4',
       },
       aircraft: { model: 'Airbus A350-900', reg: '9V-SGA' },
@@ -69,8 +70,14 @@ describe('flight status worker utilities', () => {
     expect(normalized.status).toBe('landed')
     expect(normalized.airline.name).toBe('Singapore Airlines')
     expect(normalized.origin.city).toBe('Singapore')
+    expect(normalized.origin.timeZone).toBe('Asia/Singapore')
     expect(normalized.destination.country).toBe('United States')
+    expect(normalized.destinationTimeZone).toBe('America/Los_Angeles')
     expect(normalized.departureAirport.iata).toBe('SIN')
+    expect(normalized.scheduledDepartureLocal).toBe('2026-06-02T20:45')
+    expect(normalized.scheduledDepartureUtc).toBe('2026-06-02T12:45:00Z')
+    expect(normalized.estimatedDepartureUtc).toBe('2026-06-02T12:55:00Z')
+    expect(normalized.scheduledArrivalUtc).toBe('2026-06-03T04:55:00Z')
     expect(normalized.aircraftType).toBe('Airbus A350-900')
     expect(normalized.warnings).toEqual(['provider warning'])
   })

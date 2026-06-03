@@ -62,7 +62,8 @@ function cleanAirportSnapshot(airport: Partial<ProviderAirportSnapshot> | undefi
     countryName: snapshot.countryName?.trim() || snapshot.country?.trim() || undefined,
     lat: typeof snapshot.lat === 'number' && Number.isFinite(snapshot.lat) ? snapshot.lat : undefined,
     lon: typeof snapshot.lon === 'number' && Number.isFinite(snapshot.lon) ? snapshot.lon : undefined,
-    timezone: snapshot.timezone?.trim() || undefined,
+    timezone: snapshot.timezone?.trim() || snapshot.timeZone?.trim() || undefined,
+    timeZone: snapshot.timeZone?.trim() || snapshot.timezone?.trim() || undefined,
     source,
     updatedAt: new Date().toISOString(),
   }

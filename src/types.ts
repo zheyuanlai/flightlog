@@ -25,6 +25,7 @@ export interface FlightLiveAirport {
   lat?: number
   lon?: number
   timezone?: string
+  timeZone?: string
 }
 
 export interface FlightLiveTimes {
@@ -34,6 +35,18 @@ export interface FlightLiveTimes {
   scheduledArrival?: string
   estimatedArrival?: string
   actualArrival?: string
+  scheduledDepartureLocal?: string
+  estimatedDepartureLocal?: string
+  actualDepartureLocal?: string
+  scheduledArrivalLocal?: string
+  estimatedArrivalLocal?: string
+  actualArrivalLocal?: string
+  scheduledDepartureUtc?: string
+  estimatedDepartureUtc?: string
+  actualDepartureUtc?: string
+  scheduledArrivalUtc?: string
+  estimatedArrivalUtc?: string
+  actualArrivalUtc?: string
 }
 
 export interface FlightLiveTerminalGate {
@@ -61,7 +74,11 @@ export interface FlightLiveStatus {
   provider?: string
   rawProviderStatus?: string
   providerFlightId?: string
+  providerUpdatedAt?: string
+  providerFetchedAt?: string
   warnings?: string[]
+  originTimeZone?: string
+  destinationTimeZone?: string
 
   airlineName?: string
   airlineIata?: string
@@ -74,6 +91,18 @@ export interface FlightLiveStatus {
   scheduledArrival?: string
   estimatedArrival?: string
   actualArrival?: string
+  scheduledDepartureLocal?: string
+  estimatedDepartureLocal?: string
+  actualDepartureLocal?: string
+  scheduledArrivalLocal?: string
+  estimatedArrivalLocal?: string
+  actualArrivalLocal?: string
+  scheduledDepartureUtc?: string
+  estimatedDepartureUtc?: string
+  actualDepartureUtc?: string
+  scheduledArrivalUtc?: string
+  estimatedArrivalUtc?: string
+  actualArrivalUtc?: string
   departureTerminal?: string
   departureGate?: string
   arrivalTerminal?: string
@@ -95,6 +124,7 @@ export interface ProviderAirportSnapshot {
   lat?: number
   lon?: number
   timezone?: string
+  timeZone?: string
   source?: string
   updatedAt?: string
 }
@@ -110,6 +140,20 @@ export interface FlightLogEntry {
   scheduledArrival?: string
   actualDeparture?: string
   actualArrival?: string
+  scheduledDepartureLocal?: string
+  estimatedDepartureLocal?: string
+  actualDepartureLocal?: string
+  scheduledArrivalLocal?: string
+  estimatedArrivalLocal?: string
+  actualArrivalLocal?: string
+  scheduledDepartureUtc?: string
+  estimatedDepartureUtc?: string
+  actualDepartureUtc?: string
+  scheduledArrivalUtc?: string
+  estimatedArrivalUtc?: string
+  actualArrivalUtc?: string
+  originTimeZone?: string
+  destinationTimeZone?: string
   aircraftType?: string
   aircraftRegistration?: string
   cabin?: string
@@ -142,6 +186,7 @@ export interface Airport {
   lat?: number
   lon?: number
   timezone?: string
+  timeZone?: string
   type?: string
   scheduledService?: boolean
   source?: 'curated' | 'generated' | 'provider'

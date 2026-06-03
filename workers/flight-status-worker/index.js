@@ -125,6 +125,7 @@ function airportSummary(airport) {
     lat,
     lon,
     timezone: cleanString(airport.timeZone) ?? cleanString(airport.timezone),
+    timeZone: cleanString(airport.timeZone) ?? cleanString(airport.timezone),
   })
 }
 
@@ -150,6 +151,22 @@ function localTime(time) {
   if (typeof time === 'string') return time
   if (typeof time.local === 'string') return time.local
   return undefined
+}
+
+function utcTime(time) {
+  if (!time || typeof time === 'string') return undefined
+  if (typeof time.utc === 'string') return time.utc
+  return undefined
+}
+
+function timeFields(prefix, time) {
+  const local = localTime(time)
+  const utc = utcTime(time)
+  return stripUndefined({
+    [prefix]: local,
+    [`${prefix}Local`]: local,
+    [`${prefix}Utc`]: utc,
+  })
 }
 
 function datePart(value) {
@@ -190,13 +207,15 @@ export function normalizeAeroDataBoxFlight(flight, warnings = []) {
   const airline = airlineSummary(flight.airline) ?? {}
   const origin = airportSummary(departure.airport)
   const destination = airportSummary(arrival.airport)
+  const departureEstimate = localTime(departure.revisedTime) || utcTime(departure.revisedTime) ? departure.revisedTime : departure.predictedTime
+  const arrivalEstimate = localTime(arrival.revisedTime) || utcTime(arrival.revisedTime) ? arrival.revisedTime : arrival.predictedTime
   const times = stripUndefined({
-    scheduledDeparture: localTime(departure.scheduledTime),
-    estimatedDeparture: localTime(departure.revisedTime) || localTime(departure.predictedTime),
-    actualDeparture: localTime(departure.runwayTime),
-    scheduledArrival: localTime(arrival.scheduledTime),
-    estimatedArrival: localTime(arrival.revisedTime) || localTime(arrival.predictedTime),
-    actualArrival: localTime(arrival.runwayTime),
+    ...timeFields('scheduledDeparture', departure.scheduledTime),
+    ...timeFields('estimatedDeparture', departureEstimate),
+    ...timeFields('actualDeparture', departure.runwayTime),
+    ...timeFields('scheduledArrival', arrival.scheduledTime),
+    ...timeFields('estimatedArrival', arrivalEstimate),
+    ...timeFields('actualArrival', arrival.runwayTime),
   })
   const terminalGate = stripUndefined({
     departureTerminal: cleanString(departure.terminal),
@@ -222,8 +241,12 @@ export function normalizeAeroDataBoxFlight(flight, warnings = []) {
     provider: 'AeroDataBox',
     rawProviderStatus: cleanString(flight.status),
     providerFlightId: cleanString(flight.id) ?? cleanString(flight.flightId),
+    providerUpdatedAt: cleanString(flight.lastUpdatedUtc),
+    providerFetchedAt: cleanString(flight.lastUpdatedUtc),
     warnings,
     warning,
+    originTimeZone: origin?.timeZone ?? origin?.timezone,
+    destinationTimeZone: destination?.timeZone ?? destination?.timezone,
 
     airlineName: airline.name,
     airlineIata: airline.iata,
@@ -236,6 +259,18 @@ export function normalizeAeroDataBoxFlight(flight, warnings = []) {
     scheduledArrival: times.scheduledArrival,
     estimatedArrival: times.estimatedArrival,
     actualArrival: times.actualArrival,
+    scheduledDepartureLocal: times.scheduledDepartureLocal,
+    estimatedDepartureLocal: times.estimatedDepartureLocal,
+    actualDepartureLocal: times.actualDepartureLocal,
+    scheduledArrivalLocal: times.scheduledArrivalLocal,
+    estimatedArrivalLocal: times.estimatedArrivalLocal,
+    actualArrivalLocal: times.actualArrivalLocal,
+    scheduledDepartureUtc: times.scheduledDepartureUtc,
+    estimatedDepartureUtc: times.estimatedDepartureUtc,
+    actualDepartureUtc: times.actualDepartureUtc,
+    scheduledArrivalUtc: times.scheduledArrivalUtc,
+    estimatedArrivalUtc: times.estimatedArrivalUtc,
+    actualArrivalUtc: times.actualArrivalUtc,
     departureTerminal: terminalGate.departureTerminal,
     departureGate: terminalGate.departureGate,
     arrivalTerminal: terminalGate.arrivalTerminal,
@@ -327,8 +362,8 @@ export function mockStatus(flightNumber, date) {
         location: { lat: 37.6213, lon: -122.379 },
         timeZone: 'America/Los_Angeles',
       },
-      scheduledTime: { local: `${date}T20:45` },
-      revisedTime: { local: `${date}T20:55` },
+      scheduledTime: { local: `${date}T20:45`, utc: `${addDays(date, 1)}T03:45:00Z` },
+      revisedTime: { local: `${date}T20:55`, utc: `${addDays(date, 1)}T03:55:00Z` },
       terminal: '1',
       gate: 'A12',
     },
@@ -343,13 +378,19 @@ export function mockStatus(flightNumber, date) {
         location: { lat: 1.3644, lon: 103.9915 },
         timeZone: 'Asia/Singapore',
       },
-      scheduledTime: { local: `${date}T23:35` },
+      scheduledTime: { local: `${addDays(date, 2)}T06:15`, utc: `${addDays(date, 1)}T22:15:00Z` },
       terminal: 'B',
       baggageBelt: '4',
     },
     aircraft: { model: 'Airbus A350-900', reg: '9V-MOCK' },
   }
   return { ...normalizeAeroDataBoxFlight(flight, []), provider: 'mock-worker', rawProviderStatus: `Mock status for ${flightNumber}` }
+}
+
+function addDays(date, days) {
+  const [year, month, day] = date.split('-').map((value) => Number(value))
+  const value = new Date(Date.UTC(year, month - 1, day + days))
+  return value.toISOString().slice(0, 10)
 }
 
 function successCacheTtl(date) {
@@ -365,7 +406,7 @@ async function handleFlightStatus(request, env, ctx, origin, url) {
   cacheUrl.searchParams.set('flightNumber', input.flightNumber)
   cacheUrl.searchParams.set('date', input.date)
   cacheUrl.searchParams.set('dateRole', input.dateRole)
-  cacheUrl.searchParams.set('schema', 'v13')
+  cacheUrl.searchParams.set('schema', 'v14')
   const cacheKey = new Request(cacheUrl.toString(), request)
   const cached = await caches.default.match(cacheKey)
   if (cached) return cached

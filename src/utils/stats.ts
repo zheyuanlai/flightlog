@@ -1,4 +1,5 @@
 import type { Airport, FlightLogEntry, FlightWithComputed } from '../types'
+import { getFlightDepartureLocalDate } from './flightTime'
 import { computeFlight, routeKey } from './flights'
 
 export interface FlightStats {
@@ -17,6 +18,7 @@ export interface FlightStats {
   topAirports: Array<{ code: string; label: string; count: number }>
   topAirlines: Array<{ airline: string; count: number }>
   topRoutes: Array<{ route: string; count: number; distanceKm: number }>
+  bestTravelYear?: string
 }
 
 function sortedCounts(entries: Map<string, number>): Array<[string, number]> {
@@ -49,7 +51,7 @@ export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
     if (flight.airline) airlineCounts.set(flight.airline, (airlineCounts.get(flight.airline) ?? 0) + 1)
     if (flight.aircraftType) aircraftSet.add(flight.aircraftType)
     if (flight.durationMinutes) totalDurationMinutes += flight.durationMinutes
-    const year = flight.date.slice(0, 4)
+    const year = getFlightDepartureLocalDate(flight).slice(0, 4)
     const yearBucket = yearly.get(year) ?? { flights: 0, distanceKm: 0 }
     yearBucket.flights += 1
     yearBucket.distanceKm += flight.distanceKm
@@ -81,6 +83,7 @@ export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
     shortestFlight: byDistance.at(-1),
     mostRecentFlight: computed[0],
     busiestYear,
+    bestTravelYear: busiestYear,
     yearly: yearlyRows,
     topAirports: sortedCounts(airportCounts).map(([code, count]) => {
       const airport = airportRecords.get(code)

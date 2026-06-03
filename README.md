@@ -13,8 +13,13 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Automatic route distance and duration calculation.
 - JSON and CSV import/export with sample data.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
+- Flight detail pages, trip grouping, external flight-info links, and no-login calendar export.
 - Installable PWA app shell with conservative offline caching.
 - GitHub Pages deployment through GitHub Actions.
+
+## Timezones
+
+FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.
 
 ## Local Development
 
