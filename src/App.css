@@ -133,6 +133,19 @@ nav button.active,
   color: rgba(255, 255, 255, 0.78);
 }
 
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+
+.hero-actions span {
+  color: rgba(255, 255, 255, 0.78);
+  font-weight: 700;
+}
+
 .route-stamp {
   display: flex;
   align-items: center;
@@ -226,6 +239,14 @@ dt,
 
 .section-heading {
   margin-bottom: 18px;
+}
+
+.heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 h2,
@@ -343,10 +364,55 @@ dd {
   margin-top: 18px;
 }
 
+.segmented {
+  width: fit-content;
+  max-width: 100%;
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #e2e8f0;
+}
+
+.segmented button {
+  min-height: 36px;
+  color: #334155;
+  background: transparent;
+  box-shadow: none;
+}
+
+.segmented button.active {
+  color: #0f766e;
+  background: #ffffff;
+}
+
+.lookup-form {
+  display: grid;
+  gap: 14px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 14px;
+}
+
+.form-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.checkbox-row {
+  grid-auto-flow: column;
+  align-items: center;
+  justify-content: start;
+  gap: 10px;
+  align-self: end;
+  min-height: 42px;
+}
+
+.checkbox-row input {
+  width: auto;
 }
 
 label {
@@ -386,6 +452,13 @@ textarea {
   gap: 12px;
   border-radius: 8px;
   background: #f1f5f9;
+}
+
+.lookup-preview {
+  padding: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .map-frame {
@@ -492,8 +565,10 @@ a {
 @media (max-width: 800px) {
   header,
   .section-heading,
+  .heading-actions,
   .flight-main,
   .actions,
+  .hero-actions,
   .hero-shell {
     align-items: stretch;
     flex-direction: column;
@@ -501,8 +576,10 @@ a {
 
   header,
   .section-heading,
+  .heading-actions,
   .flight-main,
-  .actions {
+  .actions,
+  .hero-actions {
     display: flex;
   }
 
@@ -527,5 +604,13 @@ a {
 
   .route-line svg {
     display: none;
+  }
+
+  .segmented {
+    width: 100%;
+  }
+
+  .segmented button {
+    flex: 1 1 0;
   }
 }

@@ -1,16 +1,26 @@
 import type { FlightLogEntry, FlightWithComputed } from '../types'
-import { lookupAirport, normalizeIata } from './airports'
 import { durationMinutes } from './dates'
 import { haversineDistanceKm } from './distance'
+import { hasCoordinates, normalizeIata, resolveFlightAirport } from './airports'
 
 export function computeFlight(flight: FlightLogEntry): FlightWithComputed {
-  const origin = lookupAirport(flight.origin)
-  const destination = lookupAirport(flight.destination)
-  const distanceKm = origin && destination ? haversineDistanceKm(origin, destination) : 0
+  const originAirport = resolveFlightAirport(flight, 'origin')
+  const destinationAirport = resolveFlightAirport(flight, 'destination')
+  const hasRouteCoordinates = hasCoordinates(originAirport) && hasCoordinates(destinationAirport)
+  const distanceKm = hasRouteCoordinates ? haversineDistanceKm(originAirport, destinationAirport) : 0
   const duration =
     durationMinutes(flight.actualDeparture, flight.actualArrival) ??
     durationMinutes(flight.scheduledDeparture, flight.scheduledArrival)
-  return { ...flight, origin: normalizeIata(flight.origin), destination: normalizeIata(flight.destination), distanceKm, durationMinutes: duration }
+  return {
+    ...flight,
+    origin: normalizeIata(flight.origin),
+    destination: normalizeIata(flight.destination),
+    distanceKm,
+    durationMinutes: duration,
+    originAirport,
+    destinationAirport,
+    hasRouteCoordinates,
+  }
 }
 
 export function routeKey(flight: FlightLogEntry): string {

@@ -5,11 +5,15 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 ## MVP Features
 
 - Manual flight logging with airport autocomplete and validation.
+- Quick Add by flight number and date through the Cloudflare Worker live-status endpoint.
+- Generated airport coverage from OurAirports-style CSVs with more than 9,000 IATA airports.
+- Provider-derived airport fallback for live lookups when an airport is missing locally.
 - Local persistence through IndexedDB; no backend is required for the main app.
 - Dashboard, searchable flight list, route map, passport-style statistics, and import/export tools.
 - Automatic route distance and duration calculation.
 - JSON and CSV import/export with sample data.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
+- Installable PWA app shell with conservative offline caching.
 - GitHub Pages deployment through GitHub Actions.
 
 ## Local Development
@@ -27,6 +31,15 @@ npm run typecheck
 npm run test
 npm run build
 ```
+
+Airport dataset scripts:
+
+```sh
+npm run airports:download
+npm run airports:build
+```
+
+`airports:download` writes refresh inputs to `data/source/airports.csv` and `data/source/countries.csv`. The generated static app dataset is `public/data/airports.generated.json`.
 
 ## Deployment
 
@@ -52,6 +65,8 @@ For development demos without a real provider, set:
 VITE_FLIGHTLOG_MOCK_LIVE_STATUS=true
 ```
 
+In the app, use **Add by flight number**, enter a flight number such as `SQ38` and a departure date, preview the returned route/times/aircraft, then choose **Add this flight** or **Edit before saving**. If the Worker URL is not configured, manual logging and the demo lookup mode still work.
+
 ## Cloudflare Worker
 
 The optional proxy lives in `workers/flight-status-worker`.
@@ -65,7 +80,7 @@ npx wrangler dev
 The Worker exposes:
 
 ```txt
-GET /flight-status?flightNumber=SQ38&date=2026-06-02
+GET /flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Departure
 ```
 
 It validates input, adds CORS for localhost and GitHub Pages, reads provider keys from Worker secrets, normalizes responses into `FlightLiveStatus`, and supports mock mode.
@@ -102,6 +117,12 @@ curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02"
 curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?flightNumber=SQ38&date=2026-06-02"
 ```
 
+## PWA
+
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses.
+
+On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
+
 ## Data Privacy
 
 FlightLog stores flight data in your browser. There is no core backend. Export your data periodically if you want a backup. Clearing browser storage can delete local FlightLog data.
@@ -114,7 +135,7 @@ CSV imports use these columns:
 date,flightNumber,airline,origin,destination,scheduledDeparture,scheduledArrival,actualDeparture,actualArrival,aircraftType,aircraftRegistration,cabin,seat,purpose,notes,source
 ```
 
-Airport codes must be valid IATA codes from the bundled airport dataset. Dates should use `YYYY-MM-DD`; date-times should use browser-friendly local date-time values such as `2026-06-02T20:45`.
+Airport codes must be valid three-letter IATA codes. If a provider-derived airport is not in the generated dataset, FlightLog can still save the flight with the provider snapshot. Dates should use `YYYY-MM-DD`; date-times should use browser-friendly local date-time values such as `2026-06-02T20:45`.
 
 Sample files are available at:
 
@@ -123,8 +144,6 @@ Sample files are available at:
 
 ## Roadmap
 
-- PWA install support and offline app shell.
-- Generate a larger airport dataset from OurAirports.
 - Richer airline and aircraft metadata.
 - More complete live-status provider adapters.
 - iOS-focused interaction polish.

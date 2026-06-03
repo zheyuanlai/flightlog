@@ -1,12 +1,13 @@
 import type { Airport } from '../types'
 
 const EARTH_RADIUS_KM = 6371
+type AirportWithCoordinates = Airport & { lat: number; lon: number }
 
 function toRadians(value: number): number {
   return (value * Math.PI) / 180
 }
 
-export function haversineDistanceKm(origin: Airport, destination: Airport): number {
+export function haversineDistanceKm(origin: AirportWithCoordinates, destination: AirportWithCoordinates): number {
   const dLat = toRadians(destination.lat - origin.lat)
   const dLon = toRadians(destination.lon - origin.lon)
   const lat1 = toRadians(origin.lat)

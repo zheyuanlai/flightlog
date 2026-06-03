@@ -8,57 +8,20 @@ import {
   validateFlightStatusRequest,
 } from './index.js'
 
-const fixtureFlight = {
-  number: 'SQ38',
-  status: 'EnRoute',
-  departure: {
-    airport: {
-      iata: 'SFO',
-      icao: 'KSFO',
-      name: 'San Francisco International Airport',
-    },
-    scheduledTime: { local: '2026-06-02T20:45:00', utc: '2026-06-03T03:45:00Z' },
-    revisedTime: { local: '2026-06-02T20:55:00', utc: '2026-06-03T03:55:00Z' },
-    terminal: '1',
-    gate: 'A12',
-  },
-  arrival: {
-    airport: {
-      iata: 'SIN',
-      icao: 'WSSS',
-      name: 'Singapore Changi Airport',
-    },
-    scheduledTime: { local: '2026-06-04T06:15:00', utc: '2026-06-03T22:15:00Z' },
-    revisedTime: { local: '2026-06-04T06:05:00', utc: '2026-06-03T22:05:00Z' },
-    terminal: '3',
-    gate: 'B8',
-    baggageBelt: '42',
-  },
-  aircraft: {
-    model: 'Airbus A350-900',
-    reg: '9V-SGA',
-  },
-  airline: {
-    name: 'Singapore Airlines',
-    iata: 'SQ',
-    icao: 'SIA',
-  },
-}
-
-describe('flight status worker helpers', () => {
-  it('normalizes and validates flight status query input', () => {
-    const url = new URL('https://worker.example/flight-status?flightNumber= sq 38 &date=2026-06-02')
+describe('flight status worker utilities', () => {
+  it('normalizes flight numbers and validates query params', () => {
     expect(normalizeFlightNumber(' sq 38 ')).toBe('SQ38')
-    expect(validateFlightStatusRequest(url)).toEqual({ flightNumber: 'SQ38', date: '2026-06-02' })
+    const input = validateFlightStatusRequest(new URL('https://worker.test/flight-status?flightNumber=SQ%2038&date=2026-06-02&dateRole=Arrival'))
+    expect(input).toEqual({ flightNumber: 'SQ38', date: '2026-06-02', dateRole: 'Arrival' })
   })
 
-  it('rejects invalid dates before calling the provider', () => {
-    const url = new URL('https://worker.example/flight-status?flightNumber=SQ38&date=2026-02-31')
-    expect(validateFlightStatusRequest(url)).toEqual({ error: 'date must be a valid calendar date' })
+  it('rejects invalid dates and date roles before calling the provider', () => {
+    expect(validateFlightStatusRequest(new URL('https://worker.test/flight-status?flightNumber=SQ38&date=2026-02-31'))).toEqual({ error: 'date must be a valid calendar date' })
+    expect(validateFlightStatusRequest(new URL('https://worker.test/flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Boarding'))).toEqual({ error: 'dateRole must be Departure or Arrival' })
   })
 
-  it('builds the documented AeroDataBox endpoint without flight plan params', () => {
-    const url = buildAeroDataBoxUrl('SQ38', '2026-06-02')
+  it('builds the AeroDataBox specific-date endpoint without flight plan', () => {
+    const url = buildAeroDataBoxUrl('SQ38', '2026-06-02', 'Departure')
     expect(url.toString()).toBe('https://aerodatabox.p.rapidapi.com/flights/number/SQ38/2026-06-02?dateLocalRole=Departure')
     expect(url.searchParams.has('withFlightPlan')).toBe(false)
   })
@@ -71,44 +34,44 @@ describe('flight status worker helpers', () => {
     expect(mapAeroDataBoxStatus('Diverted')).toBe('diverted')
   })
 
-  it('selects the exact flight number and scheduled departure date first', () => {
-    const otherDate = {
-      ...fixtureFlight,
-      departure: {
-        ...fixtureFlight.departure,
-        scheduledTime: { local: '2026-06-01T20:45:00' },
-      },
-    }
-    const { flight, warning } = selectBestFlight([otherDate, fixtureFlight], 'SQ38', '2026-06-02')
-    expect(flight).toBe(fixtureFlight)
-    expect(warning).toBeUndefined()
+  it('selects an exact flight/date match and warns on ambiguity', () => {
+    const flights = [
+      { number: 'SQ38', departure: { scheduledTime: { local: '2026-06-01T20:00' } } },
+      { number: 'SQ38', departure: { scheduledTime: { local: '2026-06-02T20:00' } } },
+      { number: 'SQ38', departure: { scheduledTime: { local: '2026-06-02T21:00' } } },
+    ]
+    const selected = selectBestFlight(flights, 'SQ38', '2026-06-02', 'Departure')
+    expect(selected.flight).toBe(flights[1])
+    expect(selected.warnings[0]).toContain('2 matching flights')
   })
 
-  it('normalizes AeroDataBox flight data into the frontend shape', () => {
-    expect(normalizeAeroDataBoxFlight(fixtureFlight)).toEqual({
-      status: 'active',
-      airlineName: 'Singapore Airlines',
-      airlineIata: 'SQ',
-      airlineIcao: 'SIA',
-      flightNumber: 'SQ38',
-      departureAirport: { iata: 'SFO', icao: 'KSFO', name: 'San Francisco International Airport' },
-      arrivalAirport: { iata: 'SIN', icao: 'WSSS', name: 'Singapore Changi Airport' },
-      scheduledDeparture: '2026-06-02T20:45:00',
-      estimatedDeparture: '2026-06-02T20:55:00',
-      actualDeparture: undefined,
-      scheduledArrival: '2026-06-04T06:15:00',
-      estimatedArrival: '2026-06-04T06:05:00',
-      actualArrival: undefined,
-      departureTerminal: '1',
-      departureGate: 'A12',
-      arrivalTerminal: '3',
-      arrivalGate: 'B8',
-      baggageClaim: '42',
-      aircraftType: 'Airbus A350-900',
-      aircraftRegistration: '9V-SGA',
-      provider: 'AeroDataBox',
-      rawProviderStatus: 'EnRoute',
-      warning: undefined,
-    })
+  it('normalizes AeroDataBox responses into nested and flat fields', () => {
+    const normalized = normalizeAeroDataBoxFlight({
+      number: 'SQ 38',
+      status: 'Arrived',
+      airline: { name: 'Singapore Airlines', iata: 'SQ', icao: 'SIA' },
+      departure: {
+        airport: { iata: 'SIN', icao: 'WSSS', name: 'Singapore Changi Airport', municipalityName: 'Singapore', countryCode: 'SG', countryName: 'Singapore', location: { lat: 1.3644, lon: 103.9915 } },
+        scheduledTime: { local: '2026-06-02T20:45' },
+        terminal: '3',
+        gate: 'A12',
+      },
+      arrival: {
+        airport: { iata: 'LAX', icao: 'KLAX', name: 'Los Angeles International Airport', municipalityName: 'Los Angeles', countryCode: 'US', countryName: 'United States', location: { lat: 33.9425, lon: -118.4081 } },
+        scheduledTime: { local: '2026-06-02T21:55' },
+        baggageBelt: '4',
+      },
+      aircraft: { model: 'Airbus A350-900', reg: '9V-SGA' },
+    }, ['provider warning'])
+
+    expect(mapAeroDataBoxStatus('Arrived')).toBe('landed')
+    expect(normalized.flightNumber).toBe('SQ38')
+    expect(normalized.status).toBe('landed')
+    expect(normalized.airline.name).toBe('Singapore Airlines')
+    expect(normalized.origin.city).toBe('Singapore')
+    expect(normalized.destination.country).toBe('United States')
+    expect(normalized.departureAirport.iata).toBe('SIN')
+    expect(normalized.aircraftType).toBe('Airbus A350-900')
+    expect(normalized.warnings).toEqual(['provider warning'])
   })
 })

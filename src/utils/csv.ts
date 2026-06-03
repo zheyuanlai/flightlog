@@ -1,5 +1,5 @@
 import * as Papa from 'papaparse'
-import type { FlightLogEntry, FlightPurpose, FlightSource, ImportPreview } from '../types'
+import type { FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, ImportPreview, LookupDateRole, ProviderAirportSnapshot } from '../types'
 import { isValidIata, normalizeIata } from './airports'
 
 export const csvColumns = [
@@ -21,14 +21,51 @@ export const csvColumns = [
   'source',
 ] as const
 
+const csvExportColumns = [
+  ...csvColumns,
+  'airlineIata',
+  'airlineIcao',
+  'provider',
+  'providerFetchedAt',
+  'lookupDateRole',
+  'originName',
+  'destinationName',
+] as const
+
 type CsvColumn = (typeof csvColumns)[number]
-type CsvRow = Record<CsvColumn, string>
+type CsvExportColumn = (typeof csvExportColumns)[number]
+type CsvRow = Record<CsvColumn, string> & Partial<Record<CsvExportColumn, string>>
 
 const purposes = new Set<FlightPurpose>(['personal', 'work', 'school', 'other'])
-const sources = new Set<FlightSource>(['manual', 'live-import'])
+const sources = new Set<FlightSource>(['manual', 'live-import', 'mock-live', 'aerodatabox'])
+const dateRoles = new Set<LookupDateRole>(['Departure', 'Arrival'])
 
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function cleanString(value: unknown): string | undefined {
+  const cleaned = clean(value)
+  return cleaned || undefined
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
+}
+
+function asLiveStatus(value: unknown): FlightLiveStatus | undefined {
+  const object = asObject(value)
+  return object && typeof object.status === 'string' ? object as unknown as FlightLiveStatus : undefined
+}
+
+function asAirportSnapshot(value: unknown): ProviderAirportSnapshot | undefined {
+  const object = asObject(value)
+  const iata = clean(object?.iata)
+  return /^[A-Z]{3}$/i.test(iata) ? object as unknown as ProviderAirportSnapshot : undefined
 }
 
 export function validateFlightInput(row: Partial<Record<CsvColumn, unknown>>, rowLabel = 'Flight'): string[] {
@@ -41,11 +78,11 @@ export function validateFlightInput(row: Partial<Record<CsvColumn, unknown>>, ro
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) errors.push(`${rowLabel}: date must be YYYY-MM-DD`)
   if (!clean(row.flightNumber)) errors.push(`${rowLabel}: flightNumber is required`)
   if (!clean(row.airline)) errors.push(`${rowLabel}: airline is required`)
-  if (!isValidIata(origin)) errors.push(`${rowLabel}: origin must be a valid bundled IATA code`)
-  if (!isValidIata(destination)) errors.push(`${rowLabel}: destination must be a valid bundled IATA code`)
+  if (!isValidIata(origin)) errors.push(`${rowLabel}: origin must be a valid IATA code`)
+  if (!isValidIata(destination)) errors.push(`${rowLabel}: destination must be a valid IATA code`)
   if (origin && destination && origin === destination) errors.push(`${rowLabel}: origin and destination must differ`)
   if (!purposes.has(purpose as FlightPurpose)) errors.push(`${rowLabel}: purpose must be personal, work, school, or other`)
-  if (!sources.has(source as FlightSource)) errors.push(`${rowLabel}: source must be manual or live-import`)
+  if (!sources.has(source as FlightSource)) errors.push(`${rowLabel}: source must be manual, live-import, mock-live, or aerodatabox`)
   return errors
 }
 
@@ -57,7 +94,7 @@ export function flightFromInput(
   return {
     id: existing?.id ?? crypto.randomUUID(),
     date: clean(row.date),
-    flightNumber: clean(row.flightNumber).toUpperCase(),
+    flightNumber: clean(row.flightNumber).toUpperCase().replace(/\s+/g, ''),
     airline: clean(row.airline),
     origin: normalizeIata(clean(row.origin)),
     destination: normalizeIata(clean(row.destination)),
@@ -77,12 +114,18 @@ export function flightFromInput(
   }
 }
 
+function csvValue(flight: FlightLogEntry, column: CsvExportColumn): string {
+  if (column === 'provider') return flight.liveStatus?.provider ?? ''
+  if (column === 'originName') return flight.originAirportSnapshot?.name ?? flight.liveStatus?.origin?.name ?? flight.liveStatus?.departureAirport?.name ?? ''
+  if (column === 'destinationName') return flight.destinationAirportSnapshot?.name ?? flight.liveStatus?.destination?.name ?? flight.liveStatus?.arrivalAirport?.name ?? ''
+  const value = flight[column as keyof FlightLogEntry]
+  return typeof value === 'string' ? value : ''
+}
+
 export function flightsToCsv(flights: FlightLogEntry[]): string {
   return Papa.unparse(
-    flights.map((flight) =>
-      Object.fromEntries(csvColumns.map((column) => [column, flight[column] ?? ''])),
-    ),
-    { columns: [...csvColumns] },
+    flights.map((flight) => Object.fromEntries(csvExportColumns.map((column) => [column, csvValue(flight, column)]))),
+    { columns: [...csvExportColumns] },
   )
 }
 
@@ -96,7 +139,13 @@ export function parseFlightsCsv(csv: string): ImportPreview {
       errors.push(...rowErrors)
       return
     }
-    valid.push(flightFromInput(row))
+    valid.push({
+      ...flightFromInput(row),
+      airlineIata: cleanString(row.airlineIata),
+      airlineIcao: cleanString(row.airlineIcao),
+      providerFetchedAt: cleanString(row.providerFetchedAt),
+      lookupDateRole: dateRoles.has(row.lookupDateRole as LookupDateRole) ? row.lookupDateRole as LookupDateRole : undefined,
+    })
   })
   return { valid, errors }
 }
@@ -113,13 +162,30 @@ export function parseFlightsJson(json: string): ImportPreview {
         errors.push(`Item ${index + 1}: must be an object`)
         return
       }
-      const input = row as Partial<Record<CsvColumn, unknown>>
+      const input = row as Partial<Record<CsvColumn, unknown>> & Partial<FlightLogEntry>
       const rowErrors = validateFlightInput(input, `Item ${index + 1}`)
       if (rowErrors.length > 0) {
         errors.push(...rowErrors)
         return
       }
-      valid.push(flightFromInput(input))
+      const base = flightFromInput(input, {
+        id: cleanString(input.id) ?? crypto.randomUUID(),
+        createdAt: cleanString(input.createdAt) ?? new Date().toISOString(),
+      })
+      valid.push({
+        ...base,
+        updatedAt: cleanString(input.updatedAt) ?? base.updatedAt,
+        liveStatus: asLiveStatus(input.liveStatus),
+        lastFetchedAt: cleanString(input.lastFetchedAt),
+        providerFlightId: cleanString(input.providerFlightId),
+        providerFetchedAt: cleanString(input.providerFetchedAt),
+        airlineIata: cleanString(input.airlineIata),
+        airlineIcao: cleanString(input.airlineIcao),
+        originAirportSnapshot: asAirportSnapshot(input.originAirportSnapshot),
+        destinationAirportSnapshot: asAirportSnapshot(input.destinationAirportSnapshot),
+        providerWarnings: asStringArray(input.providerWarnings),
+        lookupDateRole: dateRoles.has(input.lookupDateRole as LookupDateRole) ? input.lookupDateRole : undefined,
+      })
     })
     return { valid, errors }
   } catch (error) {

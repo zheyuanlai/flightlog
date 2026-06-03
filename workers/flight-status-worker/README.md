@@ -5,10 +5,28 @@ Cloudflare Worker proxy for FlightLog live status. The static app calls this Wor
 ## Endpoint
 
 ```txt
-GET /flight-status?flightNumber=SQ38&date=2026-06-02
+GET /flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Departure
 ```
 
-The Worker validates and normalizes the query, calls AeroDataBox `GET /flights/number/{flightNumber}/{dateLocal}?dateLocalRole=Departure`, and returns the normalized `FlightLiveStatus` JSON shape used by the frontend. It does not request `withFlightPlan=true`.
+The Worker validates and normalizes the query, calls AeroDataBox `GET /flights/number/{flightNumber}/{dateLocal}?dateLocalRole=Departure`, and returns the normalized `FlightLiveStatus` JSON shape used by the frontend. `dateRole` may be `Departure` or `Arrival`; `Departure` is the default. It does not request `withFlightPlan=true`.
+
+The response includes both the original flat fields and the v1.3 nested fields:
+
+```json
+{
+  "flightNumber": "SQ38",
+  "airline": { "name": "Singapore Airlines", "iata": "SQ", "icao": "SIA" },
+  "origin": { "iata": "SIN", "icao": "WSSS", "name": "Singapore Changi Airport" },
+  "destination": { "iata": "LAX", "icao": "KLAX", "name": "Los Angeles International Airport" },
+  "times": { "scheduledDeparture": "2026-06-02T20:45" },
+  "terminalGate": { "departureGate": "A12" },
+  "aircraft": { "type": "Airbus A350-900", "registration": "9V-SGA" },
+  "status": "scheduled",
+  "provider": "AeroDataBox",
+  "rawProviderStatus": "Expected",
+  "warnings": []
+}
+```
 
 ## Local Development
 
@@ -36,6 +54,7 @@ Local curl:
 
 ```sh
 curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02"
+curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Arrival"
 ```
 
 ## Deployment

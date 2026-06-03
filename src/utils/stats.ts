@@ -1,5 +1,4 @@
 import type { Airport, FlightLogEntry, FlightWithComputed } from '../types'
-import { lookupAirport } from './airports'
 import { computeFlight, routeKey } from './flights'
 
 export interface FlightStats {
@@ -24,9 +23,15 @@ function sortedCounts(entries: Map<string, number>): Array<[string, number]> {
   return [...entries.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
 }
 
+function airportLabel(airport?: Airport, fallback = ''): string {
+  if (!airport) return fallback
+  return [airport.city, airport.country].filter(Boolean).join(', ') || airport.name || fallback
+}
+
 export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
   const computed = flights.map(computeFlight).sort((a, b) => b.date.localeCompare(a.date))
   const airportCounts = new Map<string, number>()
+  const airportRecords = new Map<string, Airport>()
   const airlineCounts = new Map<string, number>()
   const countrySet = new Set<string>()
   const aircraftSet = new Set<string>()
@@ -35,12 +40,11 @@ export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
   let totalDurationMinutes = 0
 
   for (const flight of computed) {
-    const origin = lookupAirport(flight.origin)
-    const destination = lookupAirport(flight.destination)
-    for (const airport of [origin, destination]) {
+    for (const airport of [flight.originAirport, flight.destinationAirport]) {
       if (!airport) continue
       airportCounts.set(airport.iata, (airportCounts.get(airport.iata) ?? 0) + 1)
-      countrySet.add(airport.country)
+      airportRecords.set(airport.iata, airport)
+      if (airport.country) countrySet.add(airport.country)
     }
     if (flight.airline) airlineCounts.set(flight.airline, (airlineCounts.get(flight.airline) ?? 0) + 1)
     if (flight.aircraftType) aircraftSet.add(flight.aircraftType)
@@ -68,7 +72,7 @@ export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
     totalDistanceKm: computed.reduce((sum, flight) => sum + flight.distanceKm, 0),
     totalDurationMinutes,
     airportsVisited: sortedCounts(airportCounts)
-      .map(([code]) => lookupAirport(code))
+      .map(([code]) => airportRecords.get(code))
       .filter((airport): airport is Airport => Boolean(airport)),
     countriesVisited: [...countrySet].sort(),
     airlines: sortedCounts(airlineCounts).map(([airline]) => airline),
@@ -79,8 +83,8 @@ export function aggregateStats(flights: FlightLogEntry[]): FlightStats {
     busiestYear,
     yearly: yearlyRows,
     topAirports: sortedCounts(airportCounts).map(([code, count]) => {
-      const airport = lookupAirport(code)
-      return { code, label: airport ? `${airport.city}, ${airport.country}` : code, count }
+      const airport = airportRecords.get(code)
+      return { code, label: airportLabel(airport, code), count }
     }),
     topAirlines: sortedCounts(airlineCounts).map(([airline, count]) => ({ airline, count })),
     topRoutes: [...routeCounts.entries()]
