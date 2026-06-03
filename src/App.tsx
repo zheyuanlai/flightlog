@@ -4,20 +4,25 @@ import {
   ArrowRight,
   CalendarDays,
   CheckCircle2,
+  Cloud,
   Download,
   Gauge,
   Globe2,
   Import,
+  LogIn,
+  LogOut,
   Map,
+  Mail,
   Plane,
   Plus,
   RefreshCw,
   Search,
+  Shield,
   Trash2,
   Upload,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { DateTime } from 'luxon'
+import type { Session } from '@supabase/supabase-js'
 import {
   bulkSaveFlights,
   bulkSaveTripMetadata,
@@ -41,9 +46,24 @@ import {
 } from './db'
 import { sampleFlights } from './sampleData'
 import type { AppMetadata, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, TripMetadata, TripType } from './types'
+import { authRedirectUrl, isSupabaseConfigured, supabase } from './lib/supabase'
+import {
+  cloudBackupErrorMessage,
+  computeBackupChecksum,
+  createCloudBackupSnapshot,
+  deleteAllCloudBackups,
+  deleteCloudBackup,
+  deleteOlderCloudBackups,
+  getCloudBackup,
+  hasLocalDataChangedSinceCloudBackup,
+  listCloudBackups,
+  restoreCloudBackup,
+  type CloudBackupSummary,
+  type CloudBackupSnapshot,
+} from './lib/cloudBackup'
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
 import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
-import { createFullBackup, parseFullBackupJson, previewBackupImport, type BackupImportPreview } from './utils/backup'
+import { appMetadataValue, backupAgeWarning, createFullBackup, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview } from './utils/backup'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { formatDate, formatDateTime, formatDistance, formatDuration } from './utils/dates'
@@ -64,7 +84,7 @@ import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import './App.css'
 
-type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'flight-detail' | 'trip-detail'
+type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'account' | 'flight-detail' | 'trip-detail'
 interface AppRoute {
   page: Page
   flightId?: string
@@ -98,6 +118,7 @@ const navItems: Array<{ page: Page; label: string }> = [
   { page: 'map', label: 'Map' },
   { page: 'passport', label: 'Passport' },
   { page: 'backup', label: 'Backup' },
+  { page: 'account', label: 'Account' },
 ]
 
 function routeFromHash(): AppRoute {
@@ -130,25 +151,39 @@ function downloadFile(filename: string, contents: string, type: string): void {
   URL.revokeObjectURL(url)
 }
 
-function appMetadataValue(metadata: AppMetadata[], key: string): string | undefined {
-  return metadata.find((item) => item.key === key)?.value
-}
-
-function backupWarning(flights: FlightLogEntry[], appMetadata: AppMetadata[]): string | undefined {
-  if (flights.length === 0) return undefined
-  const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
-  if (!lastBackupAt) return 'You have saved flights but no full backup yet.'
-  const lastBackup = DateTime.fromISO(lastBackupAt, { setZone: true })
-  if (!lastBackup.isValid) return 'Your last backup timestamp could not be read.'
-  return DateTime.utc().diff(lastBackup.toUTC(), 'days').days > 30 ? 'Your last full backup is older than 30 days.' : undefined
-}
-
 function legacyTripNamesFromLocalStorage(): Record<string, string> {
   try {
     return JSON.parse(window.localStorage.getItem('flightlog-trip-names') ?? '{}') as Record<string, string>
   } catch {
     return {}
   }
+}
+
+const nonImportableMetadataKeys = new Set([
+  'lastBackupAt',
+  'lastImportAt',
+  'lastCloudBackupAt',
+  'lastCloudBackupChecksum',
+  'lastCloudBackupId',
+  'lastCloudRestoreAt',
+  'cloudRestorePromptDismissedAt',
+])
+
+function importableAppMetadata(metadata: AppMetadata[]): AppMetadata[] {
+  return metadata.filter((item) => !nonImportableMetadataKeys.has(item.key))
+}
+
+function localDeviceId(): string {
+  const key = 'flightlog-device-id'
+  const existing = window.localStorage.getItem(key)
+  if (existing) return existing
+  const next = crypto.randomUUID()
+  window.localStorage.setItem(key, next)
+  return next
+}
+
+function shortChecksum(checksum?: string): string {
+  return checksum ? checksum.slice(0, 12) : 'not set'
 }
 
 function liveAirport(liveStatus: FlightLiveStatus, role: 'origin' | 'destination'): FlightLiveAirport | undefined {
@@ -324,21 +359,25 @@ function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveSt
     liveStatus.scheduledDepartureLocal ?? liveStatus.times?.scheduledDepartureLocal ?? liveStatus.scheduledDeparture ?? liveStatus.times?.scheduledDeparture,
     liveStatus.originTimeZone ?? origin?.timezone ?? origin?.timeZone,
     `${origin?.iata ?? 'Origin'} local`,
+    liveStatus.scheduledDepartureUtc ?? liveStatus.times?.scheduledDepartureUtc,
   )
   const arrivalTime = formatAirportLocalTime(
     liveStatus.scheduledArrivalLocal ?? liveStatus.times?.scheduledArrivalLocal ?? liveStatus.scheduledArrival ?? liveStatus.times?.scheduledArrival,
     liveStatus.destinationTimeZone ?? destination?.timezone ?? destination?.timeZone,
     `${destination?.iata ?? 'Destination'} local`,
+    liveStatus.scheduledArrivalUtc ?? liveStatus.times?.scheduledArrivalUtc,
   )
   const estimatedDeparture = formatAirportLocalTime(
     liveStatus.estimatedDepartureLocal ?? liveStatus.times?.estimatedDepartureLocal ?? liveStatus.estimatedDeparture ?? liveStatus.times?.estimatedDeparture,
     liveStatus.originTimeZone ?? origin?.timezone ?? origin?.timeZone,
     `${origin?.iata ?? 'Origin'} local`,
+    liveStatus.estimatedDepartureUtc ?? liveStatus.times?.estimatedDepartureUtc,
   )
   const estimatedArrival = formatAirportLocalTime(
     liveStatus.estimatedArrivalLocal ?? liveStatus.times?.estimatedArrivalLocal ?? liveStatus.estimatedArrival ?? liveStatus.times?.estimatedArrival,
     liveStatus.destinationTimeZone ?? destination?.timezone ?? destination?.timeZone,
     `${destination?.iata ?? 'Destination'} local`,
+    liveStatus.estimatedArrivalUtc ?? liveStatus.times?.estimatedArrivalUtc,
   )
   const warnings = liveStatusWarnings(liveStatus)
   return (
@@ -594,6 +633,7 @@ function Dashboard({
   flights,
   airportDatasetLabel,
   appMetadata,
+  cloudRestorePrompt,
   onAddDemo,
   onQuickAdd,
   onOpenFlight,
@@ -602,13 +642,19 @@ function Dashboard({
   flights: FlightLogEntry[]
   airportDatasetLabel: string
   appMetadata: AppMetadata[]
+  cloudRestorePrompt?: {
+    latestLabel: string
+    onRestoreLatest: () => Promise<void>
+    onChooseBackup: () => void
+    onStartFresh: () => Promise<void>
+  }
   onAddDemo: () => Promise<void>
   onQuickAdd: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
   onRefresh: (flight: FlightLogEntry) => Promise<void>
 }) {
   const stats = aggregateStats(flights)
-  const warning = backupWarning(flights, appMetadata)
+  const warning = backupAgeWarning(flights, appMetadata)
   const upcoming = listUpcomingFlights(flights).slice(0, 6)
   return (
     <main className="page">
@@ -621,6 +667,19 @@ function Dashboard({
         </div>
         <div className="route-stamp" aria-hidden="true"><span>{stats.mostRecentFlight?.origin ?? 'SFO'}</span><ArrowRight /><span>{stats.mostRecentFlight?.destination ?? 'SIN'}</span></div>
       </section>
+      {cloudRestorePrompt && (
+        <section className="panel cloud-panel">
+          <div className="section-heading compact-heading">
+            <div><p className="eyebrow">Cloud backup</p><h2>Restore from cloud?</h2></div>
+          </div>
+          <p className="muted">You are signed in and this browser has no local flights. Latest cloud backup: {cloudRestorePrompt.latestLabel}.</p>
+          <div className="actions">
+            <button type="button" onClick={() => void cloudRestorePrompt.onRestoreLatest()}><Cloud aria-hidden="true" /> Restore latest</button>
+            <button type="button" className="secondary" onClick={cloudRestorePrompt.onChooseBackup}>Choose another backup</button>
+            <button type="button" className="ghost" onClick={() => void cloudRestorePrompt.onStartFresh()}>Start fresh</button>
+          </div>
+        </section>
+      )}
       {flights.length === 0 ? (
         <section className="empty-state"><Plane aria-hidden="true" /><h2>No flights logged yet</h2><p>Start with a live lookup or load demo flights to explore the app.</p><div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div></section>
       ) : (
@@ -1088,12 +1147,247 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   )
 }
 
+function AccountPage({
+  configured,
+  authLoading,
+  session,
+  authMessage,
+  appMetadata,
+  cloudBackups,
+  showRestorePrompt,
+  latestCloudBackup,
+  onGoogleSignIn,
+  onEmailSignIn,
+  onSignOut,
+  onNavigateBackup,
+  onRestoreLatest,
+  onDismissRestorePrompt,
+  onSetCloudReminder,
+  onDeleteAllCloudBackups,
+}: {
+  configured: boolean
+  authLoading: boolean
+  session: Session | null
+  authMessage: string
+  appMetadata: AppMetadata[]
+  cloudBackups: CloudBackupSummary[]
+  showRestorePrompt: boolean
+  latestCloudBackup?: CloudBackupSummary
+  onGoogleSignIn: () => Promise<void>
+  onEmailSignIn: (email: string) => Promise<void>
+  onSignOut: () => Promise<void>
+  onNavigateBackup: () => void
+  onRestoreLatest: () => Promise<void>
+  onDismissRestorePrompt: () => Promise<void>
+  onSetCloudReminder: (enabled: boolean) => Promise<void>
+  onDeleteAllCloudBackups: () => Promise<void>
+}) {
+  const [email, setEmail] = useState('')
+  const reminderEnabled = appMetadataValue(appMetadata, 'cloudBackupReminderEnabled') !== 'false'
+  const provider = session?.user.app_metadata?.provider
+
+  async function submitEmail(event: FormEvent) {
+    event.preventDefault()
+    await onEmailSignIn(email)
+  }
+
+  return (
+    <main className="page account-page">
+      <div className="section-heading">
+        <div><p className="eyebrow">Account</p><h2>Local-first cloud backup</h2></div>
+        <button type="button" className="ghost" onClick={onNavigateBackup}>Backup Center</button>
+      </div>
+      <section className="panel">
+        <div className="flight-main">
+          <div>
+            <p className="eyebrow">Data ownership</p>
+            <h3>FlightLog works without signing in.</h3>
+          </div>
+          <Shield aria-hidden="true" />
+        </div>
+        <p className="muted">Without sign-in, your flights stay in this browser&apos;s IndexedDB. With cloud backup enabled, FlightLog uploads plain JSON backup snapshots to your Supabase project and protects rows with Supabase Auth and RLS. Signing out does not delete local data, and cloud backups remain until you delete them.</p>
+      </section>
+      {!configured ? (
+        <section className="panel">
+          <h3>Cloud backup is not configured</h3>
+          <p className="notice warning">Local backups still work. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, run the SQL migration, and configure Supabase redirect URLs to enable cloud backup.</p>
+        </section>
+      ) : authLoading ? (
+        <section className="panel"><p className="empty-inline">Loading Supabase session...</p></section>
+      ) : !session ? (
+        <section className="two-columns">
+          <article className="panel">
+            <h3>Sign in to enable cloud backup</h3>
+            <p className="muted">Google OAuth and email magic link are supported for v1.6. Apple login is reserved for a future release.</p>
+            <div className="actions"><button type="button" onClick={() => void onGoogleSignIn()}><LogIn aria-hidden="true" /> Continue with Google</button></div>
+          </article>
+          <article className="panel">
+            <h3>Email magic link</h3>
+            <form onSubmit={submitEmail}>
+              <div className="form-grid compact"><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required /></label></div>
+              <div className="actions"><button type="submit"><Mail aria-hidden="true" /> Send magic link</button></div>
+            </form>
+          </article>
+        </section>
+      ) : (
+        <>
+          <section className="panel">
+            <div className="flight-main">
+              <div><p className="eyebrow">Signed in</p><h3>{session.user.email ?? 'Supabase user'}</h3></div>
+              <span className="status scheduled">{typeof provider === 'string' ? provider : 'auth'}</span>
+            </div>
+            <dl className="meta-grid">
+              <div><dt>Cloud backups</dt><dd>{cloudBackups.length}</dd></div>
+              <div><dt>Latest backup</dt><dd>{latestCloudBackup ? formatDateTime(latestCloudBackup.createdAt) : 'None'}</dd></div>
+              <div><dt>Reminder</dt><dd>{reminderEnabled ? 'On' : 'Off'}</dd></div>
+            </dl>
+            <label className="checkbox-row"><input type="checkbox" checked={reminderEnabled} onChange={(event) => void onSetCloudReminder(event.target.checked)} /> Remind me to back up after local changes</label>
+            <div className="actions">
+              <button type="button" onClick={onNavigateBackup}><Cloud aria-hidden="true" /> Manage cloud backups</button>
+              <button type="button" className="secondary" onClick={() => void onSignOut()}><LogOut aria-hidden="true" /> Sign out</button>
+              <button type="button" className="ghost danger" disabled={cloudBackups.length === 0} onClick={() => void onDeleteAllCloudBackups()}>Delete all cloud backups</button>
+            </div>
+          </section>
+          {showRestorePrompt && latestCloudBackup && (
+            <section className="panel cloud-panel">
+              <div className="section-heading compact-heading"><div><p className="eyebrow">New device</p><h3>Restore from cloud backup?</h3></div></div>
+              <p className="muted">This browser has no local flights. Latest backup: {latestCloudBackup.label || 'Cloud backup'} from {formatDateTime(latestCloudBackup.createdAt)}.</p>
+              <div className="actions">
+                <button type="button" onClick={() => void onRestoreLatest()}><Cloud aria-hidden="true" /> Restore latest</button>
+                <button type="button" className="secondary" onClick={onNavigateBackup}>Choose another backup</button>
+                <button type="button" className="ghost" onClick={() => void onDismissRestorePrompt()}>Start fresh</button>
+              </div>
+            </section>
+          )}
+        </>
+      )}
+      {authMessage && <p className="notice">{authMessage}</p>}
+    </main>
+  )
+}
+
+interface CloudBackupControls {
+  configured: boolean
+  signedIn: boolean
+  userEmail?: string
+  backups: CloudBackupSummary[]
+  busy: boolean
+  message: string
+  currentChecksum?: string
+  preview?: { snapshot: CloudBackupSnapshot; preview: BackupImportPreview }
+  onNavigateAccount: () => void
+  onUpload: (label: string) => Promise<void>
+  onRefresh: () => Promise<void>
+  onPreview: (id: string) => Promise<void>
+  onRestore: (id: string, mode: 'merge' | 'replace') => Promise<void>
+  onDownload: (id: string) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+  onDeleteAll: () => Promise<void>
+  onKeepLatest: () => Promise<void>
+  onClearPreview: () => void
+}
+
+function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls; appMetadata: AppMetadata[] }) {
+  const [label, setLabel] = useState('')
+  const lastCloudBackupAt = appMetadataValue(appMetadata, 'lastCloudBackupAt')
+  const reminderEnabled = appMetadataValue(appMetadata, 'cloudBackupReminderEnabled') !== 'false'
+  const localChanged = reminderEnabled && hasLocalDataChangedSinceCloudBackup(cloud.currentChecksum, appMetadataValue(appMetadata, 'lastCloudBackupChecksum'))
+
+  async function upload() {
+    await cloud.onUpload(label)
+    setLabel('')
+  }
+
+  return (
+    <section className="panel cloud-panel">
+      <div className="section-heading compact-heading">
+        <div><p className="eyebrow">Cloud Backup</p><h3>Supabase snapshots</h3></div>
+        <button type="button" className="ghost" onClick={cloud.onNavigateAccount}>Account</button>
+      </div>
+      {!cloud.configured ? (
+        <p className="notice warning">Cloud backup is not configured. Local backups still work.</p>
+      ) : !cloud.signedIn ? (
+        <div>
+          <p className="muted">Sign in to upload plain JSON backup snapshots protected by Supabase Auth and RLS.</p>
+          <div className="actions"><button type="button" onClick={cloud.onNavigateAccount}><LogIn aria-hidden="true" /> Sign in</button></div>
+        </div>
+      ) : (
+        <>
+          <dl className="meta-grid">
+            <div><dt>Signed in</dt><dd>{cloud.userEmail ?? 'Supabase user'}</dd></div>
+            <div><dt>Cloud backups</dt><dd>{cloud.backups.length}</dd></div>
+            <div><dt>Last cloud backup</dt><dd>{lastCloudBackupAt ? formatDateTime(lastCloudBackupAt) : 'Never'}</dd></div>
+            <div><dt>Current checksum</dt><dd>{shortChecksum(cloud.currentChecksum)}</dd></div>
+          </dl>
+          {localChanged && <p className="notice warning">Local data has changed since your last cloud backup.</p>}
+          <div className="form-grid compact">
+            <label>Backup label<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Before trip to Tokyo" /></label>
+          </div>
+          <div className="actions">
+            <button type="button" disabled={cloud.busy} onClick={() => void upload()}><Cloud aria-hidden="true" /> Upload backup</button>
+            <button type="button" className="secondary" disabled={cloud.busy} onClick={() => void cloud.onRefresh()}><RefreshCw aria-hidden="true" /> Refresh list</button>
+            <button type="button" className="secondary" disabled={cloud.busy || cloud.backups.length <= 10} onClick={() => void cloud.onKeepLatest()}>Keep latest 10</button>
+            <button type="button" className="ghost danger" disabled={cloud.busy || cloud.backups.length === 0} onClick={() => void cloud.onDeleteAll()}>Delete all cloud backups</button>
+          </div>
+          {cloud.message && <p className="notice">{cloud.message}</p>}
+          {cloud.preview && (
+            <article className="cloud-preview">
+              <h3>Cloud backup preview</h3>
+              <dl className="meta-grid">
+                <div><dt>Label</dt><dd>{cloud.preview.snapshot.label ?? 'Unlabeled backup'}</dd></div>
+                <div><dt>Flights to add</dt><dd>{cloud.preview.preview.flightsToAdd}</dd></div>
+                <div><dt>Existing flights</dt><dd>{cloud.preview.preview.existingFlights}</dd></div>
+                <div><dt>Likely duplicates</dt><dd>{cloud.preview.preview.duplicateFlights}</dd></div>
+                <div><dt>Checksum</dt><dd>{shortChecksum(cloud.preview.snapshot.checksum)}</dd></div>
+                <div><dt>Created</dt><dd>{formatDateTime(cloud.preview.snapshot.createdAt)}</dd></div>
+              </dl>
+              {cloud.preview.preview.warnings.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
+              <div className="actions">
+                <button type="button" onClick={() => void cloud.onRestore(cloud.preview!.snapshot.id, 'merge')}>Restore / merge</button>
+                <button type="button" className="secondary" onClick={() => void cloud.onRestore(cloud.preview!.snapshot.id, 'replace')}>Restore / replace</button>
+                <button type="button" className="ghost" onClick={cloud.onClearPreview}>Close preview</button>
+              </div>
+            </article>
+          )}
+          <div className="stack compact-stack">
+            {cloud.backups.map((backup) => (
+              <article className="flight-card compact-card" key={backup.id}>
+                <div className="flight-main">
+                  <div><p className="eyebrow">{formatDateTime(backup.createdAt)}</p><h3>{backup.label || 'Cloud backup'}</h3></div>
+                  <span className="status scheduled">schema v{backup.schemaVersion}</span>
+                </div>
+                <dl className="meta-grid">
+                  <div><dt>Flights</dt><dd>{backup.flightCount}</dd></div>
+                  <div><dt>Trip metadata</dt><dd>{backup.tripMetadataCount}</dd></div>
+                  <div><dt>Provider airports</dt><dd>{backup.providerAirportCount}</dd></div>
+                  <div><dt>Checksum</dt><dd>{shortChecksum(backup.checksum)}</dd></div>
+                  <div><dt>Device</dt><dd>{backup.deviceId ?? 'Not set'}</dd></div>
+                  <div><dt>Exported</dt><dd>{backup.exportedAt ? formatDateTime(backup.exportedAt) : 'Not set'}</dd></div>
+                </dl>
+                <div className="actions">
+                  <button type="button" onClick={() => void cloud.onPreview(backup.id)}>Preview</button>
+                  <button type="button" className="secondary" onClick={() => void cloud.onRestore(backup.id, 'merge')}>Merge restore</button>
+                  <button type="button" className="secondary" onClick={() => void cloud.onRestore(backup.id, 'replace')}>Replace restore</button>
+                  <button type="button" className="ghost" onClick={() => void cloud.onDownload(backup.id)}><Download aria-hidden="true" /> Download JSON</button>
+                  <button type="button" className="ghost danger" onClick={() => void cloud.onDelete(backup.id)}>Delete</button>
+                </div>
+              </article>
+            ))}
+            {cloud.backups.length === 0 && <p className="empty-inline">No cloud backups yet.</p>}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 function BackupCenterPage({
   flights,
   trips,
   tripMetadata,
   providerAirports,
   appMetadata,
+  cloud,
   onImported,
   onExportBackup,
   onMergeBackup,
@@ -1105,6 +1399,7 @@ function BackupCenterPage({
   tripMetadata: TripMetadata[]
   providerAirports: ProviderAirportSnapshot[]
   appMetadata: AppMetadata[]
+  cloud: CloudBackupControls
   onImported: () => Promise<void>
   onExportBackup: () => Promise<void>
   onMergeBackup: (preview: BackupImportPreview) => Promise<void>
@@ -1160,6 +1455,7 @@ function BackupCenterPage({
         <StatCard icon={Download} label="Last backup" value={lastBackupAt ? formatDateTime(lastBackupAt) : 'Never'} />
         <StatCard icon={Import} label="Last import" value={lastImportAt ? formatDateTime(lastImportAt) : 'Never'} />
       </section>
+      <CloudBackupSection cloud={cloud} appMetadata={appMetadata} />
       <section className="two-columns">
         <article className="panel">
           <h3>Full backup</h3>
@@ -1220,9 +1516,25 @@ function App() {
   const [providerAirportState, setProviderAirportState] = useState<ProviderAirportSnapshot[]>([])
   const [tripMetadata, setTripMetadataState] = useState<TripMetadata[]>([])
   const [appMetadata, setAppMetadataState] = useState<AppMetadata[]>([])
+  const [authSession, setAuthSession] = useState<Session | null>(null)
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase))
+  const [authMessage, setAuthMessage] = useState('')
+  const [cloudBackups, setCloudBackups] = useState<CloudBackupSummary[]>([])
+  const [cloudBusy, setCloudBusy] = useState(false)
+  const [cloudMessage, setCloudMessage] = useState('')
+  const [cloudPreview, setCloudPreview] = useState<{ snapshot: CloudBackupSnapshot; preview: BackupImportPreview } | undefined>()
+  const [currentBackupChecksum, setCurrentBackupChecksum] = useState<string | undefined>()
   const trips = useMemo(() => groupFlightsIntoTrips(flights, tripMetadata), [flights, tripMetadata])
   const currentFlight = route.flightId ? flights.find((flight) => flight.id === route.flightId) : undefined
   const currentTrip = route.tripId ? trips.find((trip) => trip.id === route.tripId) : undefined
+  const authUserId = authSession?.user.id
+  const latestCloudBackup = cloudBackups[0]
+  const showCloudRestorePrompt = shouldShowFirstRunCloudRestorePrompt({
+    localFlightCount: flights.length,
+    signedIn: Boolean(authSession),
+    cloudBackupCount: cloudBackups.length,
+    dismissedAt: appMetadataValue(appMetadata, 'cloudRestorePromptDismissedAt'),
+  })
 
   async function loadFlights() {
     setFlights(await getFlights())
@@ -1245,6 +1557,32 @@ function App() {
 
   async function reloadLocalData() {
     await Promise.all([loadFlights(), refreshProviderAirports(), loadTripMetadata(), loadAppMetadata()])
+  }
+
+  async function buildCurrentFullBackup(exportedAt = new Date().toISOString()) {
+    return createFullBackup({
+      flights: await getFlights(),
+      tripMetadata: await getTripMetadata(),
+      providerAirports: await getProviderAirports(),
+      appMetadata: await getAllAppMetadata(),
+      exportedAt,
+    })
+  }
+
+  async function loadCloudBackups(session: Session | null = authSession) {
+    if (!supabase || !session) {
+      setCloudBackups([])
+      return
+    }
+    setCloudBusy(true)
+    try {
+      setCloudBackups(await listCloudBackups(supabase))
+      setCloudMessage('')
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to load cloud backups.'))
+    } finally {
+      setCloudBusy(false)
+    }
   }
 
   async function cacheProviderAirports(liveStatus: FlightLiveStatus) {
@@ -1287,6 +1625,83 @@ function App() {
       window.removeEventListener('hashchange', onHashChange)
     }
   }, [])
+
+  useEffect(() => {
+    if (!supabase) return
+    let mounted = true
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return
+      if (error) setAuthMessage(error.message)
+      setAuthSession(data.session)
+      setAuthLoading(false)
+      if (data.session && window.sessionStorage.getItem('flightlog-auth-return')) {
+        window.sessionStorage.removeItem('flightlog-auth-return')
+        navigate('account')
+      }
+    })
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return
+      setAuthSession(session)
+      setAuthLoading(false)
+      if (event === 'SIGNED_IN') {
+        setAuthMessage('Signed in. Local data was not changed.')
+        if (window.sessionStorage.getItem('flightlog-auth-return')) {
+          window.sessionStorage.removeItem('flightlog-auth-return')
+          navigate('account')
+        }
+      }
+      if (event === 'SIGNED_OUT') {
+        setAuthMessage('Signed out. Local data was not deleted.')
+        setCloudBackups([])
+      }
+    })
+    return () => {
+      mounted = false
+      data.subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!supabase || !authUserId) return
+    let cancelled = false
+    void Promise.resolve().then(async () => {
+      setCloudBusy(true)
+      try {
+        const backups = await listCloudBackups(supabase)
+        if (cancelled) return
+        setCloudBackups(backups)
+        setCloudMessage('')
+      } catch (error) {
+        if (!cancelled) setCloudMessage(cloudBackupErrorMessage(error, 'Unable to load cloud backups.'))
+      } finally {
+        if (!cancelled) setCloudBusy(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [authUserId])
+
+  useEffect(() => {
+    let cancelled = false
+    const backup = createFullBackup({
+      flights,
+      tripMetadata,
+      providerAirports: providerAirportState,
+      appMetadata,
+      exportedAt: new Date().toISOString(),
+    })
+    void computeBackupChecksum(backup)
+      .then((checksum) => {
+        if (!cancelled) setCurrentBackupChecksum(checksum)
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentBackupChecksum(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [flights, tripMetadata, providerAirportState, appMetadata])
 
   function navigate(next: Page) {
     window.location.hash = `/${next}`
@@ -1372,7 +1787,7 @@ function App() {
     await saveProviderAirports(preview.backup.providerAirports)
     await bulkSaveTripMetadata(preview.backup.tripMetadata)
     await bulkSetAppMetadata([
-      ...preview.backup.appMetadata.filter((item) => item.key !== 'lastBackupAt' && item.key !== 'lastImportAt'),
+      ...importableAppMetadata(preview.backup.appMetadata),
       { key: 'lastImportAt', value: now, updatedAt: now },
     ])
     await reloadLocalData()
@@ -1385,7 +1800,7 @@ function App() {
     await replaceProviderAirports(preview.backup.providerAirports)
     await replaceTripMetadata(preview.backup.tripMetadata)
     await replaceAppMetadata([
-      ...preview.backup.appMetadata.filter((item) => item.key !== 'lastImportAt'),
+      ...importableAppMetadata(preview.backup.appMetadata),
       { key: 'lastImportAt', value: now, updatedAt: now },
     ])
     await reloadLocalData()
@@ -1399,6 +1814,194 @@ function App() {
     setToast('Airport snapshots re-resolved where local data was available.')
   }
 
+  async function handleGoogleSignIn() {
+    if (!supabase) {
+      setAuthMessage('Cloud backup is not configured. Local backups still work.')
+      return
+    }
+    setAuthMessage('')
+    window.sessionStorage.setItem('flightlog-auth-return', '#/account')
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: authRedirectUrl() },
+    })
+    if (error) setAuthMessage(error.message)
+  }
+
+  async function handleEmailSignIn(email: string) {
+    if (!supabase) {
+      setAuthMessage('Cloud backup is not configured. Local backups still work.')
+      return
+    }
+    setAuthMessage('')
+    window.sessionStorage.setItem('flightlog-auth-return', '#/account')
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: authRedirectUrl() },
+    })
+    setAuthMessage(error ? error.message : 'Check your email for a FlightLog magic link.')
+  }
+
+  async function handleSignOut() {
+    if (!supabase) return
+    const { error } = await supabase.auth.signOut()
+    setAuthMessage(error ? error.message : 'Signed out. Local data was not deleted.')
+  }
+
+  async function handleCloudUpload(label: string) {
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const now = new Date().toISOString()
+      const backup = await buildCurrentFullBackup(now)
+      const uploaded = await createCloudBackupSnapshot({
+        client: supabase,
+        userId: authSession?.user.id,
+        backup,
+        label,
+        deviceId: localDeviceId(),
+        appVersion: 'v1.6',
+      })
+      await bulkSetAppMetadata([
+        { key: 'lastCloudBackupAt', value: uploaded.createdAt, updatedAt: now },
+        { key: 'lastCloudBackupChecksum', value: uploaded.checksum ?? await computeBackupChecksum(backup), updatedAt: now },
+        { key: 'lastCloudBackupId', value: uploaded.id, updatedAt: now },
+      ])
+      await Promise.all([loadAppMetadata(), loadCloudBackups()])
+      setCloudMessage('Cloud backup uploaded.')
+      setToast('Cloud backup uploaded.')
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to upload cloud backup.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudPreview(id: string) {
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const snapshot = await getCloudBackup(supabase, id)
+      setCloudPreview({ snapshot, preview: previewBackupImport(snapshot.backup, flights) })
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to preview cloud backup.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudRestore(id: string, mode: 'merge' | 'replace') {
+    const replacing = mode === 'replace'
+    if (replacing && flights.length > 0 && !window.confirm('Replace all local FlightLog data with this cloud backup?')) return
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const restore = await restoreCloudBackup({ client: supabase, id, existingFlights: flights, mode })
+      if (restore.mode === 'merge') await handleMergeBackup(restore.preview)
+      else await handleReplaceBackup(restore.preview)
+      const now = new Date().toISOString()
+      await setAppMetadata('lastCloudRestoreAt', now)
+      await reloadLocalData()
+      setCloudPreview(undefined)
+      setCloudMessage(restore.mode === 'merge' ? 'Cloud backup merged into local data.' : 'Local data replaced from cloud backup.')
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to restore cloud backup.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudDownload(id: string) {
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const snapshot = await getCloudBackup(supabase, id)
+      downloadFile(`flightlog-cloud-backup-${snapshot.createdAt.slice(0, 10)}.json`, JSON.stringify(snapshot.backup, null, 2), 'application/json')
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to download cloud backup.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudDelete(id: string) {
+    if (!window.confirm('Delete this cloud backup? Local data will not be deleted.')) return
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      await deleteCloudBackup(supabase, id)
+      await loadCloudBackups()
+      setCloudPreview((preview) => preview?.snapshot.id === id ? undefined : preview)
+      setCloudMessage('Cloud backup deleted.')
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to delete cloud backup.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudDeleteAll() {
+    if (!window.confirm('Delete all cloud backups for this signed-in account? Local data will not be deleted.')) return
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const deleted = await deleteAllCloudBackups(supabase)
+      await loadCloudBackups()
+      setCloudPreview(undefined)
+      setCloudMessage(`Deleted ${deleted} cloud backup${deleted === 1 ? '' : 's'}.`)
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to delete cloud backups.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleCloudKeepLatest() {
+    if (!window.confirm('Delete older cloud backups and keep the latest 10?')) return
+    setCloudBusy(true)
+    setCloudMessage('')
+    try {
+      const deleted = await deleteOlderCloudBackups(supabase, 10)
+      await loadCloudBackups()
+      setCloudMessage(`Deleted ${deleted} older cloud backup${deleted === 1 ? '' : 's'}.`)
+    } catch (error) {
+      setCloudMessage(cloudBackupErrorMessage(error, 'Unable to delete older cloud backups.'))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleDismissCloudRestorePrompt() {
+    await setAppMetadata('cloudRestorePromptDismissedAt', new Date().toISOString())
+    await loadAppMetadata()
+  }
+
+  async function handleSetCloudReminder(enabled: boolean) {
+    await setAppMetadata('cloudBackupReminderEnabled', enabled ? 'true' : 'false')
+    await loadAppMetadata()
+  }
+
+  const cloudControls: CloudBackupControls = {
+    configured: isSupabaseConfigured,
+    signedIn: Boolean(authSession),
+    userEmail: authSession?.user.email ?? undefined,
+    backups: cloudBackups,
+    busy: cloudBusy,
+    message: cloudMessage,
+    currentChecksum: currentBackupChecksum,
+    preview: cloudPreview,
+    onNavigateAccount: () => navigate('account'),
+    onUpload: handleCloudUpload,
+    onRefresh: () => loadCloudBackups(),
+    onPreview: handleCloudPreview,
+    onRestore: handleCloudRestore,
+    onDownload: handleCloudDownload,
+    onDelete: handleCloudDelete,
+    onDeleteAll: handleCloudDeleteAll,
+    onKeepLatest: handleCloudKeepLatest,
+    onClearPreview: () => setCloudPreview(undefined),
+  }
+
   return (
     <div className="app-shell">
       <header>
@@ -1408,14 +2011,15 @@ function App() {
       </header>
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       {showForm && <FlightForm editing={editing} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt)}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
-      {route.page === 'backup' && <BackupCenterPage flights={flights} trips={trips} tripMetadata={tripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} trips={trips} tripMetadata={tripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} />}
+      {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       <nav className="bottom-nav" aria-label="Mobile navigation">
         <button type="button" className={navPage(route) === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>Home</button>
         <button type="button" className={navPage(route) === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}>Flights</button>

@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { DateTime, Settings } from 'luxon'
+import { readFileSync } from 'node:fs'
 import type { FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
 import { loadGeneratedAirports, lookupAirport, normalizeIata, searchAirports, setProviderAirports } from '../utils/airports'
 import { airlineDisplayName, airlineSearchUrl, lookupAirline } from '../utils/airlines'
-import { createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport } from '../utils/backup'
+import { backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt } from '../utils/backup'
 import { buildCalendarEventDetails, calendarDescription } from '../utils/calendarLinks'
 import { parseFlightsCsv, flightsToCsv } from '../utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from '../utils/dataHealth'
 import { durationMinutes } from '../utils/dates'
 import { haversineDistanceKm } from '../utils/distance'
 import { externalFlightLinks } from '../utils/externalFlightLinks'
-import { formatArrivalLocalTime, formatDepartureLocalTime, getCalendarStartEnd } from '../utils/flightTime'
+import { formatAirportLocalTime, formatArrivalLocalTime, formatDepartureLocalTime, getCalendarStartEnd } from '../utils/flightTime'
 import { computeFlight } from '../utils/flights'
 import { buildFlightStatusUrl, mockLiveStatus, normalizeLiveStatus, readFlightStatusError, refreshStatusLabel } from '../utils/liveStatus'
 import { aggregateStats } from '../utils/stats'
@@ -91,11 +92,23 @@ describe('flight utilities', () => {
 
   it('loads and searches generated airports with exact IATA first', async () => {
     await loadGeneratedAirports(async () => new Response(JSON.stringify([
-      { iata: 'PVA', name: 'Small Prefix Airport', city: 'Prefix', country: 'Testland' },
-      { iata: 'PVG', icao: 'ZSPD', name: 'Shanghai Pudong International Airport', city: 'Shanghai', country: 'China', lat: 31.1434, lon: 121.8052 },
+      { iata: 'PVA', name: 'Small Prefix Airport', city: 'Prefix', country: 'Testland', timezone: 'Pacific/Tahiti' },
+      { iata: 'PVG', icao: 'ZSPD', name: 'Shanghai Pudong International Airport', city: 'Shanghai', country: 'China', lat: 31.1434, lon: 121.8052, timezone: 'Asia/Shanghai' },
     ])))
     expect(lookupAirport('PVG')?.name).toBe('Shanghai Pudong International Airport')
+    expect(lookupAirport('PVG')?.timezone).toBe('Asia/Shanghai')
     expect(searchAirports('PVG')[0]?.iata).toBe('PVG')
+  })
+
+  it('keeps checked-in generated airport IANA timezones for common hubs', () => {
+    const generatedAirports = JSON.parse(readFileSync('public/data/airports.generated.json', 'utf8')) as Array<{ iata: string; timezone?: string; timeZone?: string }>
+    const byCode = new Map(generatedAirports.map((airport) => [airport.iata, airport]))
+    expect(byCode.get('SIN')?.timezone).toBe('Asia/Singapore')
+    expect(byCode.get('LAX')?.timezone).toBe('America/Los_Angeles')
+    expect(byCode.get('SFO')?.timezone).toBe('America/Los_Angeles')
+    expect(byCode.get('JFK')?.timezone).toBe('America/New_York')
+    expect(byCode.get('LHR')?.timezone).toBe('Europe/London')
+    expect(byCode.get('LHR')?.timeZone).toBe('Europe/London')
   })
 
   it('computes provider-derived airport fallback routes', () => {
@@ -173,6 +186,42 @@ describe('flight utilities', () => {
     expect(departure.warning).toBe('Timezone unavailable; shown as provider local time.')
     expect(departure.isReliable).toBe(false)
     expect(getCalendarStartEnd(entry).available).toBe(false)
+  })
+
+  it('does not warn for offset-only provider times because absolute time is reliable', () => {
+    const entry = flight({
+      origin: 'AAA',
+      destination: 'BBB',
+      scheduledDepartureLocal: '2026-06-02T22:30+08:00',
+      scheduledArrivalLocal: '2026-06-03T01:00-07:00',
+    })
+    const departure = formatDepartureLocalTime(entry, { kind: 'scheduled' })
+    expect(departure.warning).toBeUndefined()
+    expect(departure.isReliable).toBe(true)
+    expect(departure.instantIso).toBe('2026-06-02T14:30:00.000Z')
+    expect(getCalendarStartEnd(entry).available).toBe(true)
+  })
+
+  it('does not warn when UTC is available even if IANA timezone is missing', () => {
+    const entry = flight({
+      origin: 'AAA',
+      destination: 'BBB',
+      scheduledDepartureLocal: '2026-06-02T22:30',
+      scheduledDepartureUtc: '2026-06-02T14:30:00Z',
+      scheduledArrivalLocal: '2026-06-03T01:00',
+      scheduledArrivalUtc: '2026-06-03T08:00:00Z',
+    })
+    const departure = formatDepartureLocalTime(entry, { kind: 'scheduled' })
+    expect(departure.warning).toBeUndefined()
+    expect(departure.isReliable).toBe(true)
+    expect(getCalendarStartEnd(entry).available).toBe(true)
+  })
+
+  it('uses UTC metadata in standalone airport local formatting when timezone is missing', () => {
+    const formatted = formatAirportLocalTime('2026-06-02T22:30', undefined, 'AAA local', '2026-06-02T14:30:00Z')
+    expect(formatted.warning).toBeUndefined()
+    expect(formatted.isReliable).toBe(true)
+    expect(formatted.instantIso).toBe('2026-06-02T14:30:00.000Z')
   })
 
   it('generates stable UTC calendar links and ICS with external links', () => {
@@ -267,6 +316,20 @@ describe('flight utilities', () => {
     expect(preview.duplicateFlights).toBe(1)
     expect(preview.flightsToAdd).toBe(1)
     expect(preview.mergeFlights[0].id).toBe('new')
+  })
+
+  it('uses local or cloud backup timestamps for backup warnings', () => {
+    const now = DateTime.fromISO('2026-06-03T12:00:00Z', { zone: 'utc' })
+    expect(backupAgeWarning([flight({ id: 'a' })], [], now)).toBe('You have saved flights but no local or cloud backup yet.')
+    expect(backupAgeWarning([flight({ id: 'a' })], [{ key: 'lastCloudBackupAt', value: '2026-06-02T12:00:00.000Z', updatedAt: '2026-06-02T12:00:00.000Z' }], now)).toBeUndefined()
+    expect(backupAgeWarning([flight({ id: 'a' })], [{ key: 'lastBackupAt', value: '2026-04-01T12:00:00.000Z', updatedAt: '2026-04-01T12:00:00.000Z' }], now)).toBe('Your last local or cloud backup is older than 30 days.')
+  })
+
+  it('decides when to show first-run cloud restore prompt', () => {
+    expect(shouldShowFirstRunCloudRestorePrompt({ localFlightCount: 0, signedIn: true, cloudBackupCount: 1 })).toBe(true)
+    expect(shouldShowFirstRunCloudRestorePrompt({ localFlightCount: 1, signedIn: true, cloudBackupCount: 1 })).toBe(false)
+    expect(shouldShowFirstRunCloudRestorePrompt({ localFlightCount: 0, signedIn: false, cloudBackupCount: 1 })).toBe(false)
+    expect(shouldShowFirstRunCloudRestorePrompt({ localFlightCount: 0, signedIn: true, cloudBackupCount: 1, dismissedAt: '2026-06-03T00:00:00.000Z' })).toBe(false)
   })
 
   it('reports data health and repairs safe airport snapshots', () => {

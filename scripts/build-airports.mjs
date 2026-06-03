@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import tzLookup from 'tz-lookup'
 
 const AIRPORTS_CSV = resolve('data/source/airports.csv')
 const COUNTRIES_CSV = resolve('data/source/countries.csv')
@@ -69,6 +70,15 @@ function cleanNumber(value) {
   return Number.isFinite(number) ? number : undefined
 }
 
+function coordinateTimeZone(lat, lon) {
+  if (typeof lat !== 'number' || typeof lon !== 'number') return undefined
+  try {
+    return tzLookup(lat, lon)
+  } catch {
+    return undefined
+  }
+}
+
 function hasCoordinates(airport) {
   return typeof airport.lat === 'number' && typeof airport.lon === 'number'
 }
@@ -103,6 +113,7 @@ for (const row of airportRows) {
   const lat = cleanNumber(row.latitude_deg)
   const lon = cleanNumber(row.longitude_deg)
   const countryCode = clean(row.iso_country)?.toUpperCase()
+  const timezone = clean(row.timezone) ?? coordinateTimeZone(lat, lon)
   const airport = {
     iata,
     icao: clean(row.ident)?.toUpperCase(),
@@ -113,7 +124,8 @@ for (const row of airportRows) {
     country: (countryCode ? countries.get(countryCode) : undefined) ?? countryCode ?? '',
     lat,
     lon,
-    timezone: clean(row.timezone),
+    timezone,
+    timeZone: timezone,
     type: clean(row.type),
     scheduledService: clean(row.scheduled_service)?.toLowerCase() === 'yes',
   }

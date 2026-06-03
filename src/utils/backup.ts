@@ -1,6 +1,7 @@
 import type { AppMetadata, FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
 import { getBestDepartureTime } from './flightTime'
 import { normalizeFlightNumber } from './liveStatus'
+import { DateTime } from 'luxon'
 
 export const FLIGHTLOG_BACKUP_SCHEMA_VERSION = 3
 
@@ -109,4 +110,34 @@ export function previewBackupImport(backup: FlightLogBackup, existingFlights: Fl
     warnings,
     mergeFlights,
   }
+}
+
+export function appMetadataValue(metadata: AppMetadata[], key: string): string | undefined {
+  return metadata.find((item) => item.key === key)?.value
+}
+
+export function latestBackupTimestamp(appMetadata: AppMetadata[]): string | undefined {
+  const values = [appMetadataValue(appMetadata, 'lastBackupAt'), appMetadataValue(appMetadata, 'lastCloudBackupAt')]
+    .map((value) => value ? DateTime.fromISO(value, { setZone: true }) : undefined)
+    .filter((value): value is DateTime => Boolean(value?.isValid))
+    .sort((a, b) => b.toMillis() - a.toMillis())
+  return values[0]?.toUTC().toISO() ?? undefined
+}
+
+export function backupAgeWarning(flights: FlightLogEntry[], appMetadata: AppMetadata[], now: DateTime = DateTime.utc()): string | undefined {
+  if (flights.length === 0) return undefined
+  const latest = latestBackupTimestamp(appMetadata)
+  if (!latest) return 'You have saved flights but no local or cloud backup yet.'
+  const latestBackup = DateTime.fromISO(latest, { setZone: true })
+  if (!latestBackup.isValid) return 'Your last backup timestamp could not be read.'
+  return now.diff(latestBackup.toUTC(), 'days').days > 30 ? 'Your last local or cloud backup is older than 30 days.' : undefined
+}
+
+export function shouldShowFirstRunCloudRestorePrompt(input: {
+  localFlightCount: number
+  signedIn: boolean
+  cloudBackupCount: number
+  dismissedAt?: string
+}): boolean {
+  return input.localFlightCount === 0 && input.signedIn && input.cloudBackupCount > 0 && !input.dismissedAt
 }

@@ -148,7 +148,6 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
           local,
           utc: utcDateTime.toUTC().toISO() ?? utc,
           instantIso: utcDateTime.toUTC().toISO() ?? utc,
-          warning: timezoneWarning,
           isReliable: true,
         }
       }
@@ -160,7 +159,6 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
         kind,
         utc: utcDateTime.toUTC().toISO() ?? utc,
         instantIso: utcDateTime.toUTC().toISO() ?? utc,
-        warning: timezoneWarning,
         isReliable: true,
       }
     }
@@ -198,7 +196,6 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
         local,
         utc: offsetDateTime.toUTC().toISO() ?? undefined,
         instantIso: offsetDateTime.toUTC().toISO() ?? undefined,
-        warning: timezoneWarning,
         isReliable: true,
       }
     }
@@ -230,14 +227,22 @@ export function getBestArrivalTime(flight: FlightLogEntry): FormattedAirportTime
   return bestTime(flight, 'arrival')
 }
 
-export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airportTimeZone: string | undefined, fallbackLabel = 'Airport local'): FormattedAirportTime {
+export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airportTimeZone: string | undefined, fallbackLabel = 'Airport local', utcTime?: string): FormattedAirportTime {
   const local = normalizeDateTimeInput(isoOrLocalTime)
+  const utc = normalizeDateTimeInput(utcTime)
+  const utcDateTime = utc ? DateTime.fromISO(utc, { setZone: true }) : undefined
   if (!local) {
+    if (utcDateTime?.isValid) {
+      const label = `${displayDateTime(utcDateTime.toUTC())} · UTC`
+      return { label, localLabel: label, utc: utcDateTime.toUTC().toISO() ?? utc, instantIso: utcDateTime.toUTC().toISO() ?? utc, isReliable: true }
+    }
     return { label: 'Not set', localLabel: 'Not set', warning: timezoneWarning, isReliable: false }
   }
   const validZone = isValidTimeZone(airportTimeZone) ? airportTimeZone : undefined
   if (validZone) {
-    const dateTime = hasExplicitOffset(local)
+    const dateTime = utcDateTime?.isValid
+      ? utcDateTime.toUTC().setZone(validZone)
+      : hasExplicitOffset(local)
       ? DateTime.fromISO(local, { setZone: true }).setZone(validZone)
       : DateTime.fromISO(local, { zone: validZone })
     if (dateTime.isValid) {
@@ -252,6 +257,20 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
       }
     }
   }
+  if (utcDateTime?.isValid) {
+    const localWithOffset = DateTime.fromISO(local, { setZone: true })
+    const label = localWithOffset.isValid && hasExplicitOffset(local)
+      ? `${displayDateTime(localWithOffset)} · provider local`
+      : `${displayRawLocal(local)} · provider local`
+    return {
+      label,
+      localLabel: label,
+      local,
+      utc: utcDateTime.toUTC().toISO() ?? utc,
+      instantIso: utcDateTime.toUTC().toISO() ?? utc,
+      isReliable: true,
+    }
+  }
   if (hasExplicitOffset(local)) {
     const dateTime = DateTime.fromISO(local, { setZone: true })
     if (dateTime.isValid) {
@@ -261,7 +280,6 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
         local,
         utc: dateTime.toUTC().toISO() ?? undefined,
         instantIso: dateTime.toUTC().toISO() ?? undefined,
-        warning: timezoneWarning,
         isReliable: true,
       }
     }
