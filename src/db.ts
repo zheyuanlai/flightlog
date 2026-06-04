@@ -108,6 +108,16 @@ export async function replaceProviderAirports(airports: ProviderAirportSnapshot[
   await saveProviderAirports(airports)
 }
 
+export async function bulkPutProviderAirportsRaw(airports: ProviderAirportSnapshot[]): Promise<void> {
+  const cleaned = airports
+    .map((airport) => {
+      const iata = typeof airport.iata === 'string' ? airport.iata.trim().toUpperCase() : ''
+      return /^[A-Z]{3}$/.test(iata) ? { ...airport, iata } : undefined
+    })
+    .filter((airport): airport is ProviderAirportSnapshot => Boolean(airport))
+  if (cleaned.length > 0) await db.providerAirports.bulkPut(cleaned)
+}
+
 function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>): TripMetadata {
   const now = new Date().toISOString()
   const type: TripType = metadata.type === 'work' || metadata.type === 'school' || metadata.type === 'other' ? metadata.type : 'personal'
@@ -133,6 +143,17 @@ export async function saveTripMetadata(metadata: Partial<TripMetadata> & Pick<Tr
 
 export async function bulkSaveTripMetadata(metadata: TripMetadata[]): Promise<void> {
   const cleaned = metadata.map((item) => cleanTripMetadata(item))
+  if (cleaned.length > 0) await db.tripMetadata.bulkPut(cleaned)
+}
+
+export async function bulkPutTripMetadataRaw(metadata: TripMetadata[]): Promise<void> {
+  const cleaned = metadata
+    .filter((item) => item.id && item.createdAt && item.updatedAt)
+    .map((item) => ({
+      ...item,
+      type: (item.type === 'work' || item.type === 'school' || item.type === 'other' ? item.type : 'personal') as TripType,
+      isFavorite: Boolean(item.isFavorite),
+    }))
   if (cleaned.length > 0) await db.tripMetadata.bulkPut(cleaned)
 }
 

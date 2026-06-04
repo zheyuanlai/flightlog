@@ -2,6 +2,12 @@ export type FlightPurpose = 'personal' | 'work' | 'school' | 'other'
 export type FlightSource = 'manual' | 'live-import' | 'mock-live' | 'aerodatabox'
 export type LookupDateRole = 'Departure' | 'Arrival'
 export type TripType = 'personal' | 'work' | 'school' | 'other'
+export type DistanceUnit = 'miles' | 'kilometers'
+export type TimeFormat = 'system' | '12h' | '24h'
+export type DateFormat = 'compact' | 'medium' | 'iso'
+export type ThemePreference = 'system' | 'light' | 'dark'
+export type LiveDataMode = 'real' | 'mock' | 'disabled'
+export type SyncEntityType = 'flight' | 'tripMetadata' | 'providerAirport' | 'appSettings'
 export type LiveStatus =
   | 'scheduled'
   | 'active'
@@ -144,6 +150,33 @@ export interface AppMetadata {
   key: string
   value: string
   updatedAt: string
+}
+
+export interface AppSettings {
+  distanceUnit: DistanceUnit
+  timeFormat: TimeFormat
+  dateFormat: DateFormat
+  theme: ThemePreference
+  defaultCabin: '' | 'Economy' | 'Premium Economy' | 'Business' | 'First'
+  defaultPurpose: '' | FlightPurpose
+  backupReminderEnabled: boolean
+  backupAgeThresholdDays: number
+  syncReminderEnabled: boolean
+  upcomingFlightRefreshReminderEnabled: boolean
+  liveDataMode: LiveDataMode
+}
+
+export interface SyncMetadata {
+  lastCloudBackupAt?: string
+  lastCloudRestoreAt?: string
+  lastCloudPushAt?: string
+  lastCloudPullAt?: string
+  lastCloudCompareAt?: string
+  lastLocalChangeAt?: string
+  localDeviceId: string
+  lastKnownCloudChecksum?: string
+  lastConflictResolutionAt?: string
+  lastConflictResolutionSummary?: string
 }
 
 export interface FlightLogEntry {

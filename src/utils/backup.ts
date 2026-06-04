@@ -124,13 +124,13 @@ export function latestBackupTimestamp(appMetadata: AppMetadata[]): string | unde
   return values[0]?.toUTC().toISO() ?? undefined
 }
 
-export function backupAgeWarning(flights: FlightLogEntry[], appMetadata: AppMetadata[], now: DateTime = DateTime.utc()): string | undefined {
+export function backupAgeWarning(flights: FlightLogEntry[], appMetadata: AppMetadata[], now: DateTime = DateTime.utc(), thresholdDays = 30): string | undefined {
   if (flights.length === 0) return undefined
   const latest = latestBackupTimestamp(appMetadata)
   if (!latest) return 'You have saved flights but no local or cloud backup yet.'
   const latestBackup = DateTime.fromISO(latest, { setZone: true })
   if (!latestBackup.isValid) return 'Your last backup timestamp could not be read.'
-  return now.diff(latestBackup.toUTC(), 'days').days > 30 ? 'Your last local or cloud backup is older than 30 days.' : undefined
+  return now.diff(latestBackup.toUTC(), 'days').days > thresholdDays ? `Your last local or cloud backup is older than ${thresholdDays} days.` : undefined
 }
 
 export function shouldShowFirstRunCloudRestorePrompt(input: {

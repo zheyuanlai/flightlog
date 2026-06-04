@@ -1,10 +1,11 @@
-import type { FlightLiveStatus, LookupDateRole } from '../types'
+import type { FlightLiveStatus, LiveDataMode, LookupDateRole } from '../types'
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 
 export interface FetchLiveStatusOptions {
   dateRole?: LookupDateRole
   useMock?: boolean
+  liveDataMode?: LiveDataMode
   fetcher?: typeof fetch
 }
 
@@ -231,7 +232,11 @@ export async function fetchLiveStatus(
 ): Promise<FlightLiveStatus> {
   const options: FetchLiveStatusOptions = typeof optionsOrFetcher === 'function' ? { fetcher: optionsOrFetcher } : optionsOrFetcher
   const dateRole = options.dateRole ?? 'Departure'
-  const useMock = options.useMock || import.meta.env.VITE_FLIGHTLOG_MOCK_LIVE_STATUS === 'true'
+  const liveDataMode = options.liveDataMode ?? 'real'
+  if (liveDataMode === 'disabled') {
+    throw new Error('Live lookup is disabled in Settings. You can still add the flight manually.')
+  }
+  const useMock = options.useMock || liveDataMode === 'mock' || import.meta.env.VITE_FLIGHTLOG_MOCK_LIVE_STATUS === 'true'
 
   if (useMock) {
     await new Promise((resolve) => window.setTimeout(resolve, 350))

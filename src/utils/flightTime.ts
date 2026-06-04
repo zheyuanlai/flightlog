@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon'
-import type { FlightLogEntry, FlightLiveStatus, FlightLiveTimes } from '../types'
+import type { DateFormat, FlightLogEntry, FlightLiveStatus, FlightLiveTimes, TimeFormat } from '../types'
 import { resolveFlightAirport } from './airports'
 
 type FlightDirection = 'departure' | 'arrival'
@@ -29,6 +29,11 @@ export interface CalendarTimeRange {
   usedDefaultDuration?: boolean
 }
 
+export interface FlightTimeDisplayOptions {
+  dateFormat?: DateFormat
+  timeFormat?: TimeFormat
+}
+
 const timezoneWarning = 'Timezone unavailable; shown as provider local time.'
 
 function normalizeDateTimeInput(value?: string): string | undefined {
@@ -46,8 +51,16 @@ function isValidTimeZone(timeZone?: string): boolean {
   return DateTime.local().setZone(timeZone).isValid
 }
 
-function displayDateTime(dateTime: DateTime): string {
-  return dateTime.toFormat('ccc, LLL d, HH:mm')
+function displayDateTime(dateTime: DateTime, options: FlightTimeDisplayOptions = {}): string {
+  const datePart = options.dateFormat === 'compact'
+    ? dateTime.toFormat('M/d/yy')
+    : options.dateFormat === 'iso'
+    ? dateTime.toFormat('yyyy-MM-dd')
+    : dateTime.toFormat('ccc, LLL d')
+  const timePart = options.timeFormat === '12h'
+    ? dateTime.toFormat('h:mm a')
+    : dateTime.toFormat('HH:mm')
+  return `${datePart}, ${timePart}`
 }
 
 function displayRawLocal(value: string): string {
@@ -109,7 +122,7 @@ function readTimeValue(flight: FlightLogEntry, kind: FlightTimeKind, direction: 
   return flightValue ?? liveValue ?? nestedValue
 }
 
-export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, direction: FlightDirection): FormattedAirportTime | undefined {
+export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, direction: FlightDirection, options: FlightTimeDisplayOptions = {}): FormattedAirportTime | undefined {
   const local = normalizeDateTimeInput(readTimeValue(flight, kind, direction, 'Local'))
   const utc = normalizeDateTimeInput(readTimeValue(flight, kind, direction, 'Utc'))
   const code = airportCode(flight, direction)
@@ -124,8 +137,8 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
       if (validZone) {
         const airportTime = utcDateTime.toUTC().setZone(validZone)
         return {
-          label: `${displayDateTime(airportTime)} · ${code} local`,
-          localLabel: `${displayDateTime(airportTime)} · ${code} local`,
+          label: `${displayDateTime(airportTime, options)} · ${code} local`,
+          localLabel: `${displayDateTime(airportTime, options)} · ${code} local`,
           airportCode: code,
           timeZone: validZone,
           kind,
@@ -138,7 +151,7 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
       if (local) {
         const localWithOffset = DateTime.fromISO(local, { setZone: true })
         const label = localWithOffset.isValid && hasExplicitOffset(local)
-          ? `${displayDateTime(localWithOffset)} · ${code} provider local`
+          ? `${displayDateTime(localWithOffset, options)} · ${code} provider local`
           : `${displayRawLocal(local)} · ${code} provider local`
         return {
           label,
@@ -151,7 +164,7 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
           isReliable: true,
         }
       }
-      const label = `${displayDateTime(utcDateTime.toUTC())} · UTC`
+      const label = `${displayDateTime(utcDateTime.toUTC(), options)} · UTC`
       return {
         label,
         localLabel: label,
@@ -172,8 +185,8 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
       : DateTime.fromISO(local, { zone: validZone })
     if (localDateTime.isValid) {
       return {
-        label: `${displayDateTime(localDateTime)} · ${code} local`,
-        localLabel: `${displayDateTime(localDateTime)} · ${code} local`,
+        label: `${displayDateTime(localDateTime, options)} · ${code} local`,
+        localLabel: `${displayDateTime(localDateTime, options)} · ${code} local`,
         airportCode: code,
         timeZone: validZone,
         kind,
@@ -189,8 +202,8 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
     const offsetDateTime = DateTime.fromISO(local, { setZone: true })
     if (offsetDateTime.isValid) {
       return {
-        label: `${displayDateTime(offsetDateTime)} · ${code} provider local`,
-        localLabel: `${displayDateTime(offsetDateTime)} · ${code} provider local`,
+        label: `${displayDateTime(offsetDateTime, options)} · ${code} provider local`,
+        localLabel: `${displayDateTime(offsetDateTime, options)} · ${code} provider local`,
         airportCode: code,
         kind,
         local,
@@ -213,27 +226,27 @@ export function resolveFlightTime(flight: FlightLogEntry, kind: FlightTimeKind, 
   }
 }
 
-function bestTime(flight: FlightLogEntry, direction: FlightDirection): FormattedAirportTime | undefined {
-  return resolveFlightTime(flight, 'actual', direction)
-    ?? resolveFlightTime(flight, 'estimated', direction)
-    ?? resolveFlightTime(flight, 'scheduled', direction)
+function bestTime(flight: FlightLogEntry, direction: FlightDirection, options: FlightTimeDisplayOptions = {}): FormattedAirportTime | undefined {
+  return resolveFlightTime(flight, 'actual', direction, options)
+    ?? resolveFlightTime(flight, 'estimated', direction, options)
+    ?? resolveFlightTime(flight, 'scheduled', direction, options)
 }
 
-export function getBestDepartureTime(flight: FlightLogEntry): FormattedAirportTime | undefined {
-  return bestTime(flight, 'departure')
+export function getBestDepartureTime(flight: FlightLogEntry, options: FlightTimeDisplayOptions = {}): FormattedAirportTime | undefined {
+  return bestTime(flight, 'departure', options)
 }
 
-export function getBestArrivalTime(flight: FlightLogEntry): FormattedAirportTime | undefined {
-  return bestTime(flight, 'arrival')
+export function getBestArrivalTime(flight: FlightLogEntry, options: FlightTimeDisplayOptions = {}): FormattedAirportTime | undefined {
+  return bestTime(flight, 'arrival', options)
 }
 
-export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airportTimeZone: string | undefined, fallbackLabel = 'Airport local', utcTime?: string): FormattedAirportTime {
+export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airportTimeZone: string | undefined, fallbackLabel = 'Airport local', utcTime?: string, options: FlightTimeDisplayOptions = {}): FormattedAirportTime {
   const local = normalizeDateTimeInput(isoOrLocalTime)
   const utc = normalizeDateTimeInput(utcTime)
   const utcDateTime = utc ? DateTime.fromISO(utc, { setZone: true }) : undefined
   if (!local) {
     if (utcDateTime?.isValid) {
-      const label = `${displayDateTime(utcDateTime.toUTC())} · UTC`
+      const label = `${displayDateTime(utcDateTime.toUTC(), options)} · UTC`
       return { label, localLabel: label, utc: utcDateTime.toUTC().toISO() ?? utc, instantIso: utcDateTime.toUTC().toISO() ?? utc, isReliable: true }
     }
     return { label: 'Not set', localLabel: 'Not set', warning: timezoneWarning, isReliable: false }
@@ -247,8 +260,8 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
       : DateTime.fromISO(local, { zone: validZone })
     if (dateTime.isValid) {
       return {
-        label: `${displayDateTime(dateTime)} · ${fallbackLabel}`,
-        localLabel: `${displayDateTime(dateTime)} · ${fallbackLabel}`,
+        label: `${displayDateTime(dateTime, options)} · ${fallbackLabel}`,
+        localLabel: `${displayDateTime(dateTime, options)} · ${fallbackLabel}`,
         timeZone: validZone,
         local,
         utc: dateTime.toUTC().toISO() ?? undefined,
@@ -260,7 +273,7 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
   if (utcDateTime?.isValid) {
     const localWithOffset = DateTime.fromISO(local, { setZone: true })
     const label = localWithOffset.isValid && hasExplicitOffset(local)
-      ? `${displayDateTime(localWithOffset)} · provider local`
+      ? `${displayDateTime(localWithOffset, options)} · provider local`
       : `${displayRawLocal(local)} · provider local`
     return {
       label,
@@ -275,8 +288,8 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
     const dateTime = DateTime.fromISO(local, { setZone: true })
     if (dateTime.isValid) {
       return {
-        label: `${displayDateTime(dateTime)} · provider local`,
-        localLabel: `${displayDateTime(dateTime)} · provider local`,
+        label: `${displayDateTime(dateTime, options)} · provider local`,
+        localLabel: `${displayDateTime(dateTime, options)} · provider local`,
         local,
         utc: dateTime.toUTC().toISO() ?? undefined,
         instantIso: dateTime.toUTC().toISO() ?? undefined,
@@ -293,13 +306,13 @@ export function formatAirportLocalTime(isoOrLocalTime: string | undefined, airpo
   }
 }
 
-export function formatDepartureLocalTime(flight: FlightLogEntry, options: { kind?: FlightTimeKind } = {}): FormattedAirportTime {
-  return (options.kind ? resolveFlightTime(flight, options.kind, 'departure') : getBestDepartureTime(flight))
+export function formatDepartureLocalTime(flight: FlightLogEntry, options: { kind?: FlightTimeKind } & FlightTimeDisplayOptions = {}): FormattedAirportTime {
+  return (options.kind ? resolveFlightTime(flight, options.kind, 'departure', options) : getBestDepartureTime(flight, options))
     ?? { label: 'Not set', localLabel: 'Not set', airportCode: flight.origin, isReliable: false }
 }
 
-export function formatArrivalLocalTime(flight: FlightLogEntry, options: { kind?: FlightTimeKind } = {}): FormattedAirportTime {
-  return (options.kind ? resolveFlightTime(flight, options.kind, 'arrival') : getBestArrivalTime(flight))
+export function formatArrivalLocalTime(flight: FlightLogEntry, options: { kind?: FlightTimeKind } & FlightTimeDisplayOptions = {}): FormattedAirportTime {
+  return (options.kind ? resolveFlightTime(flight, options.kind, 'arrival', options) : getBestArrivalTime(flight, options))
     ?? { label: 'Not set', localLabel: 'Not set', airportCode: flight.destination, isReliable: false }
 }
 
