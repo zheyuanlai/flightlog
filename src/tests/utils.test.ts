@@ -16,7 +16,12 @@ import { externalFlightLinks } from '../utils/externalFlightLinks'
 import { diffFlightFields } from '../utils/conflicts'
 import { formatAirportLocalTime, formatArrivalLocalTime, formatDepartureLocalTime, getCalendarStartEnd } from '../utils/flightTime'
 import { computeFlight } from '../utils/flights'
+import { lookupErrorCopy } from '../utils/lookupErrors'
 import { buildFlightStatusUrl, mockLiveStatus, normalizeLiveStatus, readFlightStatusError, refreshStatusLabel } from '../utils/liveStatus'
+import { mobileNavGroup, routeFromHashValue } from '../utils/navigation'
+import { initialOnlineStatus, offlineActionMessage } from '../utils/offline'
+import { installGuidance, isStandaloneDisplay } from '../utils/pwa'
+import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData } from '../utils/shareCards'
 import { createSyncEvent } from '../utils/syncHistory'
 import { syncStatusSnapshot } from '../utils/syncStatus'
 import { aggregateStats } from '../utils/stats'
@@ -493,6 +498,64 @@ describe('flight utilities', () => {
     }]
     const tripsWithMetadata = groupFlightsIntoTrips(flights, tripMetadata)
     expect(tripsWithMetadata[0]).toMatchObject({ name: 'Westbound work trip', notes: 'Two-leg client run', type: 'work', isFavorite: true })
+  })
+
+  it('maps hash routes to mobile navigation groups', () => {
+    expect(routeFromHashValue('#/flights/test-flight')).toEqual({ page: 'flight-detail', flightId: 'test-flight' })
+    expect(routeFromHashValue('#/trips/westbound')).toEqual({ page: 'trip-detail', tripId: 'westbound' })
+    expect(routeFromHashValue('#/import')).toEqual({ page: 'backup' })
+    expect(mobileNavGroup(routeFromHashValue('#/dashboard'))).toBe('home')
+    expect(mobileNavGroup(routeFromHashValue('#/flights/test-flight'))).toBe('flights')
+    expect(mobileNavGroup(routeFromHashValue('#/passport'))).toBe('more')
+  })
+
+  it('builds safe share card data without notes by default', () => {
+    const entry = flight({
+      notes: 'Private note',
+      scheduledDepartureLocal: '2026-06-02T22:30',
+      scheduledDepartureUtc: '2026-06-02T14:30:00Z',
+      scheduledArrivalLocal: '2026-06-02T19:15',
+      scheduledArrivalUtc: '2026-06-03T02:15:00Z',
+      originTimeZone: 'Asia/Singapore',
+      destinationTimeZone: 'America/Los_Angeles',
+      liveStatus: { status: 'scheduled' },
+    })
+    const card = flightShareCardData(entry, { distanceUnit: 'miles' })
+    expect(card.brand).toBe('FlightLog')
+    expect(card.route).toBe('SIN-LAX')
+    expect(card.notes).toBeUndefined()
+    expect(card.highlights.join(' ')).toContain('Status scheduled')
+    expect(flightShareCardData(entry, { includeNotes: true }).notes).toBe('Private note')
+  })
+
+  it('builds trip and yearly passport share card data', () => {
+    const trips = groupFlightsIntoTrips([
+      flight({ id: 'a', date: '2026-06-02', scheduledDepartureUtc: '2026-06-02T14:30:00Z', originTimeZone: 'Asia/Singapore', destinationTimeZone: 'America/Los_Angeles' }),
+      flight({ id: 'b', date: '2026-06-04', flightNumber: 'UA1', origin: 'LAX', destination: 'JFK', scheduledDepartureUtc: '2026-06-04T18:00:00Z', originTimeZone: 'America/Los_Angeles', destinationTimeZone: 'America/New_York' }),
+    ])
+    const tripCard = tripShareCardData(trips[0], { distanceUnit: 'kilometers' })
+    expect(tripCard.kind).toBe('trip')
+    expect(tripCard.route).toBe('SIN -> LAX -> JFK')
+    const yearCard = yearlyPassportShareCardData(trips[0].flights, '2026')
+    expect(yearCard.kind).toBe('year')
+    expect(yearCard.highlights[0]).toContain('airports')
+  })
+
+  it('handles offline, PWA, and lookup error utility states', () => {
+    expect(initialOnlineStatus({ onLine: false } as Navigator)).toBe(false)
+    expect(offlineActionMessage('live lookup')).toContain('live lookup is unavailable')
+    expect(installGuidance('Mozilla/5.0 iPhone Safari')).toContain('Add to Home Screen')
+    expect(isStandaloneDisplay({ matchMedia: () => ({ matches: true }) } as unknown as Window)).toBe(true)
+    expect(lookupErrorCopy('No flight found', true)).toMatchObject({ kind: 'not-found' })
+    expect(lookupErrorCopy(new Error('quota exceeded'), true)).toMatchObject({ kind: 'quota' })
+    expect(lookupErrorCopy(new Error('Failed to fetch'), false)).toMatchObject({ kind: 'offline' })
+  })
+
+  it('keeps deleted flights out of active utility views', () => {
+    const active = flight({ id: 'active' })
+    const deleted = flight({ id: 'deleted', deletedAt: '2026-06-04T00:00:00.000Z', lastOperation: 'delete' })
+    expect(deletedFlights([active, deleted]).map((item) => item.id)).toEqual(['deleted'])
+    expect(listUpcomingFlights([active, deleted].filter((item) => !item.deletedAt), DateTime.fromISO('2026-06-01T00:00:00Z')).map((item) => item.flight.id)).not.toContain('deleted')
   })
 
   it('reports refresh guard labels', () => {
