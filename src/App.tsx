@@ -19,6 +19,7 @@ import {
   Plane,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Shield,
   SlidersHorizontal,
@@ -33,25 +34,34 @@ import {
   bulkPutProviderAirportsRaw,
   bulkPutTripMetadataRaw,
   bulkSetAppMetadata,
+  bulkPermanentlyDeleteFlights,
+  bulkRestoreFlights,
   deleteFlight,
+  getAllFlights,
   getAllAppMetadata,
+  getAllTripMetadata,
+  getDeletedFlights,
   getFlights,
   getProviderAirports,
   getTripMetadata,
   LOCAL_SCHEMA_VERSION,
+  listLocalSyncEvents,
   migrateLegacyTripNames,
+  permanentlyDeleteFlight,
   providerAirportSnapshotsFromLiveStatus,
   replaceAppMetadata,
   replaceFlights,
   replaceProviderAirports,
   replaceTripMetadata,
+  restoreFlight,
   saveFlight,
   saveProviderAirports,
   saveTripMetadata,
+  addSyncEvent,
   setAppMetadata,
 } from './db'
 import { sampleFlights } from './sampleData'
-import type { AppMetadata, AppSettings, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, SyncMetadata, TripMetadata, TripType } from './types'
+import type { AppMetadata, AppSettings, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, SyncDevice, SyncEventLog, SyncMetadata, TripMetadata, TripType } from './types'
 import { authRedirectUrl, isSupabaseConfigured, supabase } from './lib/supabase'
 import {
   cloudBackupErrorMessage,
@@ -71,14 +81,20 @@ import {
 import {
   cloudSyncErrorMessage,
   compareLocalAndRemote,
-  deletionSyncLimitation,
   getLocalSyncState,
   getRemoteSyncState,
+  listRemoteSyncEvents,
+  listSyncDevices,
+  logRemoteSyncEvent,
   pullRemoteChanges,
+  pullTombstones,
   pushLocalChanges,
+  pushTombstones,
+  registerSyncDevice,
   syncRecordLabel,
   type SyncComparison,
   type SyncComparisonItem,
+  type SyncConflictAction,
   type SyncRecord,
 } from './lib/cloudSync'
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
@@ -86,12 +102,17 @@ import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './ut
 import { appMetadataValue, backupAgeWarning, createFullBackup, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview } from './utils/backup'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
+import { deletedFlights as sortDeletedFlights, deletedTripMetadata } from './utils/deletedRecords'
+import { diffFlightFields } from './utils/conflicts'
 import { diagnosticsText } from './utils/diagnostics'
 import { formatDate, formatDateTime, formatDistance, formatDuration } from './utils/dates'
+import { currentDeviceSnapshot, getDeviceName, getOrCreateDeviceId, setDeviceName } from './utils/device'
 import { computeFlight, routeKey } from './utils/flights'
 import { canRefreshLiveStatus, fetchLiveStatus, normalizeFlightNumber, refreshStatusLabel } from './utils/liveStatus'
 import { DEFAULT_APP_SETTINGS, appSettingsFromMetadata, migrateAppMetadataDefaults, normalizeAppSettings, patchSyncMetadata, settingsMetadataEntry, syncMetadataFromMetadata } from './utils/settings'
 import { localStorageSummary } from './utils/storage'
+import { createSyncEvent, syncHistorySummaryLabel } from './utils/syncHistory'
+import { syncStatusSnapshot, type SyncStatusSnapshot } from './utils/syncStatus'
 import { aggregateStats } from './utils/stats'
 import { buildCalendarEventDetails } from './utils/calendarLinks'
 import { externalFlightLinks } from './utils/externalFlightLinks'
@@ -107,7 +128,7 @@ import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import './App.css'
 
-type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'account' | 'settings' | 'sync' | 'flight-detail' | 'trip-detail'
+type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'account' | 'settings' | 'sync' | 'trash' | 'flight-detail' | 'trip-detail'
 interface AppRoute {
   page: Page
   flightId?: string
@@ -162,12 +183,14 @@ function routeFromHash(): AppRoute {
   if (section === 'trips' && id) return { page: 'trip-detail', tripId: decodeURIComponent(id) }
   if (section === 'import') return { page: 'backup' }
   if (section === 'account') return { page: 'account' }
+  if (section === 'trash') return { page: 'trash' }
   return navItems.some((item) => item.page === section) ? { page: section as Page } : { page: 'dashboard' }
 }
 
 function navPage(route: AppRoute): Page {
   if (route.page === 'flight-detail') return 'flights'
   if (route.page === 'trip-detail') return 'trips'
+  if (route.page === 'trash') return 'settings'
   return route.page
 }
 
@@ -217,12 +240,7 @@ function importableAppMetadata(metadata: AppMetadata[]): AppMetadata[] {
 }
 
 function localDeviceId(): string {
-  const key = 'flightlog-device-id'
-  const existing = window.localStorage.getItem(key)
-  if (existing) return existing
-  const next = crypto.randomUUID()
-  window.localStorage.setItem(key, next)
-  return next
+  return getOrCreateDeviceId()
 }
 
 function shortChecksum(checksum?: string): string {
@@ -383,6 +401,26 @@ function StatCard({ label, value, icon: Icon }: { label: string; value: string; 
       <Icon aria-hidden="true" />
       <span>{label}</span>
       <strong>{value}</strong>
+    </article>
+  )
+}
+
+function SyncStatusBadge({ status, onCompare }: { status: SyncStatusSnapshot; onCompare?: () => Promise<void> }) {
+  const settings = useAppSettings()
+  const displayOptions = flightTimeDisplayOptions(settings)
+  return (
+    <article className={`sync-status-badge ${status.kind}`}>
+      <div>
+        <p className="eyebrow">Sync status</p>
+        <h3>{status.label}</h3>
+        <p className="muted">{status.detail}</p>
+      </div>
+      <dl className="meta-grid">
+        <div><dt>Last compared</dt><dd>{status.lastCompared ? formatDateTime(status.lastCompared, displayOptions) : 'Never'}</dd></div>
+        <div><dt>Conflicts</dt><dd>{status.conflictCount}</dd></div>
+        <div><dt>Tombstones</dt><dd>{status.tombstoneCount}</dd></div>
+      </dl>
+      {onCompare && <div className="actions"><button type="button" className="secondary" onClick={() => void onCompare()}><Search aria-hidden="true" /> Compare now</button></div>}
     </article>
   )
 }
@@ -699,15 +737,18 @@ function Dashboard({
   flights,
   airportDatasetLabel,
   appMetadata,
+  syncStatus,
   cloudRestorePrompt,
   onAddDemo,
   onQuickAdd,
   onOpenFlight,
   onRefresh,
+  onCompareSync,
 }: {
   flights: FlightLogEntry[]
   airportDatasetLabel: string
   appMetadata: AppMetadata[]
+  syncStatus: SyncStatusSnapshot
   cloudRestorePrompt?: {
     latestLabel: string
     onRestoreLatest: () => Promise<void>
@@ -719,6 +760,7 @@ function Dashboard({
   onQuickAdd: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
   onRefresh: (flight: FlightLogEntry) => Promise<void>
+  onCompareSync?: () => Promise<void>
 }) {
   const settings = useAppSettings()
   const stats = aggregateStats(flights)
@@ -735,6 +777,7 @@ function Dashboard({
         </div>
         <div className="route-stamp" aria-hidden="true"><span>{stats.mostRecentFlight?.origin ?? 'SFO'}</span><ArrowRight /><span>{stats.mostRecentFlight?.destination ?? 'SIN'}</span></div>
       </section>
+      <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       {cloudRestorePrompt && (
         <section className="panel cloud-panel">
           <div className="section-heading compact-heading">
@@ -1237,10 +1280,10 @@ function DataOwnershipCard() {
         </div>
         <Shield aria-hidden="true" />
       </div>
-      <p className="muted">Without sign-in, your data stays in this browser&apos;s IndexedDB. With cloud backup or Sync Lite, snapshots or records are stored in Supabase under your signed-in user. Signing out does not delete local data, deleting cloud backups does not delete local data, and clearing local data does not delete cloud backups.</p>
+      <p className="muted">Without sign-in, your data stays in this browser&apos;s IndexedDB. With cloud backup or Sync Lite, snapshots or records are stored in Supabase under your signed-in user. Signing out does not delete local data, deleting cloud backups does not delete local data, and clearing local data does not delete cloud backups. Deleted flights move to Trash first and sync as tombstones; permanent deletion is a separate local action.</p>
       <details>
         <summary>What is stored in cloud?</summary>
-        <p className="muted">Flights, trip metadata, provider-derived airports, app settings, and sync metadata. Cloud backups and sync records are plain JSON protected by Supabase Auth and RLS; they are not end-to-end encrypted yet. Client-side encrypted backups remain a future option.</p>
+        <p className="muted">Flights, deleted-flight tombstones, trip metadata, provider-derived airports, app settings, sync metadata, sync history, and device records. Cloud backups and sync records are plain JSON protected by Supabase Auth and RLS; they are not end-to-end encrypted yet. Client-side encrypted backups remain a future option.</p>
       </details>
     </section>
   )
@@ -1260,9 +1303,11 @@ function SettingsPage({
   settings,
   syncMetadata,
   flights,
-  tripMetadata,
+  allFlights,
+  allTripMetadata,
   providerAirports,
   appMetadata,
+  syncStatus,
   syncComparison,
   cloud,
   currentChecksum,
@@ -1273,10 +1318,12 @@ function SettingsPage({
   onSettingsChange,
   onNavigateBackup,
   onNavigateSync,
+  onNavigateTrash,
   onExportBackup,
   onRepairData,
   onClearLocalData,
   onRunLiveApiTest,
+  onCompareSync,
 }: {
   configured: boolean
   authLoading: boolean
@@ -1285,9 +1332,11 @@ function SettingsPage({
   settings: AppSettings
   syncMetadata: SyncMetadata
   flights: FlightLogEntry[]
-  tripMetadata: TripMetadata[]
+  allFlights: FlightLogEntry[]
+  allTripMetadata: TripMetadata[]
   providerAirports: ProviderAirportSnapshot[]
   appMetadata: AppMetadata[]
+  syncStatus: SyncStatusSnapshot
   syncComparison?: SyncComparison
   cloud: CloudBackupControls
   currentChecksum?: string
@@ -1298,16 +1347,18 @@ function SettingsPage({
   onSettingsChange: (patch: Partial<AppSettings>) => Promise<void>
   onNavigateBackup: () => void
   onNavigateSync: () => void
+  onNavigateTrash: () => void
   onExportBackup: () => Promise<void>
   onRepairData: () => Promise<void>
   onClearLocalData: () => Promise<void>
   onRunLiveApiTest: () => Promise<void>
+  onCompareSync?: () => Promise<void>
 }) {
   const displayOptions = flightTimeDisplayOptions(settings)
   const [email, setEmail] = useState('')
   const [diagnosticsMessage, setDiagnosticsMessage] = useState('')
-  const storage = localStorageSummary({ flights, tripMetadata, providerAirports, appMetadata, localSchemaVersion: LOCAL_SCHEMA_VERSION })
-  const health = analyzeDataHealth(flights)
+  const storage = localStorageSummary({ flights, allFlights, tripMetadata: allTripMetadata, providerAirports, appMetadata, localSchemaVersion: LOCAL_SCHEMA_VERSION })
+  const health = analyzeDataHealth(flights, { allFlights, tripMetadata: allTripMetadata, syncComparison })
   const provider = session?.user.app_metadata?.provider
   const lastSuccessfulLookup = appMetadataValue(appMetadata, 'lastSuccessfulLiveLookupAt')
   const diagnostics = diagnosticsText({
@@ -1315,12 +1366,12 @@ function SettingsPage({
     signedIn: Boolean(session),
     userEmail: session?.user.email,
     localSchemaVersion: LOCAL_SCHEMA_VERSION,
-    backupSchemaVersion: 3,
+    backupSchemaVersion: 4,
     latestCloudBackupChecksum: appMetadataValue(appMetadata, 'lastCloudBackupChecksum')?.slice(0, 12),
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v17',
+    serviceWorkerCacheVersion: 'flightlog-v19',
     syncMetadata,
   })
 
@@ -1342,6 +1393,7 @@ function SettingsPage({
     <main className="page settings-page">
       <div className="section-heading"><div><p className="eyebrow">Settings</p><h2>Preferences, cloud, and diagnostics</h2></div></div>
       <DataOwnershipCard />
+      <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       <section className="panel" id="account">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Account</p><h3>{accountStatusLabel(configured, session)}</h3></div><span className="status scheduled">{session ? 'signed in' : configured ? 'local-only' : 'offline-ready'}</span></div>
         {!configured ? (
@@ -1377,6 +1429,7 @@ function SettingsPage({
           <div><dt>Last compared</dt><dd>{syncMetadata.lastCloudCompareAt ? formatDateTime(syncMetadata.lastCloudCompareAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last push</dt><dd>{syncMetadata.lastCloudPushAt ? formatDateTime(syncMetadata.lastCloudPushAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last pull</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Tombstones</dt><dd>{syncStatus.tombstoneCount}</dd></div>
           <div><dt>Conflicts</dt><dd>{syncComparison?.conflicts.length ?? 'Not compared'}</dd></div>
         </dl>
         <p className="muted">Backup is a snapshot restore point. Sync Lite is manual record-level push/pull. It does not poll, auto-merge, or silently overwrite data.</p>
@@ -1435,6 +1488,8 @@ function SettingsPage({
         <div className="section-heading compact-heading"><div><p className="eyebrow">Data & Storage</p><h3>Local browser data</h3></div></div>
         <dl className="meta-grid">
           <div><dt>Flights</dt><dd>{storage.flightCount}</dd></div>
+          <div><dt>Active flights</dt><dd>{storage.activeFlightCount}</dd></div>
+          <div><dt>Deleted flights</dt><dd>{storage.deletedFlightCount}</dd></div>
           <div><dt>Trip metadata</dt><dd>{storage.tripMetadataCount}</dd></div>
           <div><dt>Provider airports</dt><dd>{storage.providerAirportCount}</dd></div>
           <div><dt>App metadata</dt><dd>{storage.appMetadataCount}</dd></div>
@@ -1444,6 +1499,7 @@ function SettingsPage({
         <div className="actions">
           <button type="button" onClick={() => void onExportBackup()}><Download aria-hidden="true" /> Export local backup</button>
           <button type="button" className="secondary" onClick={onNavigateBackup}><Upload aria-hidden="true" /> Import local backup</button>
+          <button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button>
           <button type="button" className="secondary" onClick={() => void onRepairData()} disabled={health.repairableAirportSnapshotCount === 0}><Database aria-hidden="true" /> Re-resolve airport snapshots</button>
         </div>
         <dl className="meta-grid">
@@ -1451,6 +1507,9 @@ function SettingsPage({
           <div><dt>Missing coordinates</dt><dd>{health.missingAirportCoordinateCount}</dd></div>
           <div><dt>Provider warnings</dt><dd>{health.providerWarningCount}</dd></div>
           <div><dt>Missing times</dt><dd>{health.missingTimeCount}</dd></div>
+          <div><dt>Orphaned trip metadata</dt><dd>{health.orphanedTripMetadataCount}</dd></div>
+          <div><dt>Missing sync metadata</dt><dd>{health.missingSyncMetadataCount}</dd></div>
+          <div><dt>Remote tombstones</dt><dd>{health.remoteTombstonesCount}</dd></div>
         </dl>
       </section>
 
@@ -1466,7 +1525,7 @@ function SettingsPage({
       <section className="panel danger-zone" id="danger-zone">
         <div className="flight-main"><div><p className="eyebrow">Danger Zone</p><h3>Clear local data</h3></div><AlertTriangle aria-hidden="true" /></div>
         <p className="muted">Export a local backup or create a cloud backup before clearing local data. This does not delete cloud backups or cloud sync records.</p>
-        <div className="actions"><button type="button" className="ghost danger" onClick={() => void onClearLocalData()}><Trash2 aria-hidden="true" /> Clear local data</button></div>
+        <div className="actions"><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button><button type="button" className="ghost danger" onClick={() => void onClearLocalData()}><Trash2 aria-hidden="true" /> Clear local data</button></div>
       </section>
     </main>
   )
@@ -1657,7 +1716,7 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
             <div><dt>Latest cloud backup</dt><dd>{latest ? formatDateTime(latest.createdAt, displayOptions) : 'Never'}</dd></div>
             <div><dt>Last local export</dt><dd>{lastBackupAt ? formatDateTime(lastBackupAt, displayOptions) : 'Never'}</dd></div>
             <div><dt>Last cloud restore</dt><dd>{lastCloudRestoreAt ? formatDateTime(lastCloudRestoreAt, displayOptions) : 'Never'}</dd></div>
-            <div><dt>Backup schema</dt><dd>v3</dd></div>
+            <div><dt>Backup schema</dt><dd>v4</dd></div>
             <div><dt>Current checksum</dt><dd>{shortChecksum(cloud.currentChecksum)}</dd></div>
             <div><dt>Last cloud checksum</dt><dd>{shortChecksum(appMetadataValue(appMetadata, 'lastCloudBackupChecksum'))}</dd></div>
           </dl>
@@ -1682,6 +1741,7 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
                 <div><dt>Flights to add</dt><dd>{cloud.preview.preview.flightsToAdd}</dd></div>
                 <div><dt>Existing flights</dt><dd>{cloud.preview.preview.existingFlights}</dd></div>
                 <div><dt>Likely duplicates</dt><dd>{cloud.preview.preview.duplicateFlights}</dd></div>
+                <div><dt>Deleted flights</dt><dd>{cloud.preview.preview.deletedFlights}</dd></div>
                 <div><dt>Checksum</dt><dd>{shortChecksum(cloud.preview.snapshot.checksum)}</dd></div>
                 <div><dt>Created</dt><dd>{formatDateTime(cloud.preview.snapshot.createdAt, displayOptions)}</dd></div>
               </dl>
@@ -1727,11 +1787,14 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
 
 function BackupCenterPage({
   flights,
+  allFlights,
   trips,
   tripMetadata,
+  allTripMetadata,
   providerAirports,
   appMetadata,
   syncMetadata,
+  syncStatus,
   syncComparison,
   cloud,
   onImported,
@@ -1739,13 +1802,18 @@ function BackupCenterPage({
   onMergeBackup,
   onReplaceBackup,
   onRepairData,
+  onNavigateTrash,
+  onCompareSync,
 }: {
   flights: FlightLogEntry[]
+  allFlights: FlightLogEntry[]
   trips: TripGroup[]
   tripMetadata: TripMetadata[]
+  allTripMetadata: TripMetadata[]
   providerAirports: ProviderAirportSnapshot[]
   appMetadata: AppMetadata[]
   syncMetadata: SyncMetadata
+  syncStatus: SyncStatusSnapshot
   syncComparison?: SyncComparison
   cloud: CloudBackupControls
   onImported: () => Promise<void>
@@ -1753,13 +1821,15 @@ function BackupCenterPage({
   onMergeBackup: (preview: BackupImportPreview) => Promise<void>
   onReplaceBackup: (preview: BackupImportPreview) => Promise<void>
   onRepairData: () => Promise<void>
+  onNavigateTrash: () => void
+  onCompareSync?: () => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const [preview, setPreview] = useState<{ valid: FlightLogEntry[]; errors: string[] }>({ valid: [], errors: [] })
   const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
   const [backupMessage, setBackupMessage] = useState('')
-  const health = analyzeDataHealth(flights)
+  const health = analyzeDataHealth(flights, { allFlights, tripMetadata: allTripMetadata, activeTripIds: trips.map((trip) => trip.id), syncComparison })
   const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
   const lastImportAt = appMetadataValue(appMetadata, 'lastImportAt')
   async function handleFile(file: File) {
@@ -1798,6 +1868,7 @@ function BackupCenterPage({
       <div className="section-heading"><div><p className="eyebrow">Data safety</p><h2>Backup Center</h2></div></div>
       <section className="stats-grid">
         <StatCard icon={Plane} label="Flights" value={String(flights.length)} />
+        <StatCard icon={Trash2} label="Deleted flights" value={String(health.deletedFlightsCount)} />
         <StatCard icon={Map} label="Trips" value={String(trips.length)} />
         <StatCard icon={Gauge} label="Trip metadata" value={String(tripMetadata.length)} />
         <StatCard icon={Globe2} label="Provider airports" value={String(providerAirports.length)} />
@@ -1808,6 +1879,7 @@ function BackupCenterPage({
         <StatCard icon={AlertTriangle} label="Sync conflicts" value={String(syncComparison?.conflicts.length ?? 0)} />
       </section>
       <DataOwnershipCard />
+      <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       <CloudBackupSection cloud={cloud} appMetadata={appMetadata} />
       <section className="two-columns">
         <article className="panel">
@@ -1829,6 +1901,7 @@ function BackupCenterPage({
             <div><dt>Flights to add</dt><dd>{backupPreview.flightsToAdd}</dd></div>
             <div><dt>Existing flights</dt><dd>{backupPreview.existingFlights}</dd></div>
             <div><dt>Likely duplicates</dt><dd>{backupPreview.duplicateFlights}</dd></div>
+            <div><dt>Deleted flights</dt><dd>{backupPreview.deletedFlights}</dd></div>
             <div><dt>Trip metadata</dt><dd>{backupPreview.tripMetadata}</dd></div>
             <div><dt>Provider airports</dt><dd>{backupPreview.providerAirports}</dd></div>
             <div><dt>Exported</dt><dd>{formatDateTime(backupPreview.backup.exportedAt, displayOptions)}</dd></div>
@@ -1845,8 +1918,13 @@ function BackupCenterPage({
           <div><dt>Provider warnings</dt><dd>{health.providerWarningCount}</dd></div>
           <div><dt>Missing times</dt><dd>{health.missingTimeCount}</dd></div>
           <div><dt>Safe repairs</dt><dd>{health.repairableAirportSnapshotCount}</dd></div>
+          <div><dt>Active flights</dt><dd>{health.activeFlightsCount}</dd></div>
+          <div><dt>Deleted flights</dt><dd>{health.deletedFlightsCount}</dd></div>
+          <div><dt>Orphaned trip metadata</dt><dd>{health.orphanedTripMetadataCount}</dd></div>
+          <div><dt>Missing sync metadata</dt><dd>{health.missingSyncMetadataCount}</dd></div>
+          <div><dt>Remote tombstones</dt><dd>{health.remoteTombstonesCount}</dd></div>
         </dl>
-        <div className="actions"><button type="button" className="secondary" disabled={health.repairableAirportSnapshotCount === 0} onClick={() => void onRepairData()}>Re-resolve airport snapshots</button></div>
+        <div className="actions"><button type="button" className="secondary" disabled={health.repairableAirportSnapshotCount === 0} onClick={() => void onRepairData()}>Re-resolve airport snapshots</button><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button></div>
       </section>
       <section className="two-columns">
         <article className="panel"><h3>Legacy export</h3><p className="muted">Keep old JSON and CSV exports available for portability.</p><div className="actions"><button type="button" onClick={() => downloadFile('flightlog.json', JSON.stringify({ flights }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export JSON</button><button type="button" className="secondary" onClick={() => downloadFile('flightlog.csv', flightsToCsv(flights), 'text/csv')}><Download aria-hidden="true" /> Export CSV</button></div></article>
@@ -1858,20 +1936,131 @@ function BackupCenterPage({
   )
 }
 
+function TrashPage({
+  flights,
+  tripMetadata,
+  busy,
+  signedIn,
+  onRestore,
+  onPermanentDelete,
+  onRestoreSelected,
+  onPermanentDeleteSelected,
+  onEmptyTrash,
+  onExport,
+  onCreateSafetyBackup,
+  onNavigateSettings,
+}: {
+  flights: FlightLogEntry[]
+  tripMetadata: TripMetadata[]
+  busy: boolean
+  signedIn: boolean
+  onRestore: (id: string) => Promise<void>
+  onPermanentDelete: (id: string) => Promise<void>
+  onRestoreSelected: (ids: string[]) => Promise<void>
+  onPermanentDeleteSelected: (ids: string[]) => Promise<void>
+  onEmptyTrash: () => Promise<void>
+  onExport: (flight: FlightLogEntry) => void
+  onCreateSafetyBackup: () => Promise<void>
+  onNavigateSettings: () => void
+}) {
+  const settings = useAppSettings()
+  const displayOptions = flightTimeDisplayOptions(settings)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const selectedIds = [...selected]
+
+  function toggle(id: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function restoreSelected() {
+    await onRestoreSelected(selectedIds)
+    setSelected(new Set())
+  }
+
+  async function deleteSelected() {
+    await onPermanentDeleteSelected(selectedIds)
+    setSelected(new Set())
+  }
+
+  return (
+    <main className="page trash-page">
+      <div className="section-heading">
+        <div><p className="eyebrow">Recently Deleted</p><h2>Trash</h2></div>
+        <div className="heading-actions">
+          <button type="button" className="ghost" onClick={onNavigateSettings}>Settings</button>
+          {signedIn && <button type="button" className="secondary" disabled={busy} onClick={() => void onCreateSafetyBackup()}><Shield aria-hidden="true" /> Create backup</button>}
+        </div>
+      </div>
+      <section className="panel">
+        <p className="muted">Deleted flights stay here until you restore or permanently delete them. Deleted flights will remain in Trash and sync as tombstones. Permanent deletion is not automatic.</p>
+        <dl className="meta-grid">
+          <div><dt>Deleted flights</dt><dd>{flights.length}</dd></div>
+          <div><dt>Deleted trip metadata</dt><dd>{tripMetadata.length}</dd></div>
+          <div><dt>Selected</dt><dd>{selected.size}</dd></div>
+        </dl>
+        <div className="actions">
+          <button type="button" className="secondary" disabled={busy || selected.size === 0} onClick={() => void restoreSelected()}><RotateCcw aria-hidden="true" /> Restore selected</button>
+          <button type="button" className="ghost danger" disabled={busy || selected.size === 0} onClick={() => void deleteSelected()}><Trash2 aria-hidden="true" /> Permanently delete selected</button>
+          <button type="button" className="ghost danger" disabled={busy || flights.length === 0} onClick={() => void onEmptyTrash()}>Empty trash</button>
+        </div>
+      </section>
+      <div className="stack">
+        {flights.map((flight) => (
+          <article className="flight-card trash-card" key={flight.id}>
+            <div className="flight-main">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={selected.has(flight.id)} onChange={() => toggle(flight.id)} />
+                <span><span className="eyebrow">{flight.date}</span><strong>{flight.flightNumber} - {flight.airline}</strong></span>
+              </label>
+              <span className="status cancelled">deleted</span>
+            </div>
+            <div className="route-line"><strong>{flight.origin}</strong><span>{flight.originAirportSnapshot?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{flight.destinationAirportSnapshot?.name}</span></div>
+            <dl className="meta-grid">
+              <div><dt>Original departure</dt><dd>{formatDate(flight.date, settings.dateFormat)}</dd></div>
+              <div><dt>Deleted</dt><dd>{flight.deletedAt ? formatDateTime(flight.deletedAt, displayOptions) : 'Unknown'}</dd></div>
+              <div><dt>Reason</dt><dd>{flight.deleteReason ?? 'Deleted from FlightLog'}</dd></div>
+              <div><dt>Cloud behavior</dt><dd>This deletion will sync as a tombstone.</dd></div>
+            </dl>
+            <div className="actions">
+              <button type="button" className="secondary" disabled={busy} onClick={() => void onRestore(flight.id)}><RotateCcw aria-hidden="true" /> Restore</button>
+              <button type="button" className="ghost" onClick={() => onExport(flight)}><Download aria-hidden="true" /> Export JSON</button>
+              <button type="button" className="ghost danger" disabled={busy} onClick={() => void onPermanentDelete(flight.id)}><Trash2 aria-hidden="true" /> Permanently delete</button>
+            </div>
+          </article>
+        ))}
+        {flights.length === 0 && <section className="empty-state"><Trash2 aria-hidden="true" /><h2>Trash is empty</h2><p>No deleted flights are waiting for restore or permanent delete.</p></section>}
+      </div>
+    </main>
+  )
+}
+
 function SyncPage({
   configured,
   session,
   cloudBackups,
   syncMetadata,
+  status,
   comparison,
+  syncEvents,
+  syncDevices,
+  deviceName,
   busy,
   message,
   onCompare,
   onCreateSafetyBackup,
   onPushLocal,
   onPullRemote,
+  onPushTombstones,
+  onPullTombstones,
+  onSyncSafe,
   onResolveConflict,
   onResolveAll,
+  onRenameDevice,
   onNavigateSettings,
   onNavigateBackup,
 }: {
@@ -1879,75 +2068,119 @@ function SyncPage({
   session: Session | null
   cloudBackups: CloudBackupSummary[]
   syncMetadata: SyncMetadata
+  status: SyncStatusSnapshot
   comparison?: SyncComparison
+  syncEvents: SyncEventLog[]
+  syncDevices: SyncDevice[]
+  deviceName: string
   busy: boolean
   message: string
   onCompare: () => Promise<void>
   onCreateSafetyBackup: () => Promise<void>
   onPushLocal: () => Promise<void>
   onPullRemote: () => Promise<void>
-  onResolveConflict: (item: SyncComparisonItem, action: 'keep-local' | 'use-cloud' | 'skip') => Promise<void>
-  onResolveAll: (action: 'keep-local' | 'use-cloud' | 'skip') => Promise<void>
+  onPushTombstones: () => Promise<void>
+  onPullTombstones: () => Promise<void>
+  onSyncSafe: () => Promise<void>
+  onResolveConflict: (item: SyncComparisonItem, action: SyncConflictAction) => Promise<void>
+  onResolveAll: (action: SyncConflictAction) => Promise<void>
+  onRenameDevice: (name: string) => Promise<void>
   onNavigateSettings: () => void
   onNavigateBackup: () => void
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
+  const [deviceDraft, setDeviceDraft] = useState(deviceName)
   const [nowMs] = useState(() => Date.now())
   const latestBackup = cloudBackups[0]
   const recentBackup = latestBackup && nowMs - Date.parse(latestBackup.createdAt) < 24 * 60 * 60 * 1000
   const localCount = comparison?.local.records.length ?? 0
   const remoteCount = comparison?.remote.records.length ?? 0
+  const tombstonesToPush = comparison?.tombstonesToPush.length ?? 0
+  const tombstonesToPull = comparison?.tombstonesToPull.length ?? 0
+  const safeChangeCount = (comparison?.localOnly.length ?? 0) + (comparison?.remoteOnly.length ?? 0) + tombstonesToPush + tombstonesToPull
+
+  async function renameDevice(event: FormEvent) {
+    event.preventDefault()
+    await onRenameDevice(deviceDraft)
+  }
+
   return (
     <main className="page sync-page">
       <div className="section-heading">
         <div><p className="eyebrow">Cloud Sync Lite</p><h2>Manual local/cloud compare</h2></div>
         <div className="heading-actions"><button type="button" className="ghost" onClick={onNavigateSettings}>Settings</button><button type="button" className="ghost" onClick={onNavigateBackup}>Backup Center</button></div>
       </div>
+      <SyncStatusBadge status={status} onCompare={configured && session ? onCompare : undefined} />
       <section className="panel">
         <div className="flight-main"><div><p className="eyebrow">Status</p><h3>{session ? 'Signed in, manual sync available' : configured ? 'Sign in to sync' : 'Supabase not configured'}</h3></div><Cloud aria-hidden="true" /></div>
-        {!configured && <p className="notice warning">Cloud Sync Lite is disabled until Supabase variables are configured and migration 002 is run.</p>}
+        {!configured && <p className="notice warning">Cloud Sync Lite is disabled until Supabase variables are configured and migrations 002 and 003 are run.</p>}
         {configured && !session && <p className="notice warning">Sign in from Settings to compare, push, or pull cloud sync records.</p>}
         <dl className="meta-grid">
           <div><dt>Last compared</dt><dd>{syncMetadata.lastCloudCompareAt ? formatDateTime(syncMetadata.lastCloudCompareAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last push</dt><dd>{syncMetadata.lastCloudPushAt ? formatDateTime(syncMetadata.lastCloudPushAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last pull</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Last tombstone push</dt><dd>{syncMetadata.lastTombstonePushAt ? formatDateTime(syncMetadata.lastTombstonePushAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Last tombstone pull</dt><dd>{syncMetadata.lastTombstonePullAt ? formatDateTime(syncMetadata.lastTombstonePullAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Local records</dt><dd>{comparison ? localCount : 'Not compared'}</dd></div>
           <div><dt>Remote records</dt><dd>{comparison ? remoteCount : 'Not compared'}</dd></div>
           <div><dt>Conflicts</dt><dd>{comparison?.conflicts.length ?? 'Not compared'}</dd></div>
         </dl>
-        <p className={recentBackup ? 'notice' : 'notice warning'}>{recentBackup ? `Safety backup available: ${latestBackup.label || 'Cloud backup'} from ${formatDateTime(latestBackup.createdAt, displayOptions)}.` : 'Create a cloud backup snapshot before push or pull if this data matters.'}</p>
+        <p className={recentBackup ? 'notice' : 'notice warning'}>{recentBackup ? `Safety backup available: ${latestBackup.label || 'Cloud backup'} from ${formatDateTime(latestBackup.createdAt, displayOptions)}.` : 'Create a cloud backup snapshot before push, pull, or tombstone sync if this data matters.'}</p>
         <div className="actions">
           <button type="button" disabled={busy || !configured || !session} onClick={() => void onCompare()}><Search aria-hidden="true" /> Compare local and cloud</button>
           <button type="button" className="secondary" disabled={busy || !configured || !session} onClick={() => void onCreateSafetyBackup()}><Shield aria-hidden="true" /> Create safety backup</button>
+          <button type="button" className="secondary" disabled={busy || !comparison || safeChangeCount === 0} onClick={() => void onSyncSafe()}>Sync safe changes</button>
           <button type="button" className="secondary" disabled={busy || !comparison || comparison.localOnly.length === 0} onClick={() => void onPushLocal()}><Upload aria-hidden="true" /> Push local changes</button>
           <button type="button" className="secondary" disabled={busy || !comparison || comparison.remoteOnly.length === 0} onClick={() => void onPullRemote()}><Download aria-hidden="true" /> Pull cloud changes</button>
+          <button type="button" className="secondary" disabled={busy || !comparison || tombstonesToPush === 0} onClick={() => void onPushTombstones()}><Trash2 aria-hidden="true" /> Push tombstones</button>
+          <button type="button" className="secondary" disabled={busy || !comparison || tombstonesToPull === 0} onClick={() => void onPullTombstones()}><Download aria-hidden="true" /> Pull tombstones</button>
         </div>
         {message && <p className="notice">{message}</p>}
+        <p className="muted">Deleted flights will remain in Trash and sync as tombstones. Permanent deletion is not automatic. No records will be overwritten without confirmation.</p>
       </section>
 
       <section className="stats-grid">
+        <StatCard icon={Database} label="Local records" value={String(localCount)} />
+        <StatCard icon={Cloud} label="Cloud records" value={String(remoteCount)} />
         <StatCard icon={Upload} label="To push" value={String(comparison?.localOnly.length ?? 0)} />
         <StatCard icon={Download} label="To pull" value={String(comparison?.remoteOnly.length ?? 0)} />
+        <StatCard icon={Trash2} label="Tombstones" value={String(tombstonesToPush + tombstonesToPull)} />
         <StatCard icon={CheckCircle2} label="In sync" value={String(comparison?.same.length ?? 0)} />
         <StatCard icon={AlertTriangle} label="Conflicts" value={String(comparison?.conflicts.length ?? 0)} />
       </section>
 
-      {!comparison && <section className="empty-state"><Cloud aria-hidden="true" /><h2>No comparison yet</h2><p>Run Compare to preview local-only records, cloud-only records, and conflicts before applying any sync action.</p></section>}
+      {!comparison && <section className="empty-state"><Cloud aria-hidden="true" /><h2>No comparison yet</h2><p>Run Compare to preview local-only records, cloud-only records, tombstones, and conflicts before applying any sync action.</p></section>}
       {comparison && comparison.items.length === 0 && <section className="empty-state"><CheckCircle2 aria-hidden="true" /><h2>No sync records yet</h2><p>Push local changes to create record-level cloud sync data, or keep using cloud backup snapshots.</p></section>}
-      {comparison && comparison.items.length > 0 && comparison.localOnly.length === 0 && comparison.remoteOnly.length === 0 && comparison.conflicts.length === 0 && <p className="notice">Local and cloud sync records are already in sync.</p>}
+      {comparison && comparison.items.length > 0 && safeChangeCount === 0 && comparison.conflicts.length === 0 && <p className="notice">Local and cloud sync records are already in sync.</p>}
 
-      {comparison && (comparison.localOnly.length > 0 || comparison.remoteOnly.length > 0) && (
-        <section className="two-columns">
+      {comparison && (comparison.localOnly.length > 0 || comparison.remoteOnly.length > 0 || tombstonesToPush > 0 || tombstonesToPull > 0 || comparison.deletedSame.length > 0) && (
+        <section className="sync-preview-grid">
           <article className="panel">
-            <h3>Push preview</h3>
+            <p className="eyebrow">Ready to push</p>
+            <h3>Local records</h3>
             <p className="muted">{comparison.localOnly.length} local-only record{comparison.localOnly.length === 1 ? '' : 's'} will be uploaded. Conflicts are excluded.</p>
             <ul>{comparison.localOnly.slice(0, 12).map((item) => <li key={item.key}>{item.entityType}: {syncRecordLabel(item)}</li>)}</ul>
+            {comparison.localOnly.length === 0 && <p className="empty-inline">No active local-only records.</p>}
           </article>
           <article className="panel">
-            <h3>Pull preview</h3>
+            <p className="eyebrow">Ready to pull</p>
+            <h3>Cloud records</h3>
             <p className="muted">{comparison.remoteOnly.length} cloud-only record{comparison.remoteOnly.length === 1 ? '' : 's'} will be added locally. Existing local records are not overwritten.</p>
             <ul>{comparison.remoteOnly.slice(0, 12).map((item) => <li key={item.key}>{item.entityType}: {syncRecordLabel(item)}</li>)}</ul>
+            {comparison.remoteOnly.length === 0 && <p className="empty-inline">No active cloud-only records.</p>}
+          </article>
+          <article className="panel">
+            <p className="eyebrow">Deletions / Trash</p>
+            <h3>Tombstones</h3>
+            <p className="muted">{tombstonesToPush} local tombstone{tombstonesToPush === 1 ? '' : 's'} to push, {tombstonesToPull} cloud tombstone{tombstonesToPull === 1 ? '' : 's'} to pull.</p>
+            <ul>{[...comparison.tombstonesToPush, ...comparison.tombstonesToPull].slice(0, 12).map((item) => <li key={item.key}>{item.status}: {syncRecordLabel(item)}</li>)}</ul>
+            {tombstonesToPush + tombstonesToPull === 0 && <p className="empty-inline">No deletion tombstones pending.</p>}
+          </article>
+          <article className="panel">
+            <p className="eyebrow">In sync</p>
+            <h3>Matched records</h3>
+            <p className="muted">{comparison.same.length} matched record{comparison.same.length === 1 ? '' : 's'}, including {comparison.deletedSame.length} deleted tombstone match{comparison.deletedSame.length === 1 ? '' : 'es'}.</p>
           </article>
         </section>
       )}
@@ -1959,6 +2192,7 @@ function SyncPage({
             <div className="heading-actions">
               <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveAll('keep-local')}>Keep all local</button>
               <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveAll('use-cloud')}>Use all cloud</button>
+              <button type="button" className="secondary" disabled={busy || comparison.deleteConflicts.length === 0} onClick={() => void onResolveAll('keep-deleted')}>Keep all deletions</button>
               <button type="button" className="ghost" disabled={busy} onClick={() => void onResolveAll('skip')}>Skip all</button>
             </div>
           </div>
@@ -1967,17 +2201,33 @@ function SyncPage({
               <article className="flight-card compact-card" key={item.key}>
                 <div className="flight-main">
                   <div><p className="eyebrow">{item.entityType}</p><h3>{syncRecordLabel(item)}</h3></div>
-                  <span className="status diverted">conflict</span>
+                  <span className="status diverted">{item.status === 'delete-conflict' ? 'delete conflict' : 'conflict'}</span>
                 </div>
                 <dl className="meta-grid">
                   <div><dt>Local updated</dt><dd>{item.local?.recordUpdatedAt ? formatDateTime(item.local.recordUpdatedAt, displayOptions) : 'Unknown'}</dd></div>
                   <div><dt>Cloud updated</dt><dd>{item.remote?.recordUpdatedAt ? formatDateTime(item.remote.recordUpdatedAt, displayOptions) : 'Unknown'}</dd></div>
+                  <div><dt>Local deleted</dt><dd>{item.local?.deletedAt ? formatDateTime(item.local.deletedAt, displayOptions) : 'No'}</dd></div>
+                  <div><dt>Cloud deleted</dt><dd>{item.remote?.deletedAt ? formatDateTime(item.remote.deletedAt, displayOptions) : 'No'}</dd></div>
                   <div><dt>Newer</dt><dd>{item.newerSide ?? 'unknown'}</dd></div>
                   <div><dt>ID</dt><dd>{item.localId}</dd></div>
                 </dl>
+                {item.entityType === 'flight' && (
+                  <div className="conflict-diff-grid">
+                    {diffFlightFields(item.local?.record as Partial<FlightLogEntry> | undefined, item.remote?.record as Partial<FlightLogEntry> | undefined).map((diff) => (
+                      <div className={diff.changed ? 'changed' : ''} key={diff.field}>
+                        <dt>{diff.label}</dt>
+                        <dd><strong>Local:</strong> {diff.localValue}</dd>
+                        <dd><strong>Cloud:</strong> {diff.cloudValue}</dd>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="actions">
                   <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveConflict(item, 'keep-local')}>Keep local</button>
                   <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveConflict(item, 'use-cloud')}>Use cloud</button>
+                  <button type="button" className="secondary" disabled={busy || (!item.local?.deletedAt && !item.remote?.deletedAt)} onClick={() => void onResolveConflict(item, 'keep-deleted')}>Keep deleted</button>
+                  <button type="button" className="secondary" disabled={busy || !item.local || Boolean(item.local.deletedAt)} onClick={() => void onResolveConflict(item, 'restore-local')}>Restore local active</button>
+                  <button type="button" className="secondary" disabled={busy || !item.remote || Boolean(item.remote.deletedAt)} onClick={() => void onResolveConflict(item, 'restore-cloud')}>Restore cloud active</button>
                   <button type="button" className="ghost" disabled={busy} onClick={() => void onResolveConflict(item, 'skip')}>Skip</button>
                 </div>
               </article>
@@ -1985,7 +2235,39 @@ function SyncPage({
           </div>
         </section>
       )}
-      <p className="notice warning">{deletionSyncLimitation()}</p>
+
+      <section className="two-columns">
+        <article className="panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Sync history</p><h3>Recent events</h3></div></div>
+          <div className="stack compact-stack">
+            {syncEvents.slice(0, 8).map((event) => (
+              <details className="sync-event" key={event.id}>
+                <summary>{event.eventType} - {formatDateTime(event.createdAt, displayOptions)}</summary>
+                <p className="muted">{syncHistorySummaryLabel(event)}</p>
+                {event.summary && <pre className="diagnostics-output">{JSON.stringify(event.summary, null, 2)}</pre>}
+              </details>
+            ))}
+            {syncEvents.length === 0 && <p className="empty-inline">No sync history yet.</p>}
+          </div>
+        </article>
+        <article className="panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Devices</p><h3>Manual sync devices</h3></div></div>
+          <form onSubmit={renameDevice} className="form-grid compact">
+            <label>Current device name<input value={deviceDraft} onChange={(event) => setDeviceDraft(event.target.value)} /></label>
+            <div className="actions"><button type="submit" className="secondary" disabled={busy}>Rename current device</button></div>
+          </form>
+          <div className="stack compact-stack">
+            {syncDevices.map((device) => (
+              <article className="compact-device" key={device.deviceId}>
+                <strong>{device.deviceName ?? device.deviceId}</strong>
+                <span>{device.isCurrent ? 'Current device' : 'Other device'}</span>
+                <span>{device.lastSeenAt ? `Last seen ${formatDateTime(device.lastSeenAt, displayOptions)}` : 'Last seen unknown'}</span>
+              </article>
+            ))}
+            {syncDevices.length === 0 && <p className="empty-inline">Device list appears after migration 003 is installed and Compare runs.</p>}
+          </div>
+        </article>
+      </section>
     </main>
   )
 }
@@ -1993,6 +2275,7 @@ function SyncPage({
 function App() {
   const [route, setRoute] = useState<AppRoute>(routeFromHash)
   const [flights, setFlights] = useState<FlightLogEntry[]>([])
+  const [allFlights, setAllFlights] = useState<FlightLogEntry[]>([])
   const [editing, setEditing] = useState<FlightLogEntry | undefined>()
   const [showForm, setShowForm] = useState(false)
   const [toast, setToast] = useState('')
@@ -2000,6 +2283,7 @@ function App() {
   const [airportDatasetLabel, setAirportDatasetLabel] = useState(`${airportCount()} airport fallback loaded`)
   const [providerAirportState, setProviderAirportState] = useState<ProviderAirportSnapshot[]>([])
   const [tripMetadata, setTripMetadataState] = useState<TripMetadata[]>([])
+  const [allTripMetadata, setAllTripMetadataState] = useState<TripMetadata[]>([])
   const [appMetadata, setAppMetadataState] = useState<AppMetadata[]>([])
   const [authSession, setAuthSession] = useState<Session | null>(null)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
@@ -2012,12 +2296,18 @@ function App() {
   const [syncComparison, setSyncComparison] = useState<SyncComparison | undefined>()
   const [syncBusy, setSyncBusy] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
-  const [syncConflictActions, setSyncConflictActions] = useState<Record<string, 'keep-local' | 'use-cloud' | 'skip'>>({})
+  const [syncConflictActions, setSyncConflictActions] = useState<Record<string, SyncConflictAction>>({})
+  const [syncEvents, setSyncEvents] = useState<SyncEventLog[]>([])
+  const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([])
+  const [deviceName, setDeviceNameState] = useState(() => getDeviceName())
   const [liveApiStatus, setLiveApiStatus] = useState<{ status: 'unchecked' | 'checking' | 'reachable' | 'error'; checkedAt?: string; message?: string }>(() => ({ status: 'unchecked' }))
   const deviceId = useMemo(() => localDeviceId(), [])
+  const deletedFlightList = useMemo(() => sortDeletedFlights(allFlights), [allFlights])
+  const deletedTripMetadataList = useMemo(() => deletedTripMetadata(allTripMetadata), [allTripMetadata])
   const trips = useMemo(() => groupFlightsIntoTrips(flights, tripMetadata), [flights, tripMetadata])
   const settings = useMemo(() => appSettingsFromMetadata(appMetadata), [appMetadata])
   const syncMetadata = useMemo(() => syncMetadataFromMetadata(appMetadata, deviceId), [appMetadata, deviceId])
+  const syncStatus = useMemo(() => syncStatusSnapshot({ configured: isSupabaseConfigured, signedIn: Boolean(authSession), syncMetadata, comparison: syncComparison, error: syncMessage.toLowerCase().includes('unable') ? syncMessage : undefined }), [authSession, syncComparison, syncMessage, syncMetadata])
   const currentFlight = route.flightId ? flights.find((flight) => flight.id === route.flightId) : undefined
   const currentTrip = route.tripId ? trips.find((trip) => trip.id === route.tripId) : undefined
   const authUserId = authSession?.user.id
@@ -2030,11 +2320,15 @@ function App() {
   })
 
   async function loadFlights() {
-    setFlights(await getFlights())
+    const [active, all] = await Promise.all([getFlights(), getAllFlights()])
+    setFlights(active)
+    setAllFlights(all)
   }
 
   async function loadTripMetadata() {
-    setTripMetadataState(await getTripMetadata())
+    const [active, all] = await Promise.all([getTripMetadata(), getAllTripMetadata()])
+    setTripMetadataState(active)
+    setAllTripMetadataState(all)
   }
 
   async function loadAppMetadata() {
@@ -2052,17 +2346,21 @@ function App() {
   }
 
   async function reloadLocalData() {
-    await Promise.all([loadFlights(), refreshProviderAirports(), loadTripMetadata(), loadAppMetadata()])
+    await Promise.all([loadFlights(), refreshProviderAirports(), loadTripMetadata(), loadAppMetadata(), loadSyncEvents()])
   }
 
   async function buildCurrentFullBackup(exportedAt = new Date().toISOString()) {
     return createFullBackup({
-      flights: await getFlights(),
-      tripMetadata: await getTripMetadata(),
+      flights: await getAllFlights(),
+      tripMetadata: await getAllTripMetadata(),
       providerAirports: await getProviderAirports(),
       appMetadata: await getAllAppMetadata(),
       exportedAt,
     })
+  }
+
+  async function loadSyncEvents() {
+    setSyncEvents(await listLocalSyncEvents(20))
   }
 
   async function loadCloudBackups(session: Session | null = authSession) {
@@ -2090,8 +2388,10 @@ function App() {
 
   useEffect(() => {
     let mounted = true
-    void getFlights().then((loadedFlights) => {
-      if (mounted) setFlights(loadedFlights)
+    void Promise.all([getFlights(), getAllFlights()]).then(([loadedFlights, loadedAllFlights]) => {
+      if (!mounted) return
+      setFlights(loadedFlights)
+      setAllFlights(loadedAllFlights)
     })
     void getProviderAirports().then((airports) => {
       if (!mounted) return
@@ -2099,13 +2399,19 @@ function App() {
       setProviderAirportState(airports)
       setAirportVersion((version) => version + 1)
     })
-    void migrateLegacyTripNames(legacyTripNamesFromLocalStorage()).then((metadata) => {
-      if (mounted) setTripMetadataState(metadata)
+    void migrateLegacyTripNames(legacyTripNamesFromLocalStorage()).then(async (metadata) => {
+      const allMetadata = await getAllTripMetadata()
+      if (!mounted) return
+      setTripMetadataState(metadata.filter((item) => !item.deletedAt))
+      setAllTripMetadataState(allMetadata)
     })
     void getAllAppMetadata().then(async (metadata) => {
       const migrated = migrateAppMetadataDefaults(metadata, localDeviceId())
       if (migrated.changed) await bulkSetAppMetadata(migrated.metadata)
       if (mounted) setAppMetadataState(migrated.metadata)
+    })
+    void listLocalSyncEvents(20).then((events) => {
+      if (mounted) setSyncEvents(events)
     })
     void loadGeneratedAirports()
       .then((count) => {
@@ -2151,6 +2457,7 @@ function App() {
       if (event === 'SIGNED_OUT') {
         setAuthMessage('Signed out. Local data was not deleted.')
         setCloudBackups([])
+        setSyncDevices([])
       }
     })
     return () => {
@@ -2181,10 +2488,34 @@ function App() {
   }, [authUserId])
 
   useEffect(() => {
+    if (!supabase || !authUserId) return
+    let cancelled = false
+    void Promise.resolve().then(async () => {
+      const device = currentDeviceSnapshot({
+        deviceId,
+        deviceName,
+        userAgent: navigator.userAgent,
+        now: new Date().toISOString(),
+      })
+      device.lastSyncEventAt = syncMetadata.lastSyncEventAt
+      try {
+        await registerSyncDevice({ client: supabase, userId: authUserId, device })
+        const devices = await listSyncDevices(supabase, deviceId)
+        if (!cancelled) setSyncDevices(devices)
+      } catch {
+        if (!cancelled) setSyncDevices([])
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [authUserId, deviceId, deviceName, syncMetadata.lastSyncEventAt])
+
+  useEffect(() => {
     let cancelled = false
     const backup = createFullBackup({
-      flights,
-      tripMetadata,
+      flights: allFlights,
+      tripMetadata: allTripMetadata,
       providerAirports: providerAirportState,
       appMetadata,
       exportedAt: new Date().toISOString(),
@@ -2199,7 +2530,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [flights, tripMetadata, providerAirportState, appMetadata])
+  }, [allFlights, allTripMetadata, providerAirportState, appMetadata])
 
   useEffect(() => {
     const root = document.documentElement
@@ -2230,10 +2561,61 @@ function App() {
   }
 
   async function handleDelete(id: string) {
-    await deleteFlight(id)
+    await deleteFlight(id, { deviceId, reason: 'Deleted from active flight list' })
     await loadFlights()
     await markLocalChange()
     if (route.page === 'flight-detail' && route.flightId === id) navigate('flights')
+  }
+
+  async function offerBackupBeforePermanentDelete(label: string): Promise<void> {
+    if (authSession && supabase && window.confirm(`Create a cloud backup snapshot before permanently deleting ${label}?`)) {
+      await handleCloudUpload(`Safety backup before permanent delete - ${new Date().toISOString().slice(0, 10)}`)
+    }
+  }
+
+  async function handleRestoreDeletedFlight(id: string) {
+    await restoreFlight(id)
+    await loadFlights()
+    await markLocalChange()
+    setToast('Flight restored from Trash.')
+  }
+
+  async function handleRestoreDeletedFlights(ids: string[]) {
+    if (ids.length === 0) return
+    await bulkRestoreFlights(ids)
+    await loadFlights()
+    await markLocalChange()
+    setToast(`Restored ${ids.length} flight${ids.length === 1 ? '' : 's'} from Trash.`)
+  }
+
+  async function handlePermanentDeleteFlight(id: string) {
+    const flight = allFlights.find((item) => item.id === id)
+    if (!flight) return
+    await offerBackupBeforePermanentDelete(flight.flightNumber)
+    if (!requireTypedConfirmation(`Permanently delete ${flight.flightNumber}? This removes it from this browser and cannot be undone from Trash. Cloud tombstones are not hard-deleted.`, 'DELETE FOREVER')) return
+    await permanentlyDeleteFlight(id)
+    await loadFlights()
+    await markLocalChange()
+    setToast('Flight permanently deleted locally.')
+  }
+
+  async function handlePermanentDeleteFlights(ids: string[]) {
+    if (ids.length === 0) return
+    await offerBackupBeforePermanentDelete(`${ids.length} deleted flights`)
+    if (!requireTypedConfirmation(`Permanently delete ${ids.length} deleted flight${ids.length === 1 ? '' : 's'} from this browser? Cloud tombstones are not hard-deleted.`, 'DELETE FOREVER')) return
+    await bulkPermanentlyDeleteFlights(ids)
+    await loadFlights()
+    await markLocalChange()
+    setToast(`Permanently deleted ${ids.length} local flight${ids.length === 1 ? '' : 's'}.`)
+  }
+
+  async function handleEmptyTrash() {
+    const deleted = await getDeletedFlights()
+    await handlePermanentDeleteFlights(deleted.map((flight) => flight.id))
+  }
+
+  function handleExportDeletedRecord(flight: FlightLogEntry) {
+    downloadFile(`flightlog-deleted-${flight.flightNumber}-${flight.id}.json`, JSON.stringify({ flight }, null, 2), 'application/json')
   }
 
   async function handleRefresh(flight: FlightLogEntry) {
@@ -2298,8 +2680,8 @@ function App() {
       { key: 'lastBackupAt', value: now, updatedAt: now },
     ]
     const backup = createFullBackup({
-      flights: await getFlights(),
-      tripMetadata: await getTripMetadata(),
+      flights: await getAllFlights(),
+      tripMetadata: await getAllTripMetadata(),
       providerAirports: await getProviderAirports(),
       appMetadata: appMetadataForBackup,
       exportedAt: now,
@@ -2393,7 +2775,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v1.7',
+        appVersion: 'v1.9',
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum })
       await bulkSetAppMetadata([
@@ -2533,11 +2915,62 @@ function App() {
     await loadAppMetadata()
   }
 
+  async function recordSyncEvent(eventType: SyncEventLog['eventType'], summary?: Record<string, unknown>, error?: unknown) {
+    const event = createSyncEvent({ eventType, deviceId, summary, error })
+    await addSyncEvent(event)
+    setSyncEvents(await listLocalSyncEvents(20))
+    if (supabase && authSession) {
+      try {
+        await logRemoteSyncEvent({ client: supabase, userId: authSession.user.id, event })
+      } catch {
+        // Sync history is optional until migration 003 is installed.
+      }
+    }
+    return event
+  }
+
+  async function refreshSyncDevices(lastSyncEventAt?: string) {
+    if (!supabase || !authSession) {
+      setSyncDevices([])
+      return
+    }
+    const device = currentDeviceSnapshot({
+      deviceId,
+      deviceName,
+      userAgent: navigator.userAgent,
+      now: new Date().toISOString(),
+    })
+    device.lastSyncEventAt = lastSyncEventAt ?? syncMetadata.lastSyncEventAt
+    try {
+      await registerSyncDevice({ client: supabase, userId: authSession.user.id, device })
+      setSyncDevices(await listSyncDevices(supabase, deviceId))
+    } catch {
+      setSyncDevices([])
+    }
+  }
+
+  async function handleRenameDevice(name: string) {
+    const cleaned = setDeviceName(name)
+    setDeviceNameState(cleaned)
+    const now = new Date().toISOString()
+    await updateSyncMetadata({ localDeviceName: cleaned }, now)
+    await refreshSyncDevices()
+  }
+
+  function hasRecentCloudBackup(): boolean {
+    return Boolean(latestCloudBackup && Date.now() - Date.parse(latestCloudBackup.createdAt) < 24 * 60 * 60 * 1000)
+  }
+
+  function confirmSyncWithoutRecentBackup(action: string): boolean {
+    if (hasRecentCloudBackup()) return true
+    return window.confirm(`${action} without a cloud backup from the last 24 hours?\n\nNo records will be overwritten or deleted without confirmation, but a backup is recommended before sync.`)
+  }
+
   async function buildLocalSyncState() {
     const settingsEntry = appMetadata.find((item) => item.key === 'settings')
     return getLocalSyncState({
-      flights: await getFlights(),
-      tripMetadata: await getTripMetadata(),
+      flights: await getAllFlights(),
+      tripMetadata: await getAllTripMetadata(),
       providerAirports: await getProviderAirports(),
       settings,
       deviceId,
@@ -2558,9 +2991,33 @@ function App() {
       setSyncComparison(comparison)
       setSyncConflictActions(Object.fromEntries(comparison.conflicts.map((item) => [item.key, 'skip'])))
       const now = new Date().toISOString()
-      await updateSyncMetadata({ lastCloudCompareAt: now }, now)
-      setSyncMessage(`Compared ${comparison.items.length} records. ${comparison.conflicts.length} conflict${comparison.conflicts.length === 1 ? '' : 's'} need review.`)
+      const summary = {
+        records: comparison.items.length,
+        localOnly: comparison.localOnly.length,
+        remoteOnly: comparison.remoteOnly.length,
+        conflicts: comparison.conflicts.length,
+        tombstones: comparison.tombstonesToPush.length + comparison.tombstonesToPull.length,
+      }
+      await recordSyncEvent('compare', summary)
+      await updateSyncMetadata({
+        lastCloudCompareAt: now,
+        lastSyncEventAt: now,
+        lastSyncSummary: JSON.stringify(summary),
+        lastConflictCount: comparison.conflicts.length,
+        lastTombstoneCount: comparison.tombstonesToPush.length + comparison.tombstonesToPull.length,
+        lastSyncError: undefined,
+      }, now)
+      await refreshSyncDevices(now)
+      try {
+        const remoteEvents = await listRemoteSyncEvents(supabase)
+        if (remoteEvents.length > 0) setSyncEvents(remoteEvents)
+      } catch {
+        // Remote sync history is optional until migration 003 is installed.
+      }
+      setSyncMessage(`Compared ${comparison.items.length} records. ${comparison.conflicts.length} conflict${comparison.conflicts.length === 1 ? '' : 's'} and ${summary.tombstones} tombstone${summary.tombstones === 1 ? '' : 's'} need review.`)
     } catch (error) {
+      await recordSyncEvent('error', { operation: 'compare' }, error)
+      await updateSyncMetadata({ lastSyncError: cloudSyncErrorMessage(error, 'Unable to compare local and cloud records.') })
       setSyncMessage(cloudSyncErrorMessage(error, 'Unable to compare local and cloud records.'))
     } finally {
       setSyncBusy(false)
@@ -2569,6 +3026,7 @@ function App() {
 
   async function handleCreateSafetyBackup() {
     await handleCloudUpload(`Safety backup before sync - ${new Date().toISOString().slice(0, 10)}`)
+    await recordSyncEvent('backup_before_sync', { backups: cloudBackups.length + 1 })
   }
 
   async function applyRemoteSyncRecords(records: SyncRecord[]) {
@@ -2600,12 +3058,16 @@ function App() {
     setSyncBusy(true)
     setSyncMessage('')
     try {
+      if (!confirmSyncWithoutRecentBackup('Push local changes')) return
       const records = syncComparison.localOnly.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
       const count = await pushLocalChanges({ client: supabase, userId: authSession.user.id, records, deviceId })
       const now = new Date().toISOString()
-      await updateSyncMetadata({ lastCloudPushAt: now }, now)
+      await recordSyncEvent('push', { pushed: count, tombstones: 0 })
+      await updateSyncMetadata({ lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} pushed`, lastSyncError: undefined }, now)
+      await refreshSyncDevices(now)
       await refreshSyncComparison(`Pushed ${count} local-only record${count === 1 ? '' : 's'} to cloud.`)
     } catch (error) {
+      await recordSyncEvent('error', { operation: 'push' }, error)
       setSyncMessage(cloudSyncErrorMessage(error, 'Unable to push local records.'))
     } finally {
       setSyncBusy(false)
@@ -2618,29 +3080,116 @@ function App() {
       return
     }
     if (!requireTypedConfirmation('Pull remote-only cloud sync records into this browser? Existing local records will not be overwritten.', 'PULL CLOUD RECORDS')) return
+    if (!confirmSyncWithoutRecentBackup('Pull cloud changes')) return
     setSyncBusy(true)
     setSyncMessage('')
     try {
       const records = pullRemoteChanges(syncComparison)
       await applyRemoteSyncRecords(records)
       const now = new Date().toISOString()
-      await updateSyncMetadata({ lastCloudPullAt: now, lastLocalChangeAt: now }, now)
+      await recordSyncEvent('pull', { pulled: records.length, tombstones: 0 })
+      await updateSyncMetadata({ lastCloudPullAt: now, lastLocalChangeAt: now, lastSyncEventAt: now, lastSyncSummary: `${records.length} pulled`, lastSyncError: undefined }, now)
+      await refreshSyncDevices(now)
       await refreshSyncComparison(`Pulled ${records.length} cloud record${records.length === 1 ? '' : 's'} into local data.`)
     } catch (error) {
+      await recordSyncEvent('error', { operation: 'pull' }, error)
       setSyncMessage(cloudSyncErrorMessage(error, 'Unable to pull cloud records.'))
     } finally {
       setSyncBusy(false)
     }
   }
 
-  async function handleResolveConflict(item: SyncComparisonItem, action: 'keep-local' | 'use-cloud' | 'skip') {
+  async function handleSyncPushTombstones() {
+    if (!supabase || !authSession || !syncComparison) {
+      await handleSyncCompare()
+      return
+    }
+    if (!confirmSyncWithoutRecentBackup('Push deletion tombstones')) return
+    if (!requireTypedConfirmation('Push local deletion tombstones to cloud? Deleted flights remain in Trash. Permanent deletion is not automatic.', 'PUSH TOMBSTONES')) return
+    setSyncBusy(true)
+    setSyncMessage('')
+    try {
+      const records = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
+      const count = await pushTombstones({ client: supabase, userId: authSession.user.id, records, deviceId })
+      const now = new Date().toISOString()
+      await recordSyncEvent('tombstone_push', { tombstones: count })
+      await updateSyncMetadata({ lastTombstonePushAt: now, lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} tombstones pushed`, lastSyncError: undefined }, now)
+      await refreshSyncDevices(now)
+      await refreshSyncComparison(`Pushed ${count} deletion tombstone${count === 1 ? '' : 's'} to cloud.`)
+    } catch (error) {
+      await recordSyncEvent('error', { operation: 'tombstone_push' }, error)
+      setSyncMessage(cloudSyncErrorMessage(error, 'Unable to push tombstones.'))
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function handleSyncPullTombstones() {
+    if (!syncComparison) {
+      await handleSyncCompare()
+      return
+    }
+    if (!confirmSyncWithoutRecentBackup('Pull deletion tombstones')) return
+    if (!requireTypedConfirmation('Pull cloud deletion tombstones into this browser? Matching records will move to Trash, not be permanently deleted.', 'PULL TOMBSTONES')) return
+    setSyncBusy(true)
+    setSyncMessage('')
+    try {
+      const records = pullTombstones(syncComparison)
+      await applyRemoteSyncRecords(records)
+      const now = new Date().toISOString()
+      await recordSyncEvent('tombstone_pull', { tombstones: records.length })
+      await updateSyncMetadata({ lastTombstonePullAt: now, lastCloudPullAt: now, lastLocalChangeAt: now, lastSyncEventAt: now, lastSyncSummary: `${records.length} tombstones pulled`, lastSyncError: undefined }, now)
+      await refreshSyncDevices(now)
+      await refreshSyncComparison(`Pulled ${records.length} deletion tombstone${records.length === 1 ? '' : 's'} into Trash.`)
+    } catch (error) {
+      await recordSyncEvent('error', { operation: 'tombstone_pull' }, error)
+      setSyncMessage(cloudSyncErrorMessage(error, 'Unable to pull tombstones.'))
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function handleSyncSafeChanges() {
+    if (!syncComparison) {
+      await handleSyncCompare()
+      return
+    }
+    if (!confirmSyncWithoutRecentBackup('Sync safe non-conflicting changes')) return
+    setSyncBusy(true)
+    setSyncMessage('')
+    try {
+      const pushRecords = syncComparison.localOnly.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
+      const pullRecords = pullRemoteChanges(syncComparison)
+      const tombstoneRecords = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
+      const pulledTombstones = pullTombstones(syncComparison)
+      if (pushRecords.length > 0) await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records: pushRecords, deviceId })
+      if (tombstoneRecords.length > 0) await pushTombstones({ client: supabase, userId: authSession?.user.id, records: tombstoneRecords, deviceId })
+      if (pullRecords.length > 0 || pulledTombstones.length > 0) await applyRemoteSyncRecords([...pullRecords, ...pulledTombstones])
+      const now = new Date().toISOString()
+      await recordSyncEvent('push', { pushed: pushRecords.length, pulled: pullRecords.length, tombstones: tombstoneRecords.length + pulledTombstones.length })
+      await updateSyncMetadata({ lastCloudPushAt: pushRecords.length || tombstoneRecords.length ? now : syncMetadata.lastCloudPushAt, lastCloudPullAt: pullRecords.length || pulledTombstones.length ? now : syncMetadata.lastCloudPullAt, lastLocalChangeAt: pullRecords.length || pulledTombstones.length ? now : syncMetadata.lastLocalChangeAt, lastSyncEventAt: now, lastSyncSummary: 'Safe changes synced', lastSyncError: undefined }, now)
+      await refreshSyncDevices(now)
+      await refreshSyncComparison('Synced safe non-conflicting changes. Conflicts, if any, were left untouched.')
+    } catch (error) {
+      await recordSyncEvent('error', { operation: 'sync_safe_changes' }, error)
+      setSyncMessage(cloudSyncErrorMessage(error, 'Unable to sync safe changes.'))
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function handleResolveConflict(item: SyncComparisonItem, action: SyncConflictAction) {
     if (!supabase || !authSession || action === 'skip') {
       setSyncConflictActions((current) => ({ ...current, [item.key]: action }))
       return
     }
+    if (!confirmSyncWithoutRecentBackup('Resolve sync conflict')) return
     setSyncBusy(true)
     setSyncMessage('')
     try {
+      const deletedSide = item.local?.deletedAt ? item.local : item.remote?.deletedAt ? item.remote : undefined
+      const activeLocal = item.local && !item.local.deletedAt ? item.local : undefined
+      const activeRemote = item.remote && !item.remote.deletedAt ? item.remote : undefined
       if (action === 'keep-local' && item.local) {
         await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [item.local], deviceId })
       }
@@ -2648,27 +3197,46 @@ function App() {
         if (!requireTypedConfirmation(`Use the cloud version of ${syncRecordLabel(item)} and overwrite this local record?`, 'USE CLOUD')) return
         await applyRemoteSyncRecords([item.remote])
       }
+      if (action === 'keep-deleted' && deletedSide) {
+        if (deletedSide === item.local) await pushTombstones({ client: supabase, userId: authSession.user.id, records: [deletedSide], deviceId })
+        else await applyRemoteSyncRecords([deletedSide])
+      }
+      if (action === 'restore-local' && activeLocal) {
+        await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [activeLocal], deviceId })
+      }
+      if (action === 'restore-cloud' && activeRemote) {
+        if (!requireTypedConfirmation(`Restore the active cloud version of ${syncRecordLabel(item)} into this browser?`, 'RESTORE CLOUD')) return
+        await applyRemoteSyncRecords([activeRemote])
+      }
       const now = new Date().toISOString()
+      const pulled = action === 'use-cloud' || action === 'restore-cloud' || (action === 'keep-deleted' && deletedSide === item.remote)
       await updateSyncMetadata({
         lastConflictResolutionAt: now,
         lastConflictResolutionSummary: `${action} for ${item.entityType}:${item.localId}`,
-        ...(action === 'keep-local' ? { lastCloudPushAt: now } : { lastCloudPullAt: now, lastLocalChangeAt: now }),
+        lastSyncEventAt: now,
+        lastSyncSummary: `${action} for ${syncRecordLabel(item)}`,
+        ...(pulled ? { lastCloudPullAt: now, lastLocalChangeAt: now } : { lastCloudPushAt: now }),
       }, now)
+      await recordSyncEvent('conflict_resolve', { action, conflicts: 1, tombstones: action === 'keep-deleted' ? 1 : 0 })
+      await refreshSyncDevices(now)
       await refreshSyncComparison(`Resolved conflict for ${syncRecordLabel(item)}.`)
     } catch (error) {
+      await recordSyncEvent('error', { operation: 'conflict_resolve', action }, error)
       setSyncMessage(cloudSyncErrorMessage(error, 'Unable to resolve sync conflict.'))
     } finally {
       setSyncBusy(false)
     }
   }
 
-  async function handleResolveAllConflicts(action: 'keep-local' | 'use-cloud' | 'skip') {
+  async function handleResolveAllConflicts(action: SyncConflictAction) {
     if (!syncComparison) return
     if (action === 'skip') {
       setSyncConflictActions(Object.fromEntries(syncComparison.conflicts.map((item) => [item.key, 'skip'])))
       return
     }
     if (action === 'use-cloud' && !requireTypedConfirmation('Use all cloud conflict records and overwrite matching local records?', 'USE CLOUD')) return
+    if (action === 'keep-deleted' && !requireTypedConfirmation('Keep all deletion conflicts as deleted? Deleted records remain in Trash and sync as tombstones.', 'KEEP DELETED')) return
+    if (!confirmSyncWithoutRecentBackup('Resolve all sync conflicts')) return
     setSyncBusy(true)
     setSyncMessage('')
     try {
@@ -2676,18 +3244,35 @@ function App() {
       if (action === 'keep-local') {
         const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
         await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
-      } else {
+      } else if (action === 'restore-local') {
+        const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt))
+        await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
+      } else if (action === 'use-cloud') {
         const records = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record))
         await applyRemoteSyncRecords(records)
+      } else if (action === 'restore-cloud') {
+        const records = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt))
+        await applyRemoteSyncRecords(records)
+      } else if (action === 'keep-deleted') {
+        const localDeleted = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
+        const remoteDeleted = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
+        await pushTombstones({ client: supabase, userId: authSession?.user.id, records: localDeleted, deviceId })
+        await applyRemoteSyncRecords(remoteDeleted)
       }
       const now = new Date().toISOString()
+      const pulled = action === 'use-cloud' || action === 'restore-cloud'
       await updateSyncMetadata({
         lastConflictResolutionAt: now,
         lastConflictResolutionSummary: `${action} for ${conflicts.length} conflicts`,
-        ...(action === 'keep-local' ? { lastCloudPushAt: now } : { lastCloudPullAt: now, lastLocalChangeAt: now }),
+        lastSyncEventAt: now,
+        lastSyncSummary: `${conflicts.length} conflicts resolved`,
+        ...(pulled ? { lastCloudPullAt: now, lastLocalChangeAt: now } : { lastCloudPushAt: now }),
       }, now)
+      await recordSyncEvent('conflict_resolve', { action, conflicts: conflicts.length, tombstones: action === 'keep-deleted' ? conflicts.length : 0 })
+      await refreshSyncDevices(now)
       await refreshSyncComparison(`Resolved ${conflicts.length} conflict${conflicts.length === 1 ? '' : 's'}.`)
     } catch (error) {
+      await recordSyncEvent('error', { operation: 'conflict_resolve_all', action }, error)
       setSyncMessage(cloudSyncErrorMessage(error, 'Unable to resolve sync conflicts.'))
     } finally {
       setSyncBusy(false)
@@ -2761,17 +3346,18 @@ function App() {
       </header>
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       {showForm && <FlightForm editing={editing} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
-      {route.page === 'backup' && <BackupCenterPage flights={flights} trips={trips} tripMetadata={tripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
-      {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} tripMetadata={tripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} />}
-      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} comparison={syncComparison} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
+      {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
+      {route.page === 'trash' && <TrashPage flights={deletedFlightList} tripMetadata={deletedTripMetadataList} busy={cloudBusy} signedIn={Boolean(authSession)} onRestore={handleRestoreDeletedFlight} onPermanentDelete={handlePermanentDeleteFlight} onRestoreSelected={handleRestoreDeletedFlights} onPermanentDeleteSelected={handlePermanentDeleteFlights} onEmptyTrash={handleEmptyTrash} onExport={handleExportDeletedRecord} onCreateSafetyBackup={handleCreateSafetyBackup} onNavigateSettings={() => navigate('settings')} />}
       <nav className="bottom-nav" aria-label="Mobile navigation">
         <button type="button" className={navPage(route) === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>Home</button>
         <button type="button" className={navPage(route) === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}>Flights</button>

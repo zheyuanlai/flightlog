@@ -25,7 +25,10 @@
 :root[data-theme="dark"] .empty-state,
 :root[data-theme="dark"] .toast,
 :root[data-theme="dark"] .lookup-preview,
-:root[data-theme="dark"] .cloud-preview {
+:root[data-theme="dark"] .cloud-preview,
+:root[data-theme="dark"] .sync-status-badge,
+:root[data-theme="dark"] .conflict-diff-grid div,
+:root[data-theme="dark"] .compact-device {
   border-color: rgba(148, 163, 184, 0.22);
   background: rgba(15, 23, 42, 0.9);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
@@ -625,6 +628,68 @@ textarea {
   border-color: rgba(15, 118, 110, 0.28);
 }
 
+.sync-status-badge {
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 8px;
+  background: rgba(240, 253, 250, 0.9);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08);
+}
+
+.sync-status-badge h3 {
+  margin-bottom: 4px;
+}
+
+.sync-status-badge.conflicts,
+.sync-status-badge.deletions,
+.sync-status-badge.error {
+  border-color: rgba(180, 35, 24, 0.24);
+  background: #fff7ed;
+}
+
+.sync-preview-grid,
+.conflict-diff-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.sync-preview-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.conflict-diff-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 14px 0;
+}
+
+.conflict-diff-grid div,
+.compact-device {
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.conflict-diff-grid .changed {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff7ed;
+}
+
+.compact-device {
+  display: grid;
+  gap: 4px;
+}
+
+.compact-device span {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .settings-page,
 .sync-page {
   display: grid;
@@ -921,6 +986,8 @@ a {
   }
 
   .hero-shell,
+  .sync-status-badge,
+  .sync-preview-grid,
   .two-columns,
   .three-columns {
     grid-template-columns: 1fr;
