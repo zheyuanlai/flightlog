@@ -1,8 +1,11 @@
 import type { AppMetadata, FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
 import { createFullBackup } from './backup'
+import { activeRecords, deletedRecords } from './deletedRecords'
 
 export interface LocalStorageSummary {
   flightCount: number
+  activeFlightCount: number
+  deletedFlightCount: number
   tripMetadataCount: number
   providerAirportCount: number
   appMetadataCount: number
@@ -29,14 +32,18 @@ export function estimateFullBackupSize(input: {
 
 export function localStorageSummary(input: {
   flights: FlightLogEntry[]
+  allFlights?: FlightLogEntry[]
   tripMetadata: TripMetadata[]
   providerAirports: ProviderAirportSnapshot[]
   appMetadata: AppMetadata[]
   localSchemaVersion: number
 }): LocalStorageSummary {
-  const estimatedBackupBytes = estimateFullBackupSize(input)
+  const allFlights = input.allFlights ?? input.flights
+  const estimatedBackupBytes = estimateFullBackupSize({ ...input, flights: allFlights })
   return {
-    flightCount: input.flights.length,
+    flightCount: allFlights.length,
+    activeFlightCount: activeRecords(allFlights).length,
+    deletedFlightCount: deletedRecords(allFlights).length,
     tripMetadataCount: input.tripMetadata.length,
     providerAirportCount: input.providerAirports.length,
     appMetadataCount: input.appMetadata.length,

@@ -1,13 +1,14 @@
 import Dexie, { type Table } from 'dexie'
-import type { AppMetadata, FlightLiveStatus, FlightLogEntry, ProviderAirportSnapshot, TripMetadata, TripType } from './types'
+import type { AppMetadata, FlightLiveStatus, FlightLogEntry, ProviderAirportSnapshot, SyncEventLog, TripMetadata, TripType } from './types'
 
-export const LOCAL_SCHEMA_VERSION = 3
+export const LOCAL_SCHEMA_VERSION = 4
 
 class FlightLogDatabase extends Dexie {
   flights!: Table<FlightLogEntry, string>
   providerAirports!: Table<ProviderAirportSnapshot, string>
   tripMetadata!: Table<TripMetadata, string>
   appMetadata!: Table<AppMetadata, string>
+  syncEvents!: Table<SyncEventLog, string>
 
   constructor() {
     super('flightlog')
@@ -24,13 +25,30 @@ class FlightLogDatabase extends Dexie {
       tripMetadata: 'id, type, isFavorite, updatedAt',
       appMetadata: 'key, updatedAt',
     })
+    this.version(4).stores({
+      flights: 'id, date, flightNumber, airline, origin, destination, updatedAt, deletedAt, restoredAt, source, providerFetchedAt',
+      providerAirports: 'iata, countryCode, source, updatedAt, deletedAt',
+      tripMetadata: 'id, type, isFavorite, updatedAt, deletedAt',
+      appMetadata: 'key, updatedAt',
+      syncEvents: 'id, eventType, createdAt, deviceId',
+    })
   }
 }
 
 export const db = new FlightLogDatabase()
 
 export async function getFlights(): Promise<FlightLogEntry[]> {
+  const flights = await db.flights.orderBy('date').reverse().toArray()
+  return flights.filter((flight) => !flight.deletedAt)
+}
+
+export async function getAllFlights(): Promise<FlightLogEntry[]> {
   return db.flights.orderBy('date').reverse().toArray()
+}
+
+export async function getDeletedFlights(): Promise<FlightLogEntry[]> {
+  const flights = await db.flights.where('deletedAt').above('').toArray()
+  return flights.sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? '') || b.date.localeCompare(a.date))
 }
 
 export async function saveFlight(
@@ -44,12 +62,56 @@ export async function saveFlight(
     id,
     createdAt: flight.createdAt ?? now,
     updatedAt: now,
+    lastOperation: flight.deletedAt ? 'delete' : flight.restoredAt ? 'restore' : flight.lastOperation ?? (flight.createdAt ? 'update' : 'create'),
   })
   return id
 }
 
-export async function deleteFlight(id: string): Promise<void> {
+export async function softDeleteFlight(id: string, options: { deviceId?: string; reason?: string; deletedAt?: string } = {}): Promise<void> {
+  const existing = await db.flights.get(id)
+  if (!existing) return
+  const now = options.deletedAt ?? new Date().toISOString()
+  await db.flights.put({
+    ...existing,
+    deletedAt: now,
+    deletedByDeviceId: options.deviceId,
+    deleteReason: options.reason ?? existing.deleteReason ?? 'Deleted from FlightLog',
+    restoredAt: undefined,
+    tombstoneVersion: existing.tombstoneVersion ?? 1,
+    lastOperation: 'delete',
+    updatedAt: now,
+  })
+}
+
+export async function deleteFlight(id: string, options: { deviceId?: string; reason?: string; deletedAt?: string } = {}): Promise<void> {
+  await softDeleteFlight(id, options)
+}
+
+export async function restoreFlight(id: string, options: { restoredAt?: string } = {}): Promise<void> {
+  const existing = await db.flights.get(id)
+  if (!existing) return
+  const now = options.restoredAt ?? new Date().toISOString()
+  await db.flights.put({
+    ...existing,
+    deletedAt: undefined,
+    deletedByDeviceId: undefined,
+    deleteReason: undefined,
+    restoredAt: now,
+    lastOperation: 'restore',
+    updatedAt: now,
+  })
+}
+
+export async function permanentlyDeleteFlight(id: string): Promise<void> {
   await db.flights.delete(id)
+}
+
+export async function bulkRestoreFlights(ids: string[]): Promise<void> {
+  await Promise.all(ids.map((id) => restoreFlight(id)))
+}
+
+export async function bulkPermanentlyDeleteFlights(ids: string[]): Promise<void> {
+  await db.flights.bulkDelete(ids)
 }
 
 export async function bulkSaveFlights(flights: FlightLogEntry[]): Promise<void> {
@@ -118,7 +180,7 @@ export async function bulkPutProviderAirportsRaw(airports: ProviderAirportSnapsh
   if (cleaned.length > 0) await db.providerAirports.bulkPut(cleaned)
 }
 
-function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>): TripMetadata {
+function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>, touch = true): TripMetadata {
   const now = new Date().toISOString()
   const type: TripType = metadata.type === 'work' || metadata.type === 'school' || metadata.type === 'other' ? metadata.type : 'personal'
   return {
@@ -128,11 +190,22 @@ function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 
     type,
     isFavorite: Boolean(metadata.isFavorite),
     createdAt: metadata.createdAt ?? now,
-    updatedAt: now,
+    updatedAt: touch ? now : metadata.updatedAt ?? now,
+    deletedAt: metadata.deletedAt,
+    deletedByDeviceId: metadata.deletedByDeviceId,
+    deleteReason: metadata.deleteReason,
+    restoredAt: metadata.restoredAt,
+    tombstoneVersion: metadata.tombstoneVersion,
+    lastOperation: metadata.lastOperation,
   }
 }
 
 export async function getTripMetadata(): Promise<TripMetadata[]> {
+  const metadata = await db.tripMetadata.toArray()
+  return metadata.filter((item) => !item.deletedAt)
+}
+
+export async function getAllTripMetadata(): Promise<TripMetadata[]> {
   return db.tripMetadata.toArray()
 }
 
@@ -142,7 +215,7 @@ export async function saveTripMetadata(metadata: Partial<TripMetadata> & Pick<Tr
 }
 
 export async function bulkSaveTripMetadata(metadata: TripMetadata[]): Promise<void> {
-  const cleaned = metadata.map((item) => cleanTripMetadata(item))
+  const cleaned = metadata.map((item) => cleanTripMetadata(item, false))
   if (cleaned.length > 0) await db.tripMetadata.bulkPut(cleaned)
 }
 
@@ -162,8 +235,29 @@ export async function replaceTripMetadata(metadata: TripMetadata[]): Promise<voi
   await bulkSaveTripMetadata(metadata)
 }
 
+export async function addSyncEvent(event: Omit<SyncEventLog, 'id' | 'createdAt'> & Partial<Pick<SyncEventLog, 'id' | 'createdAt'>>): Promise<SyncEventLog> {
+  const now = event.createdAt ?? new Date().toISOString()
+  const item: SyncEventLog = {
+    ...event,
+    id: event.id ?? crypto.randomUUID(),
+    createdAt: now,
+  }
+  await db.syncEvents.put(item)
+  return item
+}
+
+export async function listLocalSyncEvents(limit = 20): Promise<SyncEventLog[]> {
+  const events = await db.syncEvents.orderBy('createdAt').reverse().limit(limit).toArray()
+  return events
+}
+
+export async function replaceSyncEvents(events: SyncEventLog[]): Promise<void> {
+  await db.syncEvents.clear()
+  if (events.length > 0) await db.syncEvents.bulkPut(events)
+}
+
 export async function migrateLegacyTripNames(legacyNames: Record<string, string>): Promise<TripMetadata[]> {
-  const existing = await getTripMetadata()
+  const existing = await getAllTripMetadata()
   const existingIds = new Set(existing.map((metadata) => metadata.id))
   const toSave = Object.entries(legacyNames)
     .filter(([id, name]) => id && name.trim() && !existingIds.has(id))

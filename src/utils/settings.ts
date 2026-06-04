@@ -82,11 +82,19 @@ export function normalizeSyncMetadata(value: unknown, localDeviceId: string): Sy
     lastCloudPushAt: typeof input.lastCloudPushAt === 'string' ? input.lastCloudPushAt : undefined,
     lastCloudPullAt: typeof input.lastCloudPullAt === 'string' ? input.lastCloudPullAt : undefined,
     lastCloudCompareAt: typeof input.lastCloudCompareAt === 'string' ? input.lastCloudCompareAt : undefined,
+    lastTombstonePushAt: typeof input.lastTombstonePushAt === 'string' ? input.lastTombstonePushAt : undefined,
+    lastTombstonePullAt: typeof input.lastTombstonePullAt === 'string' ? input.lastTombstonePullAt : undefined,
     lastLocalChangeAt: typeof input.lastLocalChangeAt === 'string' ? input.lastLocalChangeAt : undefined,
     localDeviceId,
+    localDeviceName: typeof input.localDeviceName === 'string' ? input.localDeviceName : undefined,
     lastKnownCloudChecksum: typeof input.lastKnownCloudChecksum === 'string' ? input.lastKnownCloudChecksum : undefined,
     lastConflictResolutionAt: typeof input.lastConflictResolutionAt === 'string' ? input.lastConflictResolutionAt : undefined,
     lastConflictResolutionSummary: typeof input.lastConflictResolutionSummary === 'string' ? input.lastConflictResolutionSummary : undefined,
+    lastSyncError: typeof input.lastSyncError === 'string' ? input.lastSyncError : undefined,
+    lastSyncEventAt: typeof input.lastSyncEventAt === 'string' ? input.lastSyncEventAt : undefined,
+    lastSyncSummary: typeof input.lastSyncSummary === 'string' ? input.lastSyncSummary : undefined,
+    lastConflictCount: typeof input.lastConflictCount === 'number' ? input.lastConflictCount : undefined,
+    lastTombstoneCount: typeof input.lastTombstoneCount === 'number' ? input.lastTombstoneCount : undefined,
   }
 }
 

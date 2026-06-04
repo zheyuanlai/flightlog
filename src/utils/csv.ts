@@ -251,6 +251,12 @@ export function parseFlightsJson(json: string): ImportPreview {
         destinationAirportSnapshot: asAirportSnapshot(input.destinationAirportSnapshot),
         providerWarnings: asStringArray(input.providerWarnings),
         lookupDateRole: dateRoles.has(input.lookupDateRole as LookupDateRole) ? input.lookupDateRole : undefined,
+        deletedAt: cleanString(input.deletedAt),
+        deletedByDeviceId: cleanString(input.deletedByDeviceId),
+        deleteReason: cleanString(input.deleteReason),
+        restoredAt: cleanString(input.restoredAt),
+        tombstoneVersion: typeof input.tombstoneVersion === 'number' ? input.tombstoneVersion : undefined,
+        lastOperation: input.lastOperation === 'create' || input.lastOperation === 'update' || input.lastOperation === 'delete' || input.lastOperation === 'restore' ? input.lastOperation : undefined,
       })
     })
     return { valid, errors }

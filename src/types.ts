@@ -8,6 +8,17 @@ export type DateFormat = 'compact' | 'medium' | 'iso'
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type LiveDataMode = 'real' | 'mock' | 'disabled'
 export type SyncEntityType = 'flight' | 'tripMetadata' | 'providerAirport' | 'appSettings'
+export type SyncOperation = 'create' | 'update' | 'delete' | 'restore'
+export type SyncEventType =
+  | 'compare'
+  | 'push'
+  | 'pull'
+  | 'conflict_resolve'
+  | 'backup_before_sync'
+  | 'tombstone_push'
+  | 'tombstone_pull'
+  | 'device_register'
+  | 'error'
 export type LiveStatus =
   | 'scheduled'
   | 'active'
@@ -120,7 +131,16 @@ export interface FlightLiveStatus {
   warning?: string
 }
 
-export interface ProviderAirportSnapshot {
+export interface TombstoneMetadata {
+  deletedAt?: string
+  deletedByDeviceId?: string
+  deleteReason?: string
+  restoredAt?: string
+  tombstoneVersion?: number
+  lastOperation?: SyncOperation
+}
+
+export interface ProviderAirportSnapshot extends TombstoneMetadata {
   iata: string
   icao?: string
   name?: string
@@ -136,7 +156,7 @@ export interface ProviderAirportSnapshot {
   updatedAt?: string
 }
 
-export interface TripMetadata {
+export interface TripMetadata extends TombstoneMetadata {
   id: string
   name?: string
   notes?: string
@@ -172,14 +192,43 @@ export interface SyncMetadata {
   lastCloudPushAt?: string
   lastCloudPullAt?: string
   lastCloudCompareAt?: string
+  lastTombstonePushAt?: string
+  lastTombstonePullAt?: string
   lastLocalChangeAt?: string
   localDeviceId: string
+  localDeviceName?: string
   lastKnownCloudChecksum?: string
   lastConflictResolutionAt?: string
   lastConflictResolutionSummary?: string
+  lastSyncError?: string
+  lastSyncEventAt?: string
+  lastSyncSummary?: string
+  lastConflictCount?: number
+  lastTombstoneCount?: number
 }
 
-export interface FlightLogEntry {
+export interface SyncEventLog {
+  id: string
+  eventType: SyncEventType
+  createdAt: string
+  deviceId?: string
+  summary?: Record<string, unknown>
+  safeError?: string
+}
+
+export interface SyncDevice {
+  id?: string
+  deviceId: string
+  deviceName?: string
+  lastSeenAt?: string
+  lastSyncEventAt?: string
+  userAgent?: string
+  createdAt?: string
+  updatedAt?: string
+  isCurrent?: boolean
+}
+
+export interface FlightLogEntry extends TombstoneMetadata {
   id: string
   date: string
   flightNumber: string

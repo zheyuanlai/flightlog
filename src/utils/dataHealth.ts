@@ -1,14 +1,24 @@
-import type { FlightLogEntry, ProviderAirportSnapshot } from '../types'
+import type { FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
+import { activeRecords, deletedRecords } from './deletedRecords'
 import { resolveFlightAirport } from './airports'
 import { getBestArrivalTime, getBestDepartureTime } from './flightTime'
 import { computeFlight } from './flights'
 
 export interface DataHealthReport {
+  activeFlightsCount: number
+  deletedFlightsCount: number
   missingTimezoneCount: number
   missingAirportCoordinateCount: number
   providerWarningCount: number
   missingTimeCount: number
   repairableAirportSnapshotCount: number
+  orphanedTripMetadataCount: number
+  missingSyncMetadataCount: number
+  remoteTombstonesCount: number
+}
+
+interface TombstoneComparisonLike {
+  items: Array<{ remote?: { deletedAt?: string } }>
 }
 
 function airportSnapshotFromFlight(flight: FlightLogEntry, role: 'origin' | 'destination'): ProviderAirportSnapshot | undefined {
@@ -38,14 +48,29 @@ function hasTimezone(flight: FlightLogEntry, role: 'origin' | 'destination'): bo
   return Boolean(explicit ?? snapshot?.timezone ?? snapshot?.timeZone ?? airport?.timezone ?? airport?.timeZone)
 }
 
-export function analyzeDataHealth(flights: FlightLogEntry[]): DataHealthReport {
+export function analyzeDataHealth(
+  flights: FlightLogEntry[],
+  options: {
+    allFlights?: FlightLogEntry[]
+    tripMetadata?: TripMetadata[]
+    activeTripIds?: string[]
+    syncComparison?: TombstoneComparisonLike
+  } = {},
+): DataHealthReport {
+  const allFlights = options.allFlights ?? flights
+  const activeFlights = activeRecords(allFlights)
+  const deletedFlightCount = deletedRecords(allFlights).length
+  const activeTripIds = options.activeTripIds ? new Set(options.activeTripIds) : undefined
+  const orphanedTripMetadataCount = activeTripIds ? (options.tripMetadata ?? []).filter((metadata) => !activeTripIds.has(metadata.id) && !metadata.deletedAt).length : 0
+  const missingSyncMetadataCount = allFlights.filter((flight) => !flight.updatedAt).length
+  const remoteTombstonesCount = options.syncComparison?.items.filter((item) => item.remote?.deletedAt).length ?? 0
   let missingTimezoneCount = 0
   let missingAirportCoordinateCount = 0
   let providerWarningCount = 0
   let missingTimeCount = 0
   let repairableAirportSnapshotCount = 0
 
-  for (const flight of flights) {
+  for (const flight of activeFlights) {
     if (!hasTimezone(flight, 'origin') || !hasTimezone(flight, 'destination')) missingTimezoneCount += 1
     if (!computeFlight(flight).hasRouteCoordinates) missingAirportCoordinateCount += 1
     if ((flight.providerWarnings?.length ?? 0) > 0 || (flight.liveStatus?.warnings?.length ?? 0) > 0 || flight.liveStatus?.warning) providerWarningCount += 1
@@ -59,11 +84,16 @@ export function analyzeDataHealth(flights: FlightLogEntry[]): DataHealthReport {
   }
 
   return {
+    activeFlightsCount: activeFlights.length,
+    deletedFlightsCount: deletedFlightCount,
     missingTimezoneCount,
     missingAirportCoordinateCount,
     providerWarningCount,
     missingTimeCount,
     repairableAirportSnapshotCount,
+    orphanedTripMetadataCount,
+    missingSyncMetadataCount,
+    remoteTombstonesCount,
   }
 }
 

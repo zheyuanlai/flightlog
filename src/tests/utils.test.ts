@@ -8,12 +8,17 @@ import { backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackup
 import { buildCalendarEventDetails, calendarDescription } from '../utils/calendarLinks'
 import { parseFlightsCsv, flightsToCsv } from '../utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from '../utils/dataHealth'
+import { deletedFlights } from '../utils/deletedRecords'
 import { durationMinutes } from '../utils/dates'
+import { currentDeviceSnapshot, getDeviceName, getOrCreateDeviceId, setDeviceName } from '../utils/device'
 import { haversineDistanceKm } from '../utils/distance'
 import { externalFlightLinks } from '../utils/externalFlightLinks'
+import { diffFlightFields } from '../utils/conflicts'
 import { formatAirportLocalTime, formatArrivalLocalTime, formatDepartureLocalTime, getCalendarStartEnd } from '../utils/flightTime'
 import { computeFlight } from '../utils/flights'
 import { buildFlightStatusUrl, mockLiveStatus, normalizeLiveStatus, readFlightStatusError, refreshStatusLabel } from '../utils/liveStatus'
+import { createSyncEvent } from '../utils/syncHistory'
+import { syncStatusSnapshot } from '../utils/syncStatus'
 import { aggregateStats } from '../utils/stats'
 import { groupFlightsIntoTrips } from '../utils/trips'
 import { flightStaleStatus, formatCountdown, listUpcomingFlights } from '../utils/upcomingFlights'
@@ -277,10 +282,24 @@ describe('flight utilities', () => {
       appMetadata: [{ key: 'lastBackupAt', value: '2026-06-03T00:00:00.000Z', updatedAt: '2026-06-03T00:00:00.000Z' }],
       exportedAt: '2026-06-03T12:00:00.000Z',
     })
-    expect(backup.schemaVersion).toBe(3)
+    expect(backup.schemaVersion).toBe(4)
     expect(backup.tripMetadata[0].name).toBe('Pacific run')
     expect(backup.providerAirports[0].iata).toBe('SIN')
     expect(parseFullBackupJson(JSON.stringify(backup)).exportedAt).toBe('2026-06-03T12:00:00.000Z')
+  })
+
+  it('keeps tombstone metadata in full backup JSON', () => {
+    const deleted = flight({
+      id: 'deleted-flight',
+      deletedAt: '2026-06-04T00:00:00.000Z',
+      deletedByDeviceId: 'device-a',
+      deleteReason: 'Test delete',
+      lastOperation: 'delete',
+    })
+    const backup = createFullBackup({ flights: [flight({ id: 'active-flight' }), deleted], tripMetadata: [], providerAirports: [], appMetadata: [] })
+    const parsed = parseFullBackupJson(JSON.stringify(backup))
+    expect(deletedFlights(parsed.flights).map((item) => item.id)).toEqual(['deleted-flight'])
+    expect(parsed.flights.find((item) => item.id === 'deleted-flight')?.deleteReason).toBe('Test delete')
   })
 
   it('previews backup imports and skips likely duplicates on merge', () => {
@@ -353,6 +372,60 @@ describe('flight utilities', () => {
     expect(repaired.destinationAirportSnapshot?.iata).toBe('SIN')
     expect(repaired.originTimeZone).toBe('America/Los_Angeles')
     expect(repaired.destinationTimeZone).toBe('Asia/Singapore')
+  })
+
+  it('reports tombstone health counts without including deleted flights in active health checks', () => {
+    const active = flight({ id: 'active', origin: 'LAX', destination: 'SIN', originTimeZone: 'America/Los_Angeles', destinationTimeZone: 'Asia/Singapore' })
+    const deleted = flight({ id: 'deleted', deletedAt: '2026-06-04T00:00:00.000Z', origin: 'ZZZ', destination: 'YYY' })
+    const health = analyzeDataHealth([active], { allFlights: [active, deleted] })
+    expect(health.activeFlightsCount).toBe(1)
+    expect(health.deletedFlightsCount).toBe(1)
+    expect(health.missingTimezoneCount).toBe(0)
+  })
+
+  it('maps sync status, creates redacted sync events, and persists device names', () => {
+    const status = syncStatusSnapshot({
+      configured: true,
+      signedIn: true,
+      syncMetadata: { localDeviceId: 'device-a' },
+      comparison: {
+        localOnly: [{}],
+        remoteOnly: [],
+        conflicts: [],
+        tombstonesToPush: [],
+        tombstonesToPull: [],
+        deleteConflicts: [],
+      },
+    })
+    expect(status.kind).toBe('local-changes')
+
+    const event = createSyncEvent({
+      eventType: 'error',
+      deviceId: 'device-a',
+      summary: { authorization: 'Bearer secret', pushed: 1 },
+      error: 'Something failed',
+      now: '2026-06-04T00:00:00.000Z',
+    })
+    expect(JSON.stringify(event.summary)).toContain('[redacted]')
+    expect(JSON.stringify(event.summary)).not.toContain('Bearer secret')
+    expect(event.safeError).toBe('Something failed')
+
+    const store = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value) },
+    }
+    const id = getOrCreateDeviceId(storage)
+    expect(getOrCreateDeviceId(storage)).toBe(id)
+    expect(getDeviceName(storage, 'Mozilla/5.0 (Macintosh)')).toBe('Mac browser')
+    expect(setDeviceName('Ryan MacBook', storage)).toBe('Ryan MacBook')
+    expect(currentDeviceSnapshot({ deviceId: id, deviceName: getDeviceName(storage), now: '2026-06-04T00:00:00.000Z' })).toMatchObject({ deviceId: id, deviceName: 'Ryan MacBook', isCurrent: true })
+  })
+
+  it('diffs conflict fields for flight review', () => {
+    const diffs = diffFlightFields(flight({ notes: 'Local note' }), flight({ notes: 'Cloud note', deletedAt: '2026-06-04T00:00:00.000Z' }))
+    expect(diffs.find((diff) => diff.field === 'notes')?.changed).toBe(true)
+    expect(diffs.find((diff) => diff.field === 'deletedAt')?.cloudValue).toBe('2026-06-04T00:00:00.000Z')
   })
 
   it('detects and labels upcoming flights using origin-local time', () => {

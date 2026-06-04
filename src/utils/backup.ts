@@ -1,9 +1,10 @@
 import type { AppMetadata, FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
+import { deletedFlights } from './deletedRecords'
 import { getBestDepartureTime } from './flightTime'
 import { normalizeFlightNumber } from './liveStatus'
 import { DateTime } from 'luxon'
 
-export const FLIGHTLOG_BACKUP_SCHEMA_VERSION = 3
+export const FLIGHTLOG_BACKUP_SCHEMA_VERSION = 4
 
 export interface FlightLogBackup {
   app: 'FlightLog'
@@ -22,6 +23,7 @@ export interface BackupImportPreview {
   duplicateFlights: number
   providerAirports: number
   tripMetadata: number
+  deletedFlights: number
   warnings: string[]
   mergeFlights: FlightLogEntry[]
 }
@@ -107,6 +109,7 @@ export function previewBackupImport(backup: FlightLogBackup, existingFlights: Fl
     duplicateFlights,
     providerAirports: backup.providerAirports.length,
     tripMetadata: backup.tripMetadata.length,
+    deletedFlights: deletedFlights(backup.flights).length,
     warnings,
     mergeFlights,
   }

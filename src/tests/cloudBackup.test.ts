@@ -149,7 +149,7 @@ describe('cloud backup utilities', () => {
   it('summarizes backups and computes stable checksums', async () => {
     const first = backup([{ key: 'lastCloudBackupAt', value: '2026-06-03T12:00:00.000Z', updatedAt: '2026-06-03T12:00:00.000Z' }])
     const second = { ...backup([{ key: 'lastCloudBackupAt', value: '2026-06-04T12:00:00.000Z', updatedAt: '2026-06-04T12:00:00.000Z' }]), exportedAt: '2026-06-04T12:00:00.000Z' }
-    expect(summarizeBackup(first)).toMatchObject({ schemaVersion: 3, flightCount: 1, tripMetadataCount: 1, providerAirportCount: 1 })
+    expect(summarizeBackup(first)).toMatchObject({ schemaVersion: 4, flightCount: 1, tripMetadataCount: 1, providerAirportCount: 1 })
     expect(await computeBackupChecksum(first)).toBe(await computeBackupChecksum(second))
     const changed = { ...second, flights: [testFlight({ notes: 'Changed local note' })] }
     expect(hasLocalDataChangedSinceCloudBackup(await computeBackupChecksum(changed), await computeBackupChecksum(first))).toBe(true)
@@ -170,7 +170,7 @@ describe('cloud backup utilities', () => {
     expect(store.inserted).toMatchObject({ user_id: 'user-1', label: 'Before Tokyo', flight_count: 1, trip_metadata_count: 1, provider_airport_count: 1 })
     expect((store.inserted?.backup_checksum as string).length).toBe(64)
     const listed = await listCloudBackups(client)
-    expect(listed[0]).toMatchObject({ id: 'backup-1', flightCount: 1, schemaVersion: 3 })
+    expect(listed[0]).toMatchObject({ id: 'backup-1', flightCount: 1, schemaVersion: 4 })
   })
 
   it('gets, previews, and deletes cloud backups with mocked Supabase', async () => {
