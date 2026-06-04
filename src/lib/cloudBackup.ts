@@ -10,6 +10,7 @@ const VOLATILE_METADATA_KEYS = new Set([
   'lastCloudBackupChecksum',
   'lastCloudBackupId',
   'lastCloudRestoreAt',
+  'syncMetadata',
   'cloudRestorePromptDismissedAt',
 ])
 
@@ -57,6 +58,13 @@ export interface CloudRestorePreview {
   snapshot: CloudBackupSnapshot
   preview: BackupImportPreview
   mode: 'merge' | 'replace'
+}
+
+export interface CloudBackupVerification {
+  verified: boolean
+  expectedChecksum: string
+  fetchedChecksum?: string
+  warning?: string
 }
 
 export function cloudBackupErrorMessage(error: unknown, fallback = 'Cloud backup request failed.'): string {
@@ -180,6 +188,22 @@ export async function createCloudBackupSnapshot(options: {
     .single()
   if (error) throw new Error(cloudBackupErrorMessage(error, 'Unable to upload cloud backup.'))
   return rowToSummary(data as CloudBackupDatabaseRow)
+}
+
+export async function verifyCloudBackupSnapshot(options: {
+  client: SupabaseLike | null | undefined
+  id: string
+  expectedChecksum: string
+}): Promise<CloudBackupVerification> {
+  const snapshot = await getCloudBackup(options.client, options.id)
+  const fetchedChecksum = snapshot.checksum ?? await computeBackupChecksum(snapshot.backup)
+  const verified = fetchedChecksum === options.expectedChecksum
+  return {
+    verified,
+    expectedChecksum: options.expectedChecksum,
+    fetchedChecksum,
+    warning: verified ? undefined : 'Uploaded backup was saved, but verification checksum did not match.',
+  }
 }
 
 export async function listCloudBackups(client: SupabaseLike | null | undefined): Promise<CloudBackupSummary[]> {

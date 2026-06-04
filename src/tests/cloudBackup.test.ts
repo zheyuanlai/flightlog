@@ -13,6 +13,7 @@ import {
   listCloudBackups,
   restoreCloudBackup,
   summarizeBackup,
+  verifyCloudBackupSnapshot,
 } from '../lib/cloudBackup'
 import { createFlightLogSupabaseClient, hasSupabaseConfig } from '../lib/supabase'
 
@@ -177,6 +178,8 @@ describe('cloud backup utilities', () => {
     const { client, store } = mockClient([rowFromBackup('backup-1', sourceBackup), rowFromBackup('backup-2', sourceBackup)])
     const fetched = await getCloudBackup(client, 'backup-1')
     expect(fetched.backup.flights[0].flightNumber).toBe('SQ38')
+    const verified = await verifyCloudBackupSnapshot({ client, id: 'backup-1', expectedChecksum: 'checksum-backup-1' })
+    expect(verified.verified).toBe(true)
     const restore = await restoreCloudBackup({ client, id: 'backup-1', existingFlights: [testFlight()], mode: 'merge' })
     expect(restore.preview.duplicateFlights).toBe(1)
     await deleteCloudBackup(client, 'backup-1')
