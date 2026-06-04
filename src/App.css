@@ -6,6 +6,61 @@
   color: #102027;
 }
 
+:root[data-theme="dark"] .app-shell {
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.12), transparent 34%),
+    linear-gradient(180deg, #0f172a 0%, #111827 100%);
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] header,
+:root[data-theme="dark"] .bottom-nav {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+:root[data-theme="dark"] .stat-card,
+:root[data-theme="dark"] .panel,
+:root[data-theme="dark"] .flight-card,
+:root[data-theme="dark"] .empty-state,
+:root[data-theme="dark"] .toast,
+:root[data-theme="dark"] .lookup-preview,
+:root[data-theme="dark"] .cloud-preview {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.9);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] .search,
+:root[data-theme="dark"] .segmented,
+:root[data-theme="dark"] .timeline-row,
+:root[data-theme="dark"] .route-mini-map,
+:root[data-theme="dark"] .form-summary,
+:root[data-theme="dark"] .link-grid a {
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.32);
+  background: #111827;
+}
+
+:root[data-theme="dark"] .brand,
+:root[data-theme="dark"] nav button,
+:root[data-theme="dark"] .ghost,
+:root[data-theme="dark"] label,
+:root[data-theme="dark"] .passport-stamp span,
+:root[data-theme="dark"] .passport-stamp small {
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .muted,
+:root[data-theme="dark"] dt,
+:root[data-theme="dark"] .empty-inline,
+:root[data-theme="dark"] footer {
+  color: #94a3b8;
+}
+
 header {
   position: sticky;
   top: 0;
@@ -86,6 +141,10 @@ nav button.active,
 
 .danger {
   color: #b42318;
+}
+
+.danger-zone {
+  border-color: rgba(180, 35, 24, 0.28);
 }
 
 .warning {
@@ -566,6 +625,44 @@ textarea {
   border-color: rgba(15, 118, 110, 0.28);
 }
 
+.settings-page,
+.sync-page {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-columns {
+  margin-top: 0;
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+details summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diagnostics-output {
+  max-height: 340px;
+  overflow: auto;
+  margin: 14px 0;
+  padding: 14px;
+  border-radius: 8px;
+  color: #e2e8f0;
+  background: #0f172a;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.conflict-panel {
+  border-color: rgba(180, 35, 24, 0.24);
+}
+
 .cloud-preview {
   margin: 14px 0;
   padding: 14px;
@@ -791,7 +888,7 @@ a {
     bottom: 0;
     z-index: 25;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 4px;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     background: rgba(248, 250, 252, 0.96);
@@ -801,8 +898,8 @@ a {
 
   .bottom-nav button {
     min-height: 48px;
-    padding: 8px 6px;
-    font-size: 12px;
+    padding: 8px 4px;
+    font-size: 11px;
   }
 
   .bottom-add {
