@@ -1,12 +1,15 @@
 {
   "name": "FlightLog",
   "short_name": "FlightLog",
-  "description": "A local-first personal flight passport.",
-  "start_url": ".",
-  "scope": ".",
+  "description": "A local-first personal flight passport for logging flights, trips, maps, and travel stats.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#f8fafc",
   "theme_color": "#0f766e",
+  "categories": ["travel", "productivity"],
   "icons": [
     {
       "src": "icons/icon-192.png",
