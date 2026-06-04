@@ -1,0 +1,80 @@
+export type Page =
+  | 'dashboard'
+  | 'flights'
+  | 'map'
+  | 'passport'
+  | 'trips'
+  | 'backup'
+  | 'account'
+  | 'settings'
+  | 'sync'
+  | 'trash'
+  | 'flight-detail'
+  | 'trip-detail'
+
+export interface AppRoute {
+  page: Page
+  flightId?: string
+  tripId?: string
+}
+
+export type NavGroup = 'home' | 'add' | 'flights' | 'trips' | 'more'
+
+export const desktopNavItems: Array<{ page: Page; label: string }> = [
+  { page: 'dashboard', label: 'Dashboard' },
+  { page: 'flights', label: 'Flights' },
+  { page: 'trips', label: 'Trips' },
+  { page: 'map', label: 'Map' },
+  { page: 'passport', label: 'Passport' },
+  { page: 'backup', label: 'Backup' },
+  { page: 'sync', label: 'Sync' },
+  { page: 'settings', label: 'Settings' },
+]
+
+export const moreNavItems: Array<{ page: Page; label: string }> = [
+  { page: 'passport', label: 'Passport' },
+  { page: 'map', label: 'Map' },
+  { page: 'backup', label: 'Backup' },
+  { page: 'sync', label: 'Sync' },
+  { page: 'settings', label: 'Settings' },
+  { page: 'trash', label: 'Trash' },
+]
+
+const topLevelPages = new Set<Page>([
+  'dashboard',
+  'flights',
+  'map',
+  'passport',
+  'trips',
+  'backup',
+  'account',
+  'settings',
+  'sync',
+  'trash',
+])
+
+export function routeFromHashValue(hashValue: string): AppRoute {
+  const hash = hashValue.replace(/^#\/?/, '')
+  const [section, id] = hash.split('/')
+  if (section === 'flights' && id) return { page: 'flight-detail', flightId: decodeURIComponent(id) }
+  if (section === 'trips' && id) return { page: 'trip-detail', tripId: decodeURIComponent(id) }
+  if (section === 'import') return { page: 'backup' }
+  if (section === 'account') return { page: 'account' }
+  if (topLevelPages.has(section as Page)) return { page: section as Page }
+  return { page: 'dashboard' }
+}
+
+export function navPage(route: AppRoute): Page {
+  if (route.page === 'flight-detail') return 'flights'
+  if (route.page === 'trip-detail') return 'trips'
+  if (route.page === 'trash') return 'settings'
+  return route.page
+}
+
+export function mobileNavGroup(route: AppRoute): NavGroup {
+  const page = navPage(route)
+  if (page === 'dashboard') return 'home'
+  if (page === 'flights') return 'flights'
+  if (page === 'trips') return 'trips'
+  return 'more'
+}
