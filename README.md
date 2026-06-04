@@ -6,6 +6,8 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 
 - Manual flight logging with airport autocomplete and validation.
 - Quick Add by flight number and date through the Cloudflare Worker live-status endpoint.
+- Mobile-first v2.0 navigation with Home, Add, Flights, Trips, and More in the PWA bottom nav.
+- Mobile Quick Add with offline-aware lookup states, provider preview cards, and a manual fallback.
 - Generated airport coverage from OurAirports-style CSVs with more than 9,000 IATA airports.
 - Provider-derived airport fallback for live lookups when an airport is missing locally.
 - Local persistence through IndexedDB; no backend is required for the main app.
@@ -17,8 +19,20 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Optional Cloud Sync Lite for manual compare, push, pull, tombstone sync, and conflict-safe record sync. It is not realtime sync.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
 - Flight detail pages, trip grouping with local trip metadata, external flight-info links, and no-login calendar export.
-- Installable PWA app shell with conservative offline caching.
+- HTML share-card previews for flights, trips, and yearly passport summaries. PNG export is intentionally deferred to v2.1.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v20`.
 - GitHub Pages deployment through GitHub Actions.
+
+## v2.0 Mobile/PWA Overview
+
+FlightLog v2.0 focuses on making the web app feel worth adding to an iPhone home screen while keeping the local-first architecture intact.
+
+- Mobile bottom navigation is intentionally limited to Home, Add, Flights, Trips, and More. More contains Passport, Map, Backup, Sync, Settings, and Trash.
+- Dashboard is ordered for mobile use: Quick Add, upcoming flights, sync/backup attention states, travel stats, recent flights, and passport highlights.
+- Quick Add remains the core mobile action and supports live lookup, edit before saving, cancel, and manual add/edit fallback.
+- Flight Detail emphasizes flight number, airline, status, route, local departure/arrival timeline, calendar actions, external links, and a secondary delete section.
+- Trips and Passport use denser mobile cards and share-preview surfaces without copying any commercial app UI.
+- Settings has section navigation, PWA install guidance, collapsed diagnostics, and redacted diagnostics copy.
 
 ## Timezones
 
@@ -136,9 +150,38 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v20`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
+
+In Chrome or Edge, use the browser install button or the address-bar menu and choose **Install FlightLog**. In standalone mode, FlightLog applies safe-area spacing so content is not hidden behind the bottom navigation.
+
+## Offline Behavior
+
+FlightLog remains local-first offline. Dashboard, Flights, Flight Detail, Trips, Passport, Trash, and local backup export remain usable with local IndexedDB data.
+
+When offline, FlightLog shows a subtle banner and disables or explains network-only actions:
+
+- Live flight lookup and live status refresh.
+- Cloud backup upload, preview, restore, download, and delete.
+- Cloud Sync Lite compare, push, pull, tombstone sync, and conflict resolution.
+- Supabase login through Google or email magic link.
+
+Local manual add/edit, local stats, local Trash restore/permanent delete confirmations, and full local backup export do not require sign-in or network access.
+
+## Share Cards
+
+v2.0 adds HTML share-card previews for:
+
+- Individual flights.
+- Trip summaries.
+- Yearly passport summaries when flight data exists.
+
+Cards include FlightLog branding, route, date, distance, airports, countries, and summary highlights. Notes are excluded by default; flight and trip share previews expose an **Include notes** checkbox. PNG export is not implemented in v2.0 to avoid adding a heavy image-generation dependency to the initial bundle. It is planned for v2.1.
+
+## Performance Notes
+
+The app keeps Dashboard light by using local data first, route-level loading fallbacks, and lazy-loading Leaflet and its CSS only when the Map page is opened. Supabase remains in a separate Vite chunk and is only used for optional auth, backup, and Sync Lite flows. The service worker avoids aggressive API caching so live provider and Supabase responses do not become stale.
 
 ## Data Privacy
 
@@ -178,6 +221,21 @@ Sync Lite does not run automatically, does not poll in the background, and does 
 Deleting a flight soft-deletes it locally. The flight disappears from Dashboard, Flights, Trips, Map, Passport, Upcoming flights, and active stats, but remains in `#/trash`.
 
 Trash supports restore, deleted-record JSON export, selected restore, selected permanent delete, and empty trash. Permanent delete requires typed confirmation and is local-only; normal sync keeps cloud tombstones instead of hard-deleting `synced_records` rows.
+
+## v2.0 Data Safety Regression Checklist
+
+Before shipping v2.0 changes, verify:
+
+1. Soft-deleted flights are hidden from active Dashboard, Flights, Trips, Map, Passport, Upcoming, and stats views.
+2. Trash loads deleted flights and deleted trip metadata.
+3. Restore returns flights to active views.
+4. Permanent delete and empty trash still require typed confirmation.
+5. Backup Center loads and full local export works.
+6. Cloud backup upload/preview/restore/download/delete still requires a signed-in Supabase user.
+7. Sync Lite loads, compares, pushes, pulls, syncs tombstones, and shows conflicts without automatic sync.
+8. RLS isolation is unchanged because no service role key is exposed and no frontend policy bypass is added.
+9. Airport-local timezone formatting remains intact for departure, arrival, calendar, and share-card data.
+10. GitHub Pages hash routing still works for direct navigation and Supabase auth redirects.
 
 ## Supabase Cloud Backup Setup
 
@@ -220,7 +278,7 @@ FlightLog uses hash routes such as `#/account`, but Supabase redirects back to t
 - Google: enable Google in Supabase Auth Providers, configure a Google OAuth client, add the Supabase provider callback URL shown by Supabase, then paste the Google client ID and secret into Supabase.
 - Email: enable the Email provider for magic links. Supabase default email is fine for testing; production projects should consider custom SMTP.
 
-Apple login is not implemented in v1.6. It is planned for a later release and requires Apple Developer / Services ID configuration.
+Apple login is not implemented in v2.0. It is planned for a later release and requires Apple Developer / Services ID configuration.
 
 ### Supabase RLS Manual Test
 
@@ -320,7 +378,11 @@ Sample files are available at:
 
 ## Roadmap
 
-- v2.0: consider client-side encrypted backups, optional automatic sync only after explicit user opt-in, and richer field-level merge tools.
+- v2.1: flight lifecycle assistant.
+- v2.1: post-flight completion prompt.
+- v2.1: richer PNG share cards.
+- v2.1: manual trip editor.
+- Future: client-side encrypted backups and richer field-level merge tools.
 - Future: Apple login after Apple Developer configuration is available.
 - Still intentionally out of scope: payments, native iOS work, Apple login, realtime sync, background polling, and exposing provider API keys in the frontend.
 
