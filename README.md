@@ -13,6 +13,8 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Automatic route distance and duration calculation.
 - Full local backup export/import preview, plus backward-compatible JSON and CSV import/export with sample data.
 - Optional Supabase Auth and user-owned cloud backup snapshots. The app still works without sign-in.
+- Settings for account status, preferences, backup reminders, live data mode, storage tools, and diagnostics.
+- Optional Cloud Sync Lite for manual compare, push, pull, and conflict-safe record sync. It is not realtime sync.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
 - Flight detail pages, trip grouping with local trip metadata, external flight-info links, and no-login calendar export.
 - Installable PWA app shell with conservative offline caching.
@@ -144,6 +146,33 @@ FlightLog is local-first. Without sign-in, flight data stays in your browser sto
 
 With Supabase configured and a signed-in user, FlightLog can upload plain JSON backup snapshots to the `cloud_backups` table. Snapshots are protected by Supabase Auth and Row Level Security policies so users can only read, write, update, and delete their own rows. Signing out does not delete local data, and cloud backups remain in Supabase until deleted.
 
+Cloud Sync Lite stores record-level JSON in Supabase under the signed-in user. Cloud backup and Cloud Sync Lite data are protected by Supabase Auth and RLS, but they are not end-to-end encrypted yet. Do not store a Supabase service role key in frontend code, GitHub Pages variables, or Vite env vars.
+
+## Settings
+
+Settings are stored locally in IndexedDB app metadata and are included in full local/cloud backup exports. Existing installs without a settings record are migrated to defaults automatically.
+
+Settings include:
+
+- Account status and sign-in controls.
+- Cloud Backup status, latest backup actions, and reminder settings.
+- Cloud Sync Lite status and a link to the sync page.
+- Display, units, time/date format, and theme.
+- Defaults for new manual flight entries.
+- Live Flight Data mode: real Worker, mock data, or disabled.
+- Data & Storage tools, diagnostics copy, and local data clearing.
+
+Distance preferences affect dashboard stats, flight cards, flight detail, trips, and passport summaries. Time formatting changes display only; FlightLog still resolves departure and arrival times in airport-local time.
+
+## Backup vs Sync Lite
+
+Cloud Backup and Cloud Sync Lite solve different problems:
+
+- Backup is a snapshot restore point. It can be downloaded, previewed, merged, or used to replace local data after a typed confirmation.
+- Sync Lite is manual record-level push/pull. It can compare local and cloud records, push local-only records, pull cloud-only records, and show conflicts before overwrite.
+
+Sync Lite does not run automatically, does not poll in the background, and does not do realtime sync. It does not field-merge conflicts in v1.7. Deletions are intentionally not propagated automatically; missing local records are treated as cloud-only records unless future deletion sync is added.
+
 ## Supabase Cloud Backup Setup
 
 Cloud backup is optional. If `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY` is missing, FlightLog builds and runs in local-only mode.
@@ -153,9 +182,10 @@ Cloud backup is optional. If `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY` is 
 
 ```txt
 supabase/migrations/001_cloud_backups.sql
+supabase/migrations/002_cloud_sync_lite.sql
 ```
 
-The migration creates `public.cloud_backups`, enables Row Level Security, and adds authenticated own-row policies using `auth.uid()`.
+The first migration creates `public.cloud_backups`; the second creates `public.synced_records` for Cloud Sync Lite. Both enable Row Level Security and add authenticated own-row policies using `auth.uid()`.
 
 3. In Supabase Project Settings, API, copy:
 
@@ -185,6 +215,17 @@ FlightLog uses hash routes such as `#/account`, but Supabase redirects back to t
 
 Apple login is not implemented in v1.6. It is planned for a later release and requires Apple Developer / Services ID configuration.
 
+### Supabase RLS Manual Test
+
+Use two test users after running migrations `001` and `002`:
+
+1. User A signs in, uploads a cloud backup, opens Sync Lite, and pushes local records.
+2. User B signs in from another browser profile.
+3. User B must not see User A cloud backups or sync records.
+4. User B should be able to create and see only their own `cloud_backups` and `synced_records` rows.
+
+If rows leak across users, stop using cloud features and review RLS before deploying.
+
 ## Cloud Backup Format
 
 Cloud snapshots reuse the full local backup format:
@@ -200,6 +241,42 @@ appMetadata
 ```
 
 The Supabase row also stores summary columns: flight count, trip metadata count, provider airport count, schema version, exported time, checksum, label, device ID, app version, and timestamps.
+
+## Cloud Sync Lite Format
+
+Sync Lite uses `public.synced_records`:
+
+```txt
+entity_type: flight | tripMetadata | providerAirport | appSettings
+local_id
+record_json
+record_checksum
+record_updated_at
+deleted_at
+device_id
+```
+
+Rows are unique by signed-in user, entity type, and local ID. The app compares checksums and requires explicit action for conflicts: keep local, use cloud, or skip.
+
+## New-Device Restore Checklist
+
+When signing in on a browser with no local flights:
+
+1. Restore latest cloud backup for a complete snapshot restore.
+2. Or open Sync Lite and pull cloud sync records for record-level recovery.
+3. Or start fresh. FlightLog does not auto-restore or auto-pull.
+
+If both backup snapshots and sync records exist, prefer the latest verified backup for full recovery and Sync Lite pull for incremental records.
+
+## Cloud Sync Test Checklist
+
+1. Sign in and create a safety cloud backup.
+2. Open Sync Lite and compare local/cloud.
+3. Push local-only records.
+4. Compare again and confirm pushed records are in sync.
+5. Change a local record and a cloud record for the same local ID, then compare.
+6. Confirm the conflict list appears and choose keep local, use cloud, or skip.
+7. Confirm no local or cloud data is overwritten without an explicit action.
 
 ## CSV Import Format
 
@@ -218,6 +295,18 @@ Sample files are available at:
 
 ## Roadmap
 
-- v1.7: consider client-side encrypted backups, optional automatic rate-limited cloud backups, and richer restore history.
+- v1.8: consider client-side encrypted backups, deletion tombstones for Sync Lite, richer restore history, and a safer automatic-sync design only after explicit user opt-in.
 - Future: Apple login after Apple Developer configuration is available.
-- Still intentionally out of scope: payments, realtime sync, conflict resolution, and exposing provider API keys in the frontend.
+- Still intentionally out of scope: payments, native iOS work, Apple login in v1.7, realtime sync, background polling, and exposing provider API keys in the frontend.
+
+## Troubleshooting
+
+- Cloud backup not configured: verify `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and migration `001`.
+- Sync Lite disabled or failing: run migration `002_cloud_sync_lite.sql` and confirm RLS policies exist.
+- Redirect mismatch: add the GitHub Pages URL and localhost URLs to Supabase Auth URL Configuration.
+- Google login error: verify the Google OAuth client and Supabase provider callback URL.
+- Magic link not received: check Supabase Email provider settings, rate limits, and spam folders.
+- RLS denied: confirm the user is signed in and rows use `user_id = auth.uid()`.
+- GitHub Pages env vars missing: add repository variables, then rerun the Pages workflow.
+- Sync conflict: open Sync Lite, compare, then choose keep local, use cloud, or skip.
+- Cloud/local mismatch: create a safety backup, compare again, then push or pull only the previewed records.
