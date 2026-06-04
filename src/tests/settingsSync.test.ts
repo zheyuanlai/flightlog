@@ -15,12 +15,16 @@ import {
 } from '../utils/settings'
 import {
   compareLocalAndRemote,
+  compareDeletionState,
+  computeRecordContentChecksum,
   computeRecordChecksum,
-  deletionSyncLimitation,
   getLocalSyncState,
   getRemoteSyncState,
+  listRecentlyDeleted,
   pullRemoteChanges,
+  pullTombstones,
   pushLocalChanges,
+  pushTombstones,
   resolveConflict,
   type SyncRecord,
 } from '../lib/cloudSync'
@@ -74,7 +78,7 @@ function remoteRow(record: SyncRecord) {
     record_json: record.record,
     record_checksum: record.checksum,
     record_updated_at: record.recordUpdatedAt,
-    deleted_at: null,
+    deleted_at: record.deletedAt ?? null,
     device_id: record.deviceId,
   }
 }
@@ -141,13 +145,16 @@ describe('settings and sync foundation', () => {
       ...sameFlight!,
       record: { ...(sameFlight!.record as FlightLogEntry), notes: 'Cloud note', updatedAt: '2026-06-04T00:00:00.000Z' },
       checksum: await computeRecordChecksum({ ...(sameFlight!.record as FlightLogEntry), notes: 'Cloud note', updatedAt: '2026-06-04T00:00:00.000Z' }),
+      contentChecksum: await computeRecordContentChecksum({ ...(sameFlight!.record as FlightLogEntry), notes: 'Cloud note', updatedAt: '2026-06-04T00:00:00.000Z' }),
       recordUpdatedAt: '2026-06-04T00:00:00.000Z',
     }
+    const remoteOnlyRecord = flight({ id: 'flight-remote', flightNumber: 'UA1' })
     const remoteOnly: SyncRecord = {
       entityType: 'flight',
       localId: 'flight-remote',
-      record: flight({ id: 'flight-remote', flightNumber: 'UA1' }),
-      checksum: await computeRecordChecksum(flight({ id: 'flight-remote', flightNumber: 'UA1' })),
+      record: remoteOnlyRecord,
+      checksum: await computeRecordChecksum(remoteOnlyRecord),
+      contentChecksum: await computeRecordContentChecksum(remoteOnlyRecord),
       recordUpdatedAt: '2026-06-02T00:00:00.000Z',
     }
     const { client, store } = mockSyncClient([remoteRow(remoteChangedFlight), remoteRow(remoteOnly)])
@@ -163,7 +170,47 @@ describe('settings and sync foundation', () => {
     expect(store.upserted[0]).toMatchObject({ user_id: 'user-a', entity_type: comparison.localOnly[0].entityType })
   })
 
-  it('documents deletion sync as deferred in v1.7', () => {
-    expect(deletionSyncLimitation()).toContain('does not automatically propagate deletions')
+  it('ignores updatedAt noise in checksums but includes tombstone state', async () => {
+    const first = flight({ updatedAt: '2026-06-01T00:00:00.000Z' })
+    const second = flight({ updatedAt: '2026-06-04T00:00:00.000Z' })
+    const deleted = flight({ updatedAt: '2026-06-04T00:00:00.000Z', deletedAt: '2026-06-04T01:00:00.000Z', lastOperation: 'delete' })
+    expect(await computeRecordChecksum(first)).toBe(await computeRecordChecksum(second))
+    expect(await computeRecordChecksum(second)).not.toBe(await computeRecordChecksum(deleted))
+    expect(await computeRecordContentChecksum(second)).toBe(await computeRecordContentChecksum(deleted))
+  })
+
+  it('compares local and remote tombstone states safely', async () => {
+    const active = flight()
+    const deleted = flight({ deletedAt: '2026-06-04T00:00:00.000Z', deleteReason: 'Test delete', lastOperation: 'delete', updatedAt: '2026-06-04T00:00:00.000Z' })
+    const [localActive] = (await getLocalSyncState({ flights: [active], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })).records.filter((record) => record.entityType === 'flight')
+    const [localDeleted] = (await getLocalSyncState({ flights: [deleted], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })).records.filter((record) => record.entityType === 'flight')
+    expect(compareDeletionState(localDeleted, localActive)).toBe('tombstone-to-push')
+    expect(compareDeletionState(localActive, localDeleted)).toBe('tombstone-to-pull')
+
+    const changedActiveState = await getLocalSyncState({ flights: [flight({ notes: 'Changed active record' })], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const changedActive = changedActiveState.records.find((record) => record.entityType === 'flight')!
+    expect(compareDeletionState(localDeleted, changedActive)).toBe('delete-conflict')
+    expect(compareDeletionState(changedActive, localDeleted)).toBe('delete-conflict')
+
+    const comparison = compareLocalAndRemote(
+      { records: [localDeleted], byKey: new Map([[`flight:${localDeleted.localId}`, localDeleted]]), counts: { flight: 1, tripMetadata: 0, providerAirport: 0, appSettings: 0 }, deletedCount: 1 },
+      { records: [localActive], byKey: new Map([[`flight:${localActive.localId}`, localActive]]), counts: { flight: 1, tripMetadata: 0, providerAirport: 0, appSettings: 0 }, deletedCount: 0 },
+    )
+    expect(comparison.tombstonesToPush).toHaveLength(1)
+    expect(listRecentlyDeleted(comparison.local)).toHaveLength(1)
+    const { client, store } = mockSyncClient([])
+    await pushTombstones({ client, userId: 'user-a', records: [localDeleted], deviceId: 'device-a' })
+    expect(store.upserted[0]).toMatchObject({ deleted_at: '2026-06-04T00:00:00.000Z', last_operation: 'delete' })
+  })
+
+  it('pulls remote-only tombstones separately from active records', async () => {
+    const deleted = flight({ id: 'flight-deleted', deletedAt: '2026-06-04T00:00:00.000Z', lastOperation: 'delete' })
+    const remote = await getLocalSyncState({ flights: [deleted], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const local = await getLocalSyncState({ flights: [], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const comparison = compareLocalAndRemote(local, remote)
+    expect(comparison.remoteOnly).toHaveLength(0)
+    expect(comparison.tombstonesToPull).toHaveLength(1)
+    expect(pullRemoteChanges(comparison)).toHaveLength(0)
+    expect(pullTombstones(comparison).map((record) => record.localId)).toEqual(['flight-deleted'])
   })
 })
