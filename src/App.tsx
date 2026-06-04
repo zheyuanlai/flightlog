@@ -1,5 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import 'leaflet/dist/leaflet.css'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowRight,
   AlertTriangle,
@@ -11,10 +10,13 @@ import {
   Download,
   Gauge,
   Globe2,
+  Home,
   Import,
+  Image as ImageIcon,
   LogIn,
   LogOut,
   Map,
+  MoreHorizontal,
   Mail,
   Plane,
   Plus,
@@ -23,8 +25,11 @@ import {
   Search,
   Shield,
   SlidersHorizontal,
+  Smartphone,
   Trash2,
   Upload,
+  WifiOff,
+  X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
@@ -116,6 +121,11 @@ import { syncStatusSnapshot, type SyncStatusSnapshot } from './utils/syncStatus'
 import { aggregateStats } from './utils/stats'
 import { buildCalendarEventDetails } from './utils/calendarLinks'
 import { externalFlightLinks } from './utils/externalFlightLinks'
+import { lookupErrorCopy } from './utils/lookupErrors'
+import { initialOnlineStatus, offlineActionMessage } from './utils/offline'
+import { installGuidance, isStandaloneDisplay } from './utils/pwa'
+import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, routeFromHashValue, type AppRoute, type Page } from './utils/navigation'
+import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
 import {
   formatAirportLocalTime,
   formatArrivalLocalTime,
@@ -128,12 +138,6 @@ import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import './App.css'
 
-type Page = 'dashboard' | 'flights' | 'map' | 'passport' | 'trips' | 'backup' | 'account' | 'settings' | 'sync' | 'trash' | 'flight-detail' | 'trip-detail'
-interface AppRoute {
-  page: Page
-  flightId?: string
-  tripId?: string
-}
 type FlightFormState = Record<(typeof csvColumns)[number], string>
 
 const emptyForm: FlightFormState = {
@@ -155,17 +159,6 @@ const emptyForm: FlightFormState = {
   source: 'manual',
 }
 
-const navItems: Array<{ page: Page; label: string }> = [
-  { page: 'dashboard', label: 'Dashboard' },
-  { page: 'flights', label: 'Flights' },
-  { page: 'trips', label: 'Trips' },
-  { page: 'map', label: 'Map' },
-  { page: 'passport', label: 'Passport' },
-  { page: 'backup', label: 'Backup' },
-  { page: 'sync', label: 'Sync' },
-  { page: 'settings', label: 'Settings' },
-]
-
 const AppSettingsContext = createContext<AppSettings>(DEFAULT_APP_SETTINGS)
 
 function useAppSettings(): AppSettings {
@@ -177,21 +170,7 @@ function flightTimeDisplayOptions(settings: AppSettings) {
 }
 
 function routeFromHash(): AppRoute {
-  const hash = window.location.hash.replace(/^#\/?/, '')
-  const [section, id] = hash.split('/')
-  if (section === 'flights' && id) return { page: 'flight-detail', flightId: decodeURIComponent(id) }
-  if (section === 'trips' && id) return { page: 'trip-detail', tripId: decodeURIComponent(id) }
-  if (section === 'import') return { page: 'backup' }
-  if (section === 'account') return { page: 'account' }
-  if (section === 'trash') return { page: 'trash' }
-  return navItems.some((item) => item.page === section) ? { page: section as Page } : { page: 'dashboard' }
-}
-
-function navPage(route: AppRoute): Page {
-  if (route.page === 'flight-detail') return 'flights'
-  if (route.page === 'trip-detail') return 'trips'
-  if (route.page === 'trash') return 'settings'
-  return route.page
+  return routeFromHashValue(window.location.hash)
 }
 
 function emptyFormForSettings(settings: AppSettings): FlightFormState {
@@ -395,6 +374,147 @@ function flightFromLookup(liveStatus: FlightLiveStatus, date: string, fetchedAt:
   return enrichFlightWithLiveStatus(base, liveStatus, fetchedAt, lookupDateRole)
 }
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
+
+function useOnlineStatus(): boolean {
+  const [online, setOnline] = useState(() => initialOnlineStatus())
+  useEffect(() => {
+    const update = () => setOnline(initialOnlineStatus())
+    window.addEventListener('online', update)
+    window.addEventListener('offline', update)
+    return () => {
+      window.removeEventListener('online', update)
+      window.removeEventListener('offline', update)
+    }
+  }, [])
+  return online
+}
+
+function useStandaloneMode(): boolean {
+  const [standalone, setStandalone] = useState(() => isStandaloneDisplay())
+  useEffect(() => {
+    const media = window.matchMedia?.('(display-mode: standalone)')
+    const update = () => setStandalone(isStandaloneDisplay())
+    media?.addEventListener?.('change', update)
+    return () => media?.removeEventListener?.('change', update)
+  }, [])
+  return standalone
+}
+
+function usePwaInstallPrompt() {
+  const [promptEvent, setPromptEvent] = useState<BeforeInstallPromptEvent | null>(null)
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setPromptEvent(event as BeforeInstallPromptEvent)
+    }
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+  }, [])
+
+  async function promptInstall() {
+    if (!promptEvent) return
+    await promptEvent.prompt()
+    await promptEvent.userChoice.catch(() => undefined)
+    setPromptEvent(null)
+  }
+
+  return { canPrompt: Boolean(promptEvent), promptInstall }
+}
+
+function LoadingSkeleton({ label = 'Loading' }: { label?: string }) {
+  return <div className="skeleton-block" role="status" aria-label={label} />
+}
+
+function OfflineBanner() {
+  return (
+    <div className="offline-banner" role="status">
+      <WifiOff aria-hidden="true" />
+      <span>Offline mode: local data is available; live lookup and cloud sync are unavailable.</span>
+    </div>
+  )
+}
+
+function EmptyState({
+  icon: Icon,
+  title,
+  body,
+  children,
+}: {
+  icon: LucideIcon
+  title: string
+  body: string
+  children?: ReactNode
+}) {
+  return (
+    <section className="empty-state">
+      <Icon aria-hidden="true" />
+      <h2>{title}</h2>
+      <p>{body}</p>
+      {children}
+    </section>
+  )
+}
+
+function PwaInstallPanel({ standalone, canPrompt, onInstall }: { standalone: boolean; canPrompt: boolean; onInstall: () => Promise<void> }) {
+  return (
+    <section className="panel install-panel">
+      <div className="flight-main">
+        <div>
+          <p className="eyebrow">PWA</p>
+          <h3>{standalone ? 'Running as a home-screen app' : 'Add FlightLog to your home screen'}</h3>
+        </div>
+        <Smartphone aria-hidden="true" />
+      </div>
+      <p className="muted">{standalone ? 'Standalone mode is active. FlightLog uses safe-area spacing for mobile navigation.' : installGuidance()}</p>
+      {!standalone && canPrompt && <div className="actions"><button type="button" onClick={() => void onInstall()}><Download aria-hidden="true" /> Install FlightLog</button></div>}
+    </section>
+  )
+}
+
+function ShareCardPreview({
+  data,
+  includeNotes,
+  onIncludeNotesChange,
+}: {
+  data: ShareCardData
+  includeNotes?: boolean
+  onIncludeNotesChange?: (includeNotes: boolean) => void
+}) {
+  return (
+    <section className="panel share-panel">
+      <div className="section-heading compact-heading">
+        <div><p className="eyebrow">Share card</p><h3>HTML preview</h3></div>
+        <span className="status scheduled">v2.0</span>
+      </div>
+      <article className={`share-card share-card-${data.kind}`} aria-label={`${data.title} share card`}>
+        <div className="share-card-brand"><Plane aria-hidden="true" /><span>{data.brand}</span></div>
+        <p className="eyebrow">{data.kind}</p>
+        <h3>{data.title}</h3>
+        <p className="share-card-route">{data.route}</p>
+        <dl>
+          <div><dt>Date</dt><dd>{data.date}</dd></div>
+          <div><dt>Distance</dt><dd>{data.distance}</dd></div>
+          <div><dt>Airports</dt><dd>{data.airports.slice(0, 6).join(' · ') || 'Not set'}</dd></div>
+          <div><dt>Countries</dt><dd>{data.countries.slice(0, 5).join(' · ') || 'Not set'}</dd></div>
+        </dl>
+        <ul>{data.highlights.slice(0, 4).map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
+        {data.notes && <p className="share-card-notes">{data.notes}</p>}
+      </article>
+      <div className="actions">
+        {onIncludeNotesChange && (
+          <label className="checkbox-row inline-checkbox"><input type="checkbox" checked={Boolean(includeNotes)} onChange={(event) => onIncludeNotesChange(event.target.checked)} /> Include notes</label>
+        )}
+        <button type="button" className="secondary" disabled title="PNG export is planned for v2.1"><ImageIcon aria-hidden="true" /> Export image</button>
+      </div>
+      <p className="muted">PNG export is deferred to v2.1 to avoid adding a heavy image dependency to the initial bundle.</p>
+    </section>
+  )
+}
+
 function StatCard({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
     <article className="stat-card">
@@ -516,11 +636,13 @@ function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveSt
 
 function FlightForm({
   editing,
+  isOnline,
   onCancel,
   onSaved,
   onProviderAirportsSaved,
 }: {
   editing?: FlightLogEntry
+  isOnline: boolean
   onCancel: () => void
   onSaved: (savedFlightId?: string) => Promise<void>
   onProviderAirportsSaved: (liveStatus: FlightLiveStatus) => Promise<void>
@@ -534,14 +656,22 @@ function FlightForm({
   const [fetchedLiveStatus, setFetchedLiveStatus] = useState<FlightLiveStatus | undefined>(() => editing?.liveStatus)
   const [fetchedAt, setFetchedAt] = useState(editing?.lastFetchedAt ?? '')
   const [message, setMessage] = useState('')
+  const [lookupError, setLookupError] = useState<ReturnType<typeof lookupErrorCopy> | undefined>()
   const [busy, setBusy] = useState(false)
   const errors = validateFlightInput(form)
   const computedPreview = errors.length === 0 ? computeFlight(flightFromInput(form, editing)) : undefined
 
   async function handleLookup(event: FormEvent) {
     event.preventDefault()
+    if (!isOnline) {
+      setLookupError(lookupErrorCopy(offlineActionMessage('live lookup'), false))
+      setMessage('')
+      setLookupStatus(undefined)
+      return
+    }
     setBusy(true)
     setMessage('')
+    setLookupError(undefined)
     setLookupStatus(undefined)
     try {
       const liveStatus = await fetchLiveStatus(lookup.flightNumber, lookup.date, { dateRole: lookup.dateRole, useMock: lookup.useMock, liveDataMode: settings.liveDataMode })
@@ -551,7 +681,7 @@ function FlightForm({
       await onProviderAirportsSaved(liveStatus)
       setMessage(liveStatusMessage(liveStatus))
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to look up this flight')
+      setLookupError(lookupErrorCopy(error, isOnline))
     } finally {
       setBusy(false)
     }
@@ -600,6 +730,10 @@ function FlightForm({
   }
 
   async function handleFetchLive() {
+    if (!isOnline) {
+      setMessage(offlineActionMessage('live status refresh'))
+      return
+    }
     setBusy(true)
     setMessage('')
     try {
@@ -623,7 +757,7 @@ function FlightForm({
   }
 
   return (
-    <section className="panel form-panel" aria-label={editing ? 'Edit flight' : 'Add flight'}>
+    <section className="panel form-panel quick-add-panel" aria-label={editing ? 'Edit flight' : 'Add flight'}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">{editing ? 'Edit entry' : 'New entry'}</p>
@@ -641,17 +775,20 @@ function FlightForm({
 
       {mode === 'lookup' ? (
         <form onSubmit={handleLookup} className="lookup-form">
+          {!isOnline && <p className="notice warning">{offlineActionMessage('live lookup')}</p>}
           <div className="form-grid compact">
-            <label>Flight number<input value={lookup.flightNumber} onChange={(event) => setLookup({ ...lookup, flightNumber: event.target.value.toUpperCase() })} placeholder="SQ38" required /></label>
+            <label>Flight number<input value={lookup.flightNumber} onChange={(event) => setLookup({ ...lookup, flightNumber: event.target.value.toUpperCase() })} placeholder="SQ38" inputMode="text" autoCapitalize="characters" autoComplete="off" required /></label>
             <label>Date<input type="date" value={lookup.date} onChange={(event) => setLookup({ ...lookup, date: event.target.value })} required /></label>
             <label>Date role<select value={lookup.dateRole} onChange={(event) => setLookup({ ...lookup, dateRole: event.target.value as LookupDateRole })}><option value="Departure">Departure date</option><option value="Arrival">Arrival date</option></select></label>
             <label className="checkbox-row"><input type="checkbox" checked={lookup.useMock} onChange={(event) => setLookup({ ...lookup, useMock: event.target.checked })} /> Use demo lookup</label>
           </div>
           <div className="actions">
-            <button type="submit" disabled={busy || !lookup.flightNumber || !lookup.date}><Search aria-hidden="true" /> Look up flight</button>
+            <button type="submit" disabled={busy || !isOnline || !lookup.flightNumber || !lookup.date}><Search aria-hidden="true" /> {busy ? 'Looking up...' : 'Look up flight'}</button>
             <button type="button" className="secondary" onClick={() => setMode('manual')}><Plane aria-hidden="true" /> Add manually</button>
           </div>
+          {busy && <LoadingSkeleton label="Loading flight lookup preview" />}
           {lookupStatus && <LiveStatusPreview liveStatus={lookupStatus} fetchedAt={lookupFetchedAt} />}
+          {lookupError && <div className={`notice warning lookup-error ${lookupError.kind}`}><strong>{lookupError.title}.</strong> {lookupError.detail}</div>}
           {message && <p className="notice">{message}</p>}
           {lookupStatus && (
             <div className="actions">
@@ -665,7 +802,7 @@ function FlightForm({
         <form onSubmit={handleSubmit}>
           <div className="form-grid">
             <label>Date<input type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} required /></label>
-            <label>Flight number<input value={form.flightNumber} onChange={(event) => setForm({ ...form, flightNumber: event.target.value.toUpperCase() })} placeholder="SQ38" required /></label>
+            <label>Flight number<input value={form.flightNumber} onChange={(event) => setForm({ ...form, flightNumber: event.target.value.toUpperCase() })} placeholder="SQ38" inputMode="text" autoCapitalize="characters" autoComplete="off" required /></label>
             <label>Airline<input value={form.airline} onChange={(event) => setForm({ ...form, airline: event.target.value })} placeholder="Singapore Airlines" required /></label>
             <AirportInput label="Origin" value={form.origin} onChange={(origin) => setForm({ ...form, origin })} />
             <AirportInput label="Destination" value={form.destination} onChange={(destination) => setForm({ ...form, destination })} />
@@ -688,7 +825,7 @@ function FlightForm({
           </div>
           {message && <p className="notice">{message}</p>}
           <div className="actions">
-            <button type="button" className="secondary" onClick={handleFetchLive} disabled={busy || !form.flightNumber || !form.date}><RefreshCw aria-hidden="true" /> Fetch flight data</button>
+            <button type="button" className="secondary" onClick={handleFetchLive} disabled={busy || !isOnline || !form.flightNumber || !form.date}><RefreshCw aria-hidden="true" /> Fetch flight data</button>
             <button type="submit"><Plane aria-hidden="true" /> Save flight</button>
           </div>
         </form>
@@ -697,7 +834,7 @@ function FlightForm({
   )
 }
 
-function UpcomingFlightCard({ info, onOpen, onRefresh }: { info: UpcomingFlightInfo; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
+function UpcomingFlightCard({ info, isOnline, onOpen, onRefresh }: { info: UpcomingFlightInfo; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const { flight } = info
@@ -708,7 +845,7 @@ function UpcomingFlightCard({ info, onOpen, onRefresh }: { info: UpcomingFlightI
   const calendar = buildCalendarEventDetails(flight, detailsUrl)
   const links = externalFlightLinks(flight)
   return (
-    <article className="flight-card upcoming-card">
+    <article className={`flight-card upcoming-card ${info.isSameDay ? 'same-day' : ''}`}>
       <div className="flight-main">
         <div><p className="eyebrow">{info.countdownLabel}</p><h3>{flight.flightNumber} - {airline?.name ?? flight.airline}</h3></div>
         <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
@@ -725,7 +862,7 @@ function UpcomingFlightCard({ info, onOpen, onRefresh }: { info: UpcomingFlightI
       {settings.upcomingFlightRefreshReminderEnabled && info.gateHint && <p className="notice">{info.gateHint}</p>}
       <div className="actions">
         <button type="button" onClick={() => onOpen(flight)}>View details</button>
-        <button type="button" className="secondary" disabled={!canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
+        <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
         {calendar.googleUrl && <a className="button-link secondary-link" href={calendar.googleUrl} target="_blank" rel="noopener noreferrer"><CalendarDays aria-hidden="true" /> Add to calendar</a>}
         {links[0] && <a className="button-link secondary-link" href={links[0].url} target="_blank" rel="noopener noreferrer">External links</a>}
       </div>
@@ -735,6 +872,8 @@ function UpcomingFlightCard({ info, onOpen, onRefresh }: { info: UpcomingFlightI
 
 function Dashboard({
   flights,
+  loading,
+  isOnline,
   airportDatasetLabel,
   appMetadata,
   syncStatus,
@@ -746,6 +885,8 @@ function Dashboard({
   onCompareSync,
 }: {
   flights: FlightLogEntry[]
+  loading: boolean
+  isOnline: boolean
   airportDatasetLabel: string
   appMetadata: AppMetadata[]
   syncStatus: SyncStatusSnapshot
@@ -766,18 +907,28 @@ function Dashboard({
   const stats = aggregateStats(flights)
   const warning = settings.backupReminderEnabled ? backupAgeWarning(flights, appMetadata, undefined, settings.backupAgeThresholdDays) : undefined
   const upcoming = listUpcomingFlights(flights).slice(0, 6)
+  const recentFlights = flights.slice(0, 3).map(computeFlight)
+  const syncNeedsAttention = ['conflicts', 'deletions', 'error', 'local-changes', 'cloud-changes'].includes(syncStatus.kind)
+  const passportHighlights = [
+    `${stats.countriesVisited.length} countries`,
+    `${stats.airportsVisited.length} airports`,
+    `${stats.airlines.length} airlines`,
+  ]
   return (
-    <main className="page">
+    <main className="page dashboard-page">
       <section className="hero-shell">
         <div>
           <p className="eyebrow">FlightLog</p>
           <h1>Your personal flight passport.</h1>
           <p>Enter a flight number and departure date, preview real provider data, and save a complete route to your local passport.</p>
-          <div className="hero-actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><span>{airportDatasetLabel}</span></div>
+          <div className="hero-actions">
+            <button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button>
+            <span>{loading ? 'Loading local flights...' : airportDatasetLabel}</span>
+          </div>
+          {!isOnline && <p className="notice hero-notice">Local mode is active. Live lookup and cloud actions resume when you are online.</p>}
         </div>
         <div className="route-stamp" aria-hidden="true"><span>{stats.mostRecentFlight?.origin ?? 'SFO'}</span><ArrowRight /><span>{stats.mostRecentFlight?.destination ?? 'SIN'}</span></div>
       </section>
-      <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       {cloudRestorePrompt && (
         <section className="panel cloud-panel">
           <div className="section-heading compact-heading">
@@ -792,9 +943,24 @@ function Dashboard({
           </div>
         </section>
       )}
-      {flights.length === 0 ? (
-        <section className="empty-state"><Plane aria-hidden="true" /><h2>No flights logged yet</h2><p>Start with a live lookup or load demo flights to explore the app.</p><div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div></section>
-      ) : (
+      {loading ? (
+        <section className="panel"><LoadingSkeleton label="Loading dashboard flights" /></section>
+      ) : flights.length === 0 ? (
+        <EmptyState icon={Plane} title="No flights logged yet" body={isOnline ? 'Start with a flight lookup or load demo flights to explore the app.' : 'You can add a flight manually while offline, or use live lookup when you are online.'}>
+          <div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div>
+        </EmptyState>
+      ) : null}
+      <section className="panel upcoming-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
+        <div className="stack">
+          {upcoming.map((info) => <UpcomingFlightCard key={info.flight.id} info={info} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} />)}
+          {!loading && upcoming.length === 0 && <EmptyState icon={CalendarDays} title="No upcoming flights" body="Future flights you add will appear here with refresh and calendar actions." />}
+          {loading && <LoadingSkeleton label="Loading upcoming flights" />}
+        </div>
+      </section>
+      {syncNeedsAttention && <SyncStatusBadge status={syncStatus} onCompare={isOnline ? onCompareSync : undefined} />}
+      {warning && <section className="notice warning backup-warning"><strong>Backup recommended.</strong> {warning}</section>}
+      {flights.length > 0 && (
         <section className="stats-grid">
           <StatCard icon={Plane} label="Total flights" value={String(stats.totalFlights)} />
           <StatCard icon={Gauge} label="Total distance" value={formatDistance(stats.totalDistanceKm, settings.distanceUnit)} />
@@ -805,13 +971,19 @@ function Dashboard({
           <StatCard icon={CalendarDays} label="Most recent" value={stats.mostRecentFlight ? formatDate(stats.mostRecentFlight.date, settings.dateFormat) : 'None'} />
         </section>
       )}
-      {warning && <section className="notice warning backup-warning"><strong>Backup recommended.</strong> {warning}</section>}
-      <section className="panel upcoming-panel">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
-        <div className="stack">
-          {upcoming.map((info) => <UpcomingFlightCard key={info.flight.id} info={info} onOpen={onOpenFlight} onRefresh={onRefresh} />)}
-          {upcoming.length === 0 && <p className="empty-inline">No upcoming flights yet.</p>}
-        </div>
+      {flights.length > 0 && (
+        <section className="panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Recent</p><h2>Recent flights</h2></div></div>
+          <div className="stack compact-stack">
+            {recentFlights.map((flight) => <FlightCard key={flight.id} flight={flight} isOnline={isOnline} onOpen={onOpenFlight} onEdit={() => undefined} onDelete={async () => undefined} onRefresh={onRefresh} compactActions />)}
+          </div>
+        </section>
+      )}
+      <section className="panel passport-highlight-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Passport</p><h2>Highlights</h2></div></div>
+        {flights.length === 0 ? <p className="empty-inline">Your passport unlocks as you log flights.</p> : (
+          <div className="passport-highlight-row">{passportHighlights.map((highlight) => <span key={highlight}>{highlight}</span>)}</div>
+        )}
       </section>
     </main>
   )
@@ -819,16 +991,20 @@ function Dashboard({
 
 function FlightCard({
   flight,
+  isOnline,
   onOpen,
   onEdit,
   onDelete,
   onRefresh,
+  compactActions = false,
 }: {
   flight: FlightWithComputed
+  isOnline: boolean
   onOpen: (flight: FlightLogEntry) => void
   onEdit: (flight: FlightLogEntry) => void
   onDelete: (id: string) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
+  compactActions?: boolean
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
@@ -858,15 +1034,15 @@ function FlightCard({
       {warnings.map((warning, index) => <p className="notice warning" key={`provider-${index}-${warning}`}>{warning}</p>)}
       <div className="actions">
         <button type="button" onClick={() => onOpen(flight)}>View details</button>
-        <button type="button" className="ghost" onClick={() => onEdit(flight)}>Edit</button>
-        <button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button>
-        <button type="button" className="secondary" disabled={!refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh status' : 'Refresh guarded'}</button>
+        {!compactActions && <button type="button" className="ghost" onClick={() => onEdit(flight)}>Edit</button>}
+        {!compactActions && <button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button>}
+        <button type="button" className="secondary" disabled={!isOnline || !refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh status' : lastFetchedLabel}</button>
       </div>
     </article>
   )
 }
 
-function FlightsPage({ flights, airportVersion, onOpen, onEdit, onDelete, onRefresh, onQuickAdd }: { flights: FlightLogEntry[]; airportVersion: number; onOpen: (flight: FlightLogEntry) => void; onEdit: (flight: FlightLogEntry) => void; onDelete: (id: string) => Promise<void>; onRefresh: (flight: FlightLogEntry) => Promise<void>; onQuickAdd: () => void }) {
+function FlightsPage({ flights, airportVersion, isOnline, onOpen, onEdit, onDelete, onRefresh, onQuickAdd }: { flights: FlightLogEntry[]; airportVersion: number; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onEdit: (flight: FlightLogEntry) => void; onDelete: (id: string) => Promise<void>; onRefresh: (flight: FlightLogEntry) => Promise<void>; onQuickAdd: () => void }) {
   const [query, setQuery] = useState('')
   const computed = useMemo(() => {
     void airportVersion
@@ -882,7 +1058,7 @@ function FlightsPage({ flights, airportVersion, onOpen, onEdit, onDelete, onRefr
   return (
     <main className="page">
       <div className="section-heading"><div><p className="eyebrow">Manifest</p><h2>Flights</h2></div><div className="heading-actions"><label className="search"><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search airport, airline, year, country..." /></label><button type="button" onClick={onQuickAdd}><Plus aria-hidden="true" /> Add by flight number</button></div></div>
-      <div className="stack">{filtered.map((flight) => <FlightCard key={flight.id} flight={flight} onOpen={onOpen} onEdit={onEdit} onDelete={onDelete} onRefresh={onRefresh} />)}{filtered.length === 0 && <p className="empty-inline">No matching flights.</p>}</div>
+      <div className="stack">{filtered.map((flight) => <FlightCard key={flight.id} flight={flight} isOnline={isOnline} onOpen={onOpen} onEdit={onEdit} onDelete={onDelete} onRefresh={onRefresh} />)}{filtered.length === 0 && <p className="empty-inline">No matching flights.</p>}</div>
     </main>
   )
 }
@@ -993,6 +1169,7 @@ function TripCard({ trip, onOpen, onUpdate }: { trip: TripGroup; onOpen: (trip: 
         </div>
         <span className="status scheduled">{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
       </div>
+      <p className="trip-route-chain">{trip.routeSummary}</p>
       <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
       <dl className="meta-grid">
         <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
@@ -1040,9 +1217,11 @@ function TripDetailPage({
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
+  const [includeShareNotes, setIncludeShareNotes] = useState(false)
   if (!trip) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Trip not found</h2><button type="button" onClick={onBack}>Back to trips</button></section></main>
   }
+  const shareData = tripShareCardData(trip, { distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
   return (
     <main className="page detail-page">
       <div className="section-heading">
@@ -1064,6 +1243,7 @@ function TripDetailPage({
           <div><dt>Favorite</dt><dd><label className="checkbox-row"><input type="checkbox" checked={trip.isFavorite} onChange={(event) => onUpdate(trip.id, { isFavorite: event.target.checked })} /> Pin trip</label></dd></div>
         </dl>
         <label className="wide trip-notes">Trip notes<textarea value={trip.notes ?? ''} onChange={(event) => onUpdate(trip.id, { notes: event.target.value })} rows={3} placeholder="Trip notes, purpose, memories..." /></label>
+        <div className="actions"><button type="button" className="secondary" onClick={() => onUpdate(trip.id, { isFavorite: !trip.isFavorite })}>{trip.isFavorite ? 'Unpin trip' : 'Pin trip'}</button></div>
       </section>
       <div className="stack">
         {trip.flights.map((flight) => (
@@ -1074,6 +1254,7 @@ function TripDetailPage({
           </article>
         ))}
       </div>
+      <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
     </main>
   )
 }
@@ -1081,6 +1262,7 @@ function TripDetailPage({
 function FlightDetailPage({
   flight,
   airportVersion,
+  isOnline,
   onBack,
   onEdit,
   onDelete,
@@ -1088,6 +1270,7 @@ function FlightDetailPage({
 }: {
   flight?: FlightLogEntry
   airportVersion: number
+  isOnline: boolean
   onBack: () => void
   onEdit: (flight: FlightLogEntry) => void
   onDelete: (id: string) => Promise<void>
@@ -1095,6 +1278,7 @@ function FlightDetailPage({
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
+  const [includeShareNotes, setIncludeShareNotes] = useState(false)
   const computed = useMemo(() => {
     void airportVersion
     return flight ? computeFlight(flight) : undefined
@@ -1107,25 +1291,33 @@ function FlightDetailPage({
   const warnings = [...(flight.providerWarnings ?? []), ...(departure.warning ? [departure.warning] : []), ...(arrival.warning ? [arrival.warning] : [])]
   const refreshAvailable = canRefreshLiveStatus(flight.lastFetchedAt)
   const refreshLabel = refreshStatusLabel(flight.lastFetchedAt)
+  const airline = airlineForFlight(flight)
+  const detailsUrl = `${window.location.href.split('#')[0]}#/flights/${encodeURIComponent(flight.id)}`
+  const calendar = buildCalendarEventDetails(flight, detailsUrl)
+  const links = externalFlightLinks(flight)
+  const shareData = flightShareCardData(flight, { ...displayOptions, distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
   return (
     <main className="page detail-page">
       <div className="section-heading">
         <div>
           <p className="eyebrow">{getFlightDepartureLocalDate(flight)} · {flight.source}</p>
-          <h2>{flight.flightNumber} - {flight.airline}</h2>
+          <h2>{flight.flightNumber} - {airline?.name ?? flight.airline}</h2>
         </div>
         <div className="heading-actions">
           <button type="button" className="ghost" onClick={onBack}>Back</button>
           <button type="button" className="secondary" onClick={() => onEdit(flight)}>Edit</button>
-          <button type="button" className="secondary" disabled={!refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh status' : refreshLabel}</button>
-          <button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button>
         </div>
       </div>
       <section className="panel detail-hero">
         <div className="flight-main">
-          <div className="route-line detail-route"><strong>{flight.origin}</strong><span>{computed.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{computed.destinationAirport?.name}</span></div>
+          <div>
+            <p className="eyebrow">{airline?.country ?? 'Flight detail'}</p>
+            <h3>{flight.flightNumber}</h3>
+            <div className="route-line detail-route"><strong>{flight.origin}</strong><span>{computed.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{computed.destinationAirport?.name}</span></div>
+          </div>
           <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
         </div>
+        {flight.deletedAt && <p className="notice warning">This flight is deleted and should only appear from Trash.</p>}
         <dl className="meta-grid">
           <div><dt>Departure local</dt><dd>{departure.label}</dd></div>
           <div><dt>Arrival local</dt><dd>{arrival.label}</dd></div>
@@ -1139,7 +1331,11 @@ function FlightDetailPage({
         </dl>
         {flight.notes && <p className="notice">{flight.notes}</p>}
         {warnings.map((warning, index) => <p className="notice warning" key={`detail-${index}-${warning}`}>{warning}</p>)}
-        <div className="actions">
+        <div className="actions action-row">
+          <button type="button" className="secondary" disabled={!isOnline || !refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh' : refreshLabel}</button>
+          {calendar.googleUrl && <a className="button-link" href={calendar.googleUrl} target="_blank" rel="noopener noreferrer"><CalendarDays aria-hidden="true" /> Calendar</a>}
+          {links[0] && <a className="button-link secondary-link" href={links[0].url} target="_blank" rel="noopener noreferrer">{links[0].label}</a>}
+          <button type="button" className="secondary" onClick={() => onEdit(flight)}>Edit</button>
           <button type="button" className="secondary" onClick={() => downloadFile(`${flight.flightNumber}-${flight.id}.json`, JSON.stringify({ flight }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export this flight as JSON</button>
         </div>
       </section>
@@ -1149,6 +1345,12 @@ function FlightDetailPage({
       </div>
       <CalendarSection flight={flight} />
       <ExternalLinksSection flight={flight} />
+      <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
+      <section className="panel danger-zone">
+        <div className="flight-main"><div><p className="eyebrow">Secondary action</p><h3>Delete flight</h3></div><Trash2 aria-hidden="true" /></div>
+        <p className="muted">Deletion moves the flight to Trash and preserves a tombstone for Sync Lite. Permanent deletion remains separate in Trash.</p>
+        <div className="actions"><button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button></div>
+      </section>
     </main>
   )
 }
@@ -1166,7 +1368,7 @@ function MapPage({ flights, airportVersion }: { flights: FlightLogEntry[]; airpo
   useEffect(() => {
     if (!mapRef.current) return
     let cancelled = false
-    void import('leaflet').then((L) => {
+    void Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')]).then(([L]) => {
       if (cancelled || !mapRef.current) return
       leafletModuleRef.current = L
       const map = L.map(mapRef.current, { scrollWheelZoom: false }).setView([25, 0], 2)
@@ -1235,9 +1437,11 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   const latestTrip = trips[0]
   const longestTrip = trips.slice().sort((a, b) => b.distanceKm - a.distanceKm)[0]
   const mostFlightsTrip = trips.slice().sort((a, b) => b.flights.length - a.flights.length)[0]
+  const shareYear = stats.bestTravelYear ?? new Date().getFullYear().toString()
+  const yearlyShareData = flights.length > 0 ? yearlyPassportShareCardData(flights, shareYear, { distanceUnit: settings.distanceUnit }) : undefined
   return (
     <main className="page passport">
-      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div></div>
+      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
       <section className="stats-grid">
         <StatCard icon={Gauge} label="Flight time" value={formatDuration(stats.totalDurationMinutes)} />
         <StatCard icon={Map} label="Airports unlocked" value={String(stats.airportsVisited.length)} />
@@ -1266,6 +1470,7 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
       <section className="three-columns"><ListPanel title="Yearly summary" rows={stats.yearly.map((row) => `${row.year}: ${row.flights} flights - ${formatDistance(row.distanceKm, settings.distanceUnit)}`)} /><ListPanel title="Top airports" rows={stats.topAirports.slice(0, 8).map((row) => `${row.code}: ${row.count} visits - ${row.label}`)} /><ListPanel title="Most frequent routes" rows={stats.topRoutes.slice(0, 8).map((row) => `${row.route}: ${row.count} - ${formatDistance(row.distanceKm, settings.distanceUnit)}`)} /></section>
       <section className="three-columns"><ListPanel title="Longest flights" rows={longestFlights.map((flight) => `${routeKey(flight)} - ${formatDistance(flight.distanceKm, settings.distanceUnit)}`)} /><ListPanel title="Aircraft" rows={stats.aircraftTypes} /><ListPanel title="Favorite trips" rows={trips.filter((trip) => trip.isFavorite).slice(0, 8).map((trip) => `${trip.name}: ${trip.routeSummary}`)} /></section>
       <section className="two-columns"><ListPanel title="Countries unlocked" rows={stats.countriesVisited} /><ListPanel title="First-time badges" rows={stats.airportsVisited.slice(0, 8).map((airport) => `First logged ${airport.iata} - ${airport.country}`)} /></section>
+      {yearlyShareData && <ShareCardPreview data={yearlyShareData} />}
     </main>
   )
 }
@@ -1312,6 +1517,8 @@ function SettingsPage({
   cloud,
   currentChecksum,
   liveApiStatus,
+  standalone,
+  installPromptAvailable,
   onGoogleSignIn,
   onEmailSignIn,
   onSignOut,
@@ -1323,6 +1530,7 @@ function SettingsPage({
   onRepairData,
   onClearLocalData,
   onRunLiveApiTest,
+  onInstallPrompt,
   onCompareSync,
 }: {
   configured: boolean
@@ -1341,6 +1549,8 @@ function SettingsPage({
   cloud: CloudBackupControls
   currentChecksum?: string
   liveApiStatus: { status: 'unchecked' | 'checking' | 'reachable' | 'error'; checkedAt?: string; message?: string }
+  standalone: boolean
+  installPromptAvailable: boolean
   onGoogleSignIn: () => Promise<void>
   onEmailSignIn: (email: string) => Promise<void>
   onSignOut: () => Promise<void>
@@ -1352,6 +1562,7 @@ function SettingsPage({
   onRepairData: () => Promise<void>
   onClearLocalData: () => Promise<void>
   onRunLiveApiTest: () => Promise<void>
+  onInstallPrompt: () => Promise<void>
   onCompareSync?: () => Promise<void>
 }) {
   const displayOptions = flightTimeDisplayOptions(settings)
@@ -1371,7 +1582,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v19',
+    serviceWorkerCacheVersion: 'flightlog-v20',
     syncMetadata,
   })
 
@@ -1392,7 +1603,16 @@ function SettingsPage({
   return (
     <main className="page settings-page">
       <div className="section-heading"><div><p className="eyebrow">Settings</p><h2>Preferences, cloud, and diagnostics</h2></div></div>
+      <nav className="settings-nav" aria-label="Settings sections">
+        <a href="#account">Account</a>
+        <a href="#sync-lite">Sync</a>
+        <a href="#display">Display</a>
+        <a href="#pwa">PWA</a>
+        <a href="#data-storage">Data</a>
+        <a href="#diagnostics">Diagnostics</a>
+      </nav>
       <DataOwnershipCard />
+      <div id="pwa"><PwaInstallPanel standalone={standalone} canPrompt={installPromptAvailable} onInstall={onInstallPrompt} /></div>
       <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       <section className="panel" id="account">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Account</p><h3>{accountStatusLabel(configured, session)}</h3></div><span className="status scheduled">{session ? 'signed in' : configured ? 'local-only' : 'offline-ready'}</span></div>
@@ -2272,13 +2492,44 @@ function SyncPage({
   )
 }
 
+function MobileMoreMenu({
+  open,
+  route,
+  onNavigate,
+  onClose,
+}: {
+  open: boolean
+  route: AppRoute
+  onNavigate: (page: Page) => void
+  onClose: () => void
+}) {
+  if (!open) return null
+  return (
+    <div className="mobile-more-sheet" role="dialog" aria-label="More navigation">
+      <div className="mobile-more-header">
+        <strong>More</strong>
+        <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Close more navigation"><X aria-hidden="true" /></button>
+      </div>
+      <div className="mobile-more-grid">
+        {moreNavItems.map((item) => (
+          <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => onNavigate(item.page)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [route, setRoute] = useState<AppRoute>(routeFromHash)
   const [flights, setFlights] = useState<FlightLogEntry[]>([])
   const [allFlights, setAllFlights] = useState<FlightLogEntry[]>([])
   const [editing, setEditing] = useState<FlightLogEntry | undefined>()
   const [showForm, setShowForm] = useState(false)
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const [toast, setToast] = useState('')
+  const [initialDataLoading, setInitialDataLoading] = useState(true)
   const [airportVersion, setAirportVersion] = useState(0)
   const [airportDatasetLabel, setAirportDatasetLabel] = useState(`${airportCount()} airport fallback loaded`)
   const [providerAirportState, setProviderAirportState] = useState<ProviderAirportSnapshot[]>([])
@@ -2301,6 +2552,9 @@ function App() {
   const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([])
   const [deviceName, setDeviceNameState] = useState(() => getDeviceName())
   const [liveApiStatus, setLiveApiStatus] = useState<{ status: 'unchecked' | 'checking' | 'reachable' | 'error'; checkedAt?: string; message?: string }>(() => ({ status: 'unchecked' }))
+  const isOnline = useOnlineStatus()
+  const isStandalone = useStandaloneMode()
+  const installPrompt = usePwaInstallPrompt()
   const deviceId = useMemo(() => localDeviceId(), [])
   const deletedFlightList = useMemo(() => sortDeletedFlights(allFlights), [allFlights])
   const deletedTripMetadataList = useMemo(() => deletedTripMetadata(allTripMetadata), [allTripMetadata])
@@ -2392,6 +2646,8 @@ function App() {
       if (!mounted) return
       setFlights(loadedFlights)
       setAllFlights(loadedAllFlights)
+    }).finally(() => {
+      if (mounted) setInitialDataLoading(false)
     })
     void getProviderAirports().then((airports) => {
       if (!mounted) return
@@ -2413,19 +2669,29 @@ function App() {
     void listLocalSyncEvents(20).then((events) => {
       if (mounted) setSyncEvents(events)
     })
-    void loadGeneratedAirports()
-      .then((count) => {
-        if (!mounted) return
-        setAirportDatasetLabel(`${count.toLocaleString()} airports loaded`)
-        setAirportVersion((version) => version + 1)
-      })
-      .catch(() => {
-        if (mounted) setAirportDatasetLabel(`${airportCount().toLocaleString()} airport fallback loaded`)
-      })
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    const loadAirports = () => {
+      void loadGeneratedAirports()
+        .then((count) => {
+          if (!mounted) return
+          setAirportDatasetLabel(`${count.toLocaleString()} airports loaded`)
+          setAirportVersion((version) => version + 1)
+        })
+        .catch(() => {
+          if (mounted) setAirportDatasetLabel(`${airportCount().toLocaleString()} airport fallback loaded`)
+        })
+    }
+    const usedIdleCallback = Boolean(idleWindow.requestIdleCallback)
+    const idleHandle = usedIdleCallback && idleWindow.requestIdleCallback ? idleWindow.requestIdleCallback(loadAirports) : window.setTimeout(loadAirports, 350)
     const onHashChange = () => setRoute(routeFromHash())
     window.addEventListener('hashchange', onHashChange)
     return () => {
       mounted = false
+      if (usedIdleCallback && idleWindow.cancelIdleCallback) idleWindow.cancelIdleCallback(idleHandle)
+      else window.clearTimeout(idleHandle)
       window.removeEventListener('hashchange', onHashChange)
     }
   }, [])
@@ -2541,21 +2807,25 @@ function App() {
   }, [settings.theme])
 
   function navigate(next: Page) {
+    setMobileMoreOpen(false)
     window.location.hash = `/${next}`
     setRoute({ page: next })
   }
 
   function navigateToFlight(id: string) {
+    setMobileMoreOpen(false)
     window.location.hash = `/flights/${encodeURIComponent(id)}`
     setRoute({ page: 'flight-detail', flightId: id })
   }
 
   function navigateToTrip(id: string) {
+    setMobileMoreOpen(false)
     window.location.hash = `/trips/${encodeURIComponent(id)}`
     setRoute({ page: 'trip-detail', tripId: id })
   }
 
   function openQuickAdd() {
+    setMobileMoreOpen(false)
     setEditing(undefined)
     setShowForm(true)
   }
@@ -2619,6 +2889,10 @@ function App() {
   }
 
   async function handleRefresh(flight: FlightLogEntry) {
+    if (!isOnline) {
+      setToast(offlineActionMessage('live status refresh'))
+      return
+    }
     try {
       if (!canRefreshLiveStatus(flight.lastFetchedAt)) {
         setToast('Refresh available in a few minutes.')
@@ -2729,6 +3003,10 @@ function App() {
   }
 
   async function handleGoogleSignIn() {
+    if (!isOnline) {
+      setAuthMessage(offlineActionMessage('login'))
+      return
+    }
     if (!supabase) {
       setAuthMessage('Cloud backup is not configured. Local backups still work.')
       return
@@ -2743,6 +3021,10 @@ function App() {
   }
 
   async function handleEmailSignIn(email: string) {
+    if (!isOnline) {
+      setAuthMessage(offlineActionMessage('email login'))
+      return
+    }
     if (!supabase) {
       setAuthMessage('Cloud backup is not configured. Local backups still work.')
       return
@@ -2763,6 +3045,10 @@ function App() {
   }
 
   async function handleCloudUpload(label: string) {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup'))
+      return
+    }
     setCloudBusy(true)
     setCloudMessage('')
     try {
@@ -2775,7 +3061,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v1.9',
+        appVersion: 'v2.0',
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum })
       await bulkSetAppMetadata([
@@ -2798,6 +3084,10 @@ function App() {
   }
 
   async function handleCloudPreview(id: string) {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup preview'))
+      return
+    }
     setCloudBusy(true)
     setCloudMessage('')
     try {
@@ -2811,6 +3101,10 @@ function App() {
   }
 
   async function handleCloudRestore(id: string, mode: 'merge' | 'replace') {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud restore'))
+      return
+    }
     const replacing = mode === 'replace'
     if (replacing && flights.length > 0 && !requireTypedConfirmation('Replace all local FlightLog data with this cloud backup? Cloud backups will not be deleted.', 'REPLACE LOCAL DATA')) return
     setCloudBusy(true)
@@ -2833,6 +3127,10 @@ function App() {
   }
 
   async function handleCloudDownload(id: string) {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup download'))
+      return
+    }
     setCloudBusy(true)
     setCloudMessage('')
     try {
@@ -2856,6 +3154,10 @@ function App() {
   }
 
   async function handleCloudDelete(id: string) {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup delete'))
+      return
+    }
     if (!window.confirm('Delete this cloud backup? Local data will not be deleted.')) return
     setCloudBusy(true)
     setCloudMessage('')
@@ -2872,6 +3174,10 @@ function App() {
   }
 
   async function handleCloudDeleteAll() {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup delete'))
+      return
+    }
     if (!requireTypedConfirmation('Delete all cloud backups for this signed-in account? Local data will not be deleted.', 'DELETE CLOUD BACKUPS')) return
     setCloudBusy(true)
     setCloudMessage('')
@@ -2888,6 +3194,10 @@ function App() {
   }
 
   async function handleCloudKeepLatest() {
+    if (!isOnline) {
+      setCloudMessage(offlineActionMessage('cloud backup cleanup'))
+      return
+    }
     if (!requireTypedConfirmation('Delete older cloud backups and keep the latest 10? Local data will not be deleted.', 'KEEP LATEST 10')) return
     setCloudBusy(true)
     setCloudMessage('')
@@ -2979,6 +3289,10 @@ function App() {
   }
 
   async function handleSyncCompare() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('cloud sync compare'))
+      return
+    }
     if (!supabase || !authSession) {
       setSyncMessage(!supabase ? 'Cloud Sync Lite is not configured. Local data still works.' : 'Sign in to compare local and cloud sync records.')
       return
@@ -3051,6 +3365,10 @@ function App() {
   }
 
   async function handleSyncPushLocalOnly() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('cloud sync push'))
+      return
+    }
     if (!supabase || !authSession || !syncComparison) {
       await handleSyncCompare()
       return
@@ -3075,6 +3393,10 @@ function App() {
   }
 
   async function handleSyncPullRemoteOnly() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('cloud sync pull'))
+      return
+    }
     if (!syncComparison) {
       await handleSyncCompare()
       return
@@ -3100,6 +3422,10 @@ function App() {
   }
 
   async function handleSyncPushTombstones() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('tombstone push'))
+      return
+    }
     if (!supabase || !authSession || !syncComparison) {
       await handleSyncCompare()
       return
@@ -3125,6 +3451,10 @@ function App() {
   }
 
   async function handleSyncPullTombstones() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('tombstone pull'))
+      return
+    }
     if (!syncComparison) {
       await handleSyncCompare()
       return
@@ -3150,6 +3480,10 @@ function App() {
   }
 
   async function handleSyncSafeChanges() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('cloud sync'))
+      return
+    }
     if (!syncComparison) {
       await handleSyncCompare()
       return
@@ -3179,6 +3513,10 @@ function App() {
   }
 
   async function handleResolveConflict(item: SyncComparisonItem, action: SyncConflictAction) {
+    if (!isOnline && action !== 'skip') {
+      setSyncMessage(offlineActionMessage('sync conflict resolution'))
+      return
+    }
     if (!supabase || !authSession || action === 'skip') {
       setSyncConflictActions((current) => ({ ...current, [item.key]: action }))
       return
@@ -3230,6 +3568,10 @@ function App() {
 
   async function handleResolveAllConflicts(action: SyncConflictAction) {
     if (!syncComparison) return
+    if (!isOnline && action !== 'skip') {
+      setSyncMessage(offlineActionMessage('sync conflict resolution'))
+      return
+    }
     if (action === 'skip') {
       setSyncConflictActions(Object.fromEntries(syncComparison.conflicts.map((item) => [item.key, 'skip'])))
       return
@@ -3296,6 +3638,10 @@ function App() {
   }
 
   async function handleRunLiveApiTest() {
+    if (!isOnline) {
+      setLiveApiStatus({ status: 'error', checkedAt: new Date().toISOString(), message: offlineActionMessage('live lookup test') })
+      return
+    }
     setLiveApiStatus({ status: 'checking' })
     try {
       const status = await fetchLiveStatus('SQ38', '2026-06-02', { dateRole: 'Departure', liveDataMode: settings.liveDataMode })
@@ -3336,35 +3682,39 @@ function App() {
     onClearPreview: () => setCloudPreview(undefined),
   }
 
+  const mobileGroup = mobileNavGroup(route)
+  const appShellClass = ['app-shell', isStandalone ? 'is-standalone' : '', isOnline ? '' : 'is-offline'].filter(Boolean).join(' ')
+
   return (
     <AppSettingsContext.Provider value={settings}>
-    <div className="app-shell">
+    <div className={appShellClass}>
       <header>
         <button type="button" className="brand" onClick={() => navigate('dashboard')}><Plane aria-hidden="true" /><span>FlightLog</span></button>
-        <nav aria-label="Primary navigation">{navItems.map((item) => <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => navigate(item.page)}>{item.label}</button>)}</nav>
+        <nav aria-label="Primary navigation">{desktopNavItems.map((item) => <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => navigate(item.page)}>{item.label}</button>)}</nav>
         <button type="button" onClick={openQuickAdd}><Plus aria-hidden="true" /> Add flight</button>
       </header>
+      {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
-      {showForm && <FlightForm editing={editing} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
-      {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
-      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
+      {showForm && <FlightForm editing={editing} isOnline={isOnline} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
+      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
-      {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
       {route.page === 'trash' && <TrashPage flights={deletedFlightList} tripMetadata={deletedTripMetadataList} busy={cloudBusy} signedIn={Boolean(authSession)} onRestore={handleRestoreDeletedFlight} onPermanentDelete={handlePermanentDeleteFlight} onRestoreSelected={handleRestoreDeletedFlights} onPermanentDeleteSelected={handlePermanentDeleteFlights} onEmptyTrash={handleEmptyTrash} onExport={handleExportDeletedRecord} onCreateSafetyBackup={handleCreateSafetyBackup} onNavigateSettings={() => navigate('settings')} />}
+      <MobileMoreMenu open={mobileMoreOpen} route={route} onNavigate={navigate} onClose={() => setMobileMoreOpen(false)} />
       <nav className="bottom-nav" aria-label="Mobile navigation">
-        <button type="button" className={navPage(route) === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>Home</button>
-        <button type="button" className={navPage(route) === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}>Flights</button>
-        <button type="button" className={navPage(route) === 'trips' ? 'active' : ''} onClick={() => navigate('trips')}>Trips</button>
-        <button type="button" className={navPage(route) === 'sync' ? 'active' : ''} onClick={() => navigate('sync')}>Sync</button>
-        <button type="button" className={navPage(route) === 'settings' ? 'active' : ''} onClick={() => navigate('settings')}>Settings</button>
+        <button type="button" className={mobileGroup === 'home' ? 'active' : ''} onClick={() => navigate('dashboard')}><Home aria-hidden="true" /> Home</button>
         <button type="button" className="bottom-add" onClick={openQuickAdd}><Plus aria-hidden="true" /> Add</button>
+        <button type="button" className={mobileGroup === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}><Plane aria-hidden="true" /> Flights</button>
+        <button type="button" className={mobileGroup === 'trips' ? 'active' : ''} onClick={() => navigate('trips')}><CalendarDays aria-hidden="true" /> Trips</button>
+        <button type="button" className={mobileGroup === 'more' || mobileMoreOpen ? 'active' : ''} onClick={() => setMobileMoreOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /> More</button>
       </nav>
       <footer><strong>FlightLog</strong><span>personal flight passport</span><span>data stored locally in your browser</span></footer>
     </div>

@@ -1,9 +1,22 @@
 .app-shell {
+  --color-primary: #0f766e;
+  --color-border: rgba(15, 23, 42, 0.09);
+  --tap-target: 44px;
   min-height: 100vh;
   background:
     linear-gradient(135deg, rgba(15, 118, 110, 0.12), transparent 34%),
     linear-gradient(180deg, #f8fafc 0%, #eef6f5 100%);
   color: #102027;
+}
+
+.app-shell.is-standalone header {
+  padding-top: calc(14px + env(safe-area-inset-top));
+}
+
+.app-shell.is-offline {
+  background:
+    linear-gradient(135deg, rgba(51, 65, 85, 0.08), transparent 34%),
+    linear-gradient(180deg, #f8fafc 0%, #eef6f5 100%);
 }
 
 :root[data-theme="dark"] .app-shell {
@@ -28,7 +41,9 @@
 :root[data-theme="dark"] .cloud-preview,
 :root[data-theme="dark"] .sync-status-badge,
 :root[data-theme="dark"] .conflict-diff-grid div,
-:root[data-theme="dark"] .compact-device {
+:root[data-theme="dark"] .compact-device,
+:root[data-theme="dark"] .mobile-more-sheet,
+:root[data-theme="dark"] .share-card {
   border-color: rgba(148, 163, 184, 0.22);
   background: rgba(15, 23, 42, 0.9);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
@@ -46,6 +61,13 @@
   color: #e2e8f0;
   border-color: rgba(148, 163, 184, 0.32);
   background: #111827;
+}
+
+:root[data-theme="dark"] .offline-banner,
+:root[data-theme="dark"] .settings-nav,
+:root[data-theme="dark"] .passport-highlight-row span {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.92);
 }
 
 :root[data-theme="dark"] .brand,
@@ -88,7 +110,7 @@ nav {
 button,
 .file-drop,
 .button-link {
-  min-height: 42px;
+  min-height: var(--tap-target);
   border: 0;
   border-radius: 8px;
   padding: 10px 14px;
@@ -103,6 +125,12 @@ button,
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
   text-decoration: none;
+}
+
+.icon-button {
+  width: 42px;
+  min-height: 42px;
+  padding: 8px;
 }
 
 button:hover,
@@ -186,6 +214,34 @@ nav button.active,
 
 .page {
   padding: 28px 0 44px;
+}
+
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 19;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  color: #334155;
+  background: rgba(255, 251, 235, 0.96);
+  border-bottom: 1px solid rgba(146, 64, 14, 0.18);
+  font-weight: 700;
+}
+
+.skeleton-block {
+  min-height: 104px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #e2e8f0 0%, #f8fafc 45%, #e2e8f0 90%);
+  background-size: 220% 100%;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  from { background-position: 220% 0; }
+  to { background-position: -220% 0; }
 }
 
 .hero-shell {
@@ -450,6 +506,10 @@ dd {
   margin-top: 18px;
 }
 
+.quick-add-panel {
+  scroll-margin-top: 96px;
+}
+
 .segmented {
   width: fit-content;
   max-width: 100%;
@@ -547,6 +607,10 @@ textarea {
   background: #f8fafc;
 }
 
+.lookup-error strong {
+  display: inline;
+}
+
 .detail-page {
   display: grid;
   gap: 14px;
@@ -624,6 +688,10 @@ textarea {
   background: #f0fdfa;
 }
 
+.action-row {
+  align-items: center;
+}
+
 .cloud-panel {
   border-color: rgba(15, 118, 110, 0.28);
 }
@@ -694,6 +762,29 @@ textarea {
 .sync-page {
   display: grid;
   gap: 14px;
+}
+
+.settings-nav {
+  position: sticky;
+  top: 72px;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.92);
+  backdrop-filter: blur(14px);
+}
+
+.settings-nav a {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #334155;
+  text-decoration: none;
+  background: rgba(15, 118, 110, 0.08);
 }
 
 .settings-columns {
@@ -787,10 +878,30 @@ details summary span {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
+.passport-cover .secondary {
+  margin-top: 18px;
+  color: #99f6e4;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .passport-number {
   margin-top: 20px;
   font-family: var(--mono);
   font-size: 28px;
+}
+
+.passport-highlight-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.passport-highlight-row span {
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 8px;
+  background: #f8fafc;
+  font-weight: 800;
 }
 
 .stamp-grid {
@@ -839,6 +950,14 @@ details summary span {
   background: transparent;
   font-size: 24px;
   font-weight: 800;
+}
+
+.trip-route-chain {
+  margin: 0 0 12px;
+  color: #334155;
+  font-family: var(--mono);
+  font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .inline-name-input:focus {
@@ -907,6 +1026,83 @@ details summary span {
   gap: 10px;
 }
 
+.share-panel {
+  overflow: hidden;
+}
+
+.share-card {
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+  margin: 0 auto 14px;
+  padding: 24px;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 8px;
+  color: #0f172a;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.14), transparent 40%),
+    #ffffff;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.1);
+}
+
+.share-card-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #0f766e;
+  font-weight: 900;
+}
+
+.share-card h3 {
+  margin: 0;
+  font-size: clamp(26px, 5vw, 44px);
+  line-height: 1;
+}
+
+.share-card-route {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(24px, 7vw, 52px);
+  font-weight: 900;
+}
+
+.share-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.share-card dt {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.share-card dd {
+  margin: 0;
+  font-weight: 800;
+}
+
+.share-card ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.share-card-notes {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.inline-checkbox {
+  min-height: 44px;
+}
+
+.mobile-more-sheet {
+  display: none;
+}
+
 .bottom-nav {
   display: none;
 }
@@ -953,7 +1149,7 @@ a {
     bottom: 0;
     z-index: 25;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     background: rgba(248, 250, 252, 0.96);
@@ -962,14 +1158,44 @@ a {
   }
 
   .bottom-nav button {
-    min-height: 48px;
+    min-height: 54px;
     padding: 8px 4px;
     font-size: 11px;
+    flex-direction: column;
+    gap: 4px;
+    line-height: 1.1;
   }
 
   .bottom-add {
     color: #ffffff;
     background: #0f766e;
+  }
+
+  .mobile-more-sheet {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    z-index: 26;
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+  }
+
+  .mobile-more-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .mobile-more-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   header,
@@ -988,9 +1214,40 @@ a {
   .hero-shell,
   .sync-status-badge,
   .sync-preview-grid,
+  .share-card dl,
   .two-columns,
   .three-columns {
     grid-template-columns: 1fr;
+  }
+
+  .hero-shell {
+    min-height: auto;
+    padding: 24px;
+  }
+
+  .hero-shell h1 {
+    font-size: clamp(36px, 12vw, 54px);
+  }
+
+  .hero-notice {
+    margin-top: 14px;
+  }
+
+  .form-panel {
+    width: min(100% - 20px, 1180px);
+    margin-top: 12px;
+  }
+
+  input,
+  select,
+  textarea {
+    min-height: 46px;
+    font-size: 16px;
+  }
+
+  .upcoming-card.same-day {
+    border-color: rgba(180, 35, 24, 0.26);
+    box-shadow: 0 18px 44px rgba(180, 35, 24, 0.12);
   }
 
   .route-stamp,
@@ -1030,5 +1287,9 @@ a {
     left: 12px;
     right: 12px;
     bottom: calc(82px + env(safe-area-inset-bottom));
+  }
+
+  footer {
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
   }
 }
