@@ -14,7 +14,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Full local backup export/import preview, plus backward-compatible JSON and CSV import/export with sample data.
 - Optional Supabase Auth and user-owned cloud backup snapshots. The app still works without sign-in.
 - Settings for account status, preferences, backup reminders, live data mode, storage tools, and diagnostics.
-- Optional Cloud Sync Lite for manual compare, push, pull, and conflict-safe record sync. It is not realtime sync.
+- Optional Cloud Sync Lite for manual compare, push, pull, tombstone sync, and conflict-safe record sync. It is not realtime sync.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
 - Flight detail pages, trip grouping with local trip metadata, external flight-info links, and no-login calendar export.
 - Installable PWA app shell with conservative offline caching.
@@ -169,9 +169,15 @@ Distance preferences affect dashboard stats, flight cards, flight detail, trips,
 Cloud Backup and Cloud Sync Lite solve different problems:
 
 - Backup is a snapshot restore point. It can be downloaded, previewed, merged, or used to replace local data after a typed confirmation.
-- Sync Lite is manual record-level push/pull. It can compare local and cloud records, push local-only records, pull cloud-only records, and show conflicts before overwrite.
+- Sync Lite is manual record-level push/pull. It can compare local and cloud records, push local-only records, pull cloud-only records, sync deletion tombstones, and show conflicts before overwrite.
 
-Sync Lite does not run automatically, does not poll in the background, and does not do realtime sync. It does not field-merge conflicts in v1.7. Deletions are intentionally not propagated automatically; missing local records are treated as cloud-only records unless future deletion sync is added.
+Sync Lite does not run automatically, does not poll in the background, and does not do realtime sync. It does not field-merge conflicts in v1.9. Deleted flights move to Trash and sync as tombstones only after an explicit sync action. Permanent deletion is not automatic.
+
+## Tombstones and Trash
+
+Deleting a flight soft-deletes it locally. The flight disappears from Dashboard, Flights, Trips, Map, Passport, Upcoming flights, and active stats, but remains in `#/trash`.
+
+Trash supports restore, deleted-record JSON export, selected restore, selected permanent delete, and empty trash. Permanent delete requires typed confirmation and is local-only; normal sync keeps cloud tombstones instead of hard-deleting `synced_records` rows.
 
 ## Supabase Cloud Backup Setup
 
@@ -183,9 +189,10 @@ Cloud backup is optional. If `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY` is 
 ```txt
 supabase/migrations/001_cloud_backups.sql
 supabase/migrations/002_cloud_sync_lite.sql
+supabase/migrations/003_tombstones_sync_history.sql
 ```
 
-The first migration creates `public.cloud_backups`; the second creates `public.synced_records` for Cloud Sync Lite. Both enable Row Level Security and add authenticated own-row policies using `auth.uid()`.
+The first migration creates `public.cloud_backups`; the second creates `public.synced_records` for Cloud Sync Lite; the third extends tombstone metadata and adds optional `sync_events` and `sync_devices`. All enable Row Level Security and add authenticated own-row policies using `auth.uid()`.
 
 3. In Supabase Project Settings, API, copy:
 
@@ -217,12 +224,12 @@ Apple login is not implemented in v1.6. It is planned for a later release and re
 
 ### Supabase RLS Manual Test
 
-Use two test users after running migrations `001` and `002`:
+Use two test users after running migrations `001`, `002`, and `003`:
 
-1. User A signs in, uploads a cloud backup, opens Sync Lite, and pushes local records.
+1. User A signs in, uploads a cloud backup, opens Sync Lite, pushes local records, deletes a flight, and pushes the tombstone.
 2. User B signs in from another browser profile.
-3. User B must not see User A cloud backups or sync records.
-4. User B should be able to create and see only their own `cloud_backups` and `synced_records` rows.
+3. User B must not see User A cloud backups, sync records, tombstones, sync history, or devices.
+4. User B should be able to create and see only their own `cloud_backups`, `synced_records`, `sync_events`, and `sync_devices` rows.
 
 If rows leak across users, stop using cloud features and review RLS before deploying.
 
@@ -232,13 +239,15 @@ Cloud snapshots reuse the full local backup format:
 
 ```txt
 app: "FlightLog"
-schemaVersion: 3
+schemaVersion: 4
 exportedAt
 flights
 tripMetadata
 providerAirports
 appMetadata
 ```
+
+Current backups use schema version 4. Tombstone metadata is stored directly on deleted records, so full backups include active records, deleted records, Trash metadata, trip metadata, provider airports, and app metadata. Restoring a backup with deleted records keeps those records deleted until they are explicitly restored from Trash.
 
 The Supabase row also stores summary columns: flight count, trip metadata count, provider airport count, schema version, exported time, checksum, label, device ID, app version, and timestamps.
 
@@ -253,10 +262,14 @@ record_json
 record_checksum
 record_updated_at
 deleted_at
+deleted_by_device_id
+delete_reason
+tombstone_version
+last_operation
 device_id
 ```
 
-Rows are unique by signed-in user, entity type, and local ID. The app compares checksums and requires explicit action for conflicts: keep local, use cloud, or skip.
+Rows are unique by signed-in user, entity type, and local ID. The app compares stable checksums and requires explicit action for conflicts: keep local, use cloud, keep deleted, restore active, or skip. Sync history is stored locally and, when migration `003` is installed, also in `public.sync_events`. Device names and last-seen timestamps are stored in `public.sync_devices`.
 
 ## New-Device Restore Checklist
 
@@ -278,6 +291,18 @@ If both backup snapshots and sync records exist, prefer the latest verified back
 6. Confirm the conflict list appears and choose keep local, use cloud, or skip.
 7. Confirm no local or cloud data is overwritten without an explicit action.
 
+## Deletion Sync Test Checklist
+
+1. Delete a flight on device A.
+2. Confirm it disappears from active views and appears in Trash.
+3. Compare and push tombstones from device A.
+4. On device B, compare and pull tombstones.
+5. Confirm the flight appears in Trash on device B, not active lists.
+6. Restore the flight on device B.
+7. Push the restore from device B.
+8. Pull or compare on device A and confirm the flight is active again.
+9. Create an update/delete conflict and verify the conflict UI offers keep deleted, restore local active, restore cloud active, and skip.
+
 ## CSV Import Format
 
 CSV imports use these columns:
@@ -295,14 +320,14 @@ Sample files are available at:
 
 ## Roadmap
 
-- v1.8: consider client-side encrypted backups, deletion tombstones for Sync Lite, richer restore history, and a safer automatic-sync design only after explicit user opt-in.
+- v2.0: consider client-side encrypted backups, optional automatic sync only after explicit user opt-in, and richer field-level merge tools.
 - Future: Apple login after Apple Developer configuration is available.
-- Still intentionally out of scope: payments, native iOS work, Apple login in v1.7, realtime sync, background polling, and exposing provider API keys in the frontend.
+- Still intentionally out of scope: payments, native iOS work, Apple login, realtime sync, background polling, and exposing provider API keys in the frontend.
 
 ## Troubleshooting
 
 - Cloud backup not configured: verify `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and migration `001`.
-- Sync Lite disabled or failing: run migration `002_cloud_sync_lite.sql` and confirm RLS policies exist.
+- Sync Lite disabled or failing: run migrations `002_cloud_sync_lite.sql` and `003_tombstones_sync_history.sql`, then confirm RLS policies exist.
 - Redirect mismatch: add the GitHub Pages URL and localhost URLs to Supabase Auth URL Configuration.
 - Google login error: verify the Google OAuth client and Supabase provider callback URL.
 - Magic link not received: check Supabase Email provider settings, rate limits, and spam folders.
@@ -310,3 +335,8 @@ Sample files are available at:
 - GitHub Pages env vars missing: add repository variables, then rerun the Pages workflow.
 - Sync conflict: open Sync Lite, compare, then choose keep local, use cloud, or skip.
 - Cloud/local mismatch: create a safety backup, compare again, then push or pull only the previewed records.
+- Tombstone table fields missing: run `003_tombstones_sync_history.sql` in Supabase SQL Editor.
+- Conflicts after deletion: use the conflict UI to keep deleted or restore the active local/cloud side.
+- Deleted record came back: compare Sync Lite and check whether a restore was pushed from another device.
+- Cannot permanently delete: export or create a backup first, then type the exact confirmation phrase.
+- Local `npm ci` hang: if install is silent and stuck, stop it, document it as not passed, and do not count lint/typecheck/test/build as passed unless dependencies are installed.
