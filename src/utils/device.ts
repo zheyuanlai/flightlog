@@ -26,7 +26,7 @@ export function getOrCreateDeviceId(storage: StorageLike = window.localStorage):
   return next
 }
 
-export function getDeviceName(storage: StorageLike = window.localStorage, userAgent = navigator.userAgent): string {
+export function getDeviceName(storage: StorageLike = window.localStorage, userAgent = globalThis.navigator?.userAgent ?? ''): string {
   return storage.getItem(DEVICE_NAME_KEY) ?? fallbackDeviceName(userAgent)
 }
 

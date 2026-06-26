@@ -1430,7 +1430,8 @@ function tripHasUpcomingFlight(trip: TripGroup): boolean {
 function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: TripGroup[] }) {
   const settings = useAppSettings()
   const stats = aggregateStats(flights)
-  const longestFlights = flights.map(computeFlight).filter((flight) => flight.distanceKm > 0).sort((a, b) => b.distanceKm - a.distanceKm).slice(0, 5)
+  const computedFlights = flights.map(computeFlight)
+  const longestFlights = computedFlights.filter((flight) => flight.distanceKm > 0).sort((a, b) => b.distanceKm - a.distanceKm).slice(0, 5)
   const favoriteAirline = stats.topAirlines[0]
   const favoriteRoute = stats.topRoutes[0]
   const upcomingTripCount = trips.filter(tripHasUpcomingFlight).length
@@ -1439,9 +1440,39 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   const mostFlightsTrip = trips.slice().sort((a, b) => b.flights.length - a.flights.length)[0]
   const shareYear = stats.bestTravelYear ?? new Date().getFullYear().toString()
   const yearlyShareData = flights.length > 0 ? yearlyPassportShareCardData(flights, shareYear, { distanceUnit: settings.distanceUnit }) : undefined
+  const cabinCounts = computedFlights.reduce((counts, flight) => {
+    const cabin = flight.cabin?.trim() || 'Unspecified'
+    counts.set(cabin, (counts.get(cabin) ?? 0) + 1)
+    return counts
+  }, new globalThis.Map<string, number>())
+  const topCabin = [...cabinCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
+  const passportScore = Math.min(100, Math.round(
+    stats.totalFlights * 1.5 +
+    stats.airportsVisited.length * 2 +
+    stats.countriesVisited.length * 3 +
+    stats.airlines.length * 1.5 +
+    trips.length * 2,
+  ))
+  const milestoneCards = [
+    { label: 'Explorer score', value: `${passportScore}/100`, detail: 'A free, local-only progress score from flights, airports, countries, airlines, and trips.' },
+    { label: 'Next country goal', value: `${stats.countriesVisited.length}/25`, detail: `${Math.max(25 - stats.countriesVisited.length, 0)} more ${stats.countriesVisited.length >= 25 ? 'needed to keep the badge' : 'to unlock the 25-country badge'}.` },
+    { label: 'Airport collector', value: `${stats.airportsVisited.length}/50`, detail: `${Math.max(50 - stats.airportsVisited.length, 0)} more unique airports to reach the 50-airport badge.` },
+    { label: 'Cabin profile', value: topCabin ? topCabin[0] : 'Not set', detail: topCabin ? `${topCabin[1]} logged flight${topCabin[1] === 1 ? '' : 's'} in this cabin.` : 'Add cabin details to see your travel style.' },
+  ]
+  const proInsights = [
+    favoriteRoute ? `Signature route: ${favoriteRoute.route} (${favoriteRoute.count} flights).` : 'Log repeat routes to reveal your signature route.',
+    stats.shortestFlight ? `Shortest hop: ${routeKey(stats.shortestFlight)} at ${formatDistance(stats.shortestFlight.distanceKm, settings.distanceUnit)}.` : 'Add route coordinates to rank your shortest hop.',
+    stats.bestTravelYear ? `Best travel year: ${stats.bestTravelYear} with ${stats.yearly.find((row) => row.year === stats.bestTravelYear)?.flights ?? 0} flights.` : 'Your best travel year appears after your first flight.',
+    longestTrip ? `Biggest trip: ${longestTrip.name} covered ${formatDistance(longestTrip.distanceKm, settings.distanceUnit)}.` : 'Group flights into trips to unlock trip superlatives.',
+  ]
   return (
     <main className="page passport">
-      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
+      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
+      <section className="panel passport-pro-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Open Passport Pro</p><h2>Free achievement board</h2></div><CheckCircle2 aria-hidden="true" /></div>
+        <div className="passport-pro-grid">{milestoneCards.map((card) => <article className="passport-pro-card" key={card.label}><span>{card.label}</span><strong>{card.value}</strong><p>{card.detail}</p></article>)}</div>
+        <ul className="passport-insight-list">{proInsights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
+      </section>
       <section className="stats-grid">
         <StatCard icon={Gauge} label="Flight time" value={formatDuration(stats.totalDurationMinutes)} />
         <StatCard icon={Map} label="Airports unlocked" value={String(stats.airportsVisited.length)} />

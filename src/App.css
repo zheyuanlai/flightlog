@@ -1293,3 +1293,61 @@ a {
     padding-bottom: calc(24px + env(safe-area-inset-bottom));
   }
 }
+
+.passport-cover-copy {
+  max-width: 640px;
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.passport-pro-panel {
+  border-color: rgba(20, 184, 166, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.16), transparent 34%),
+    #ffffff;
+}
+
+.passport-pro-panel .section-heading svg {
+  color: #0f766e;
+}
+
+.passport-pro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.passport-pro-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.passport-pro-card span {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.passport-pro-card strong {
+  color: #0f172a;
+  font-size: 24px;
+}
+
+.passport-pro-card p {
+  margin: 0;
+  color: #475569;
+}
+
+.passport-insight-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding-left: 18px;
+  color: #334155;
+}
