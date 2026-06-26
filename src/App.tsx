@@ -126,6 +126,7 @@ import { initialOnlineStatus, offlineActionMessage } from './utils/offline'
 import { installGuidance, isStandaloneDisplay } from './utils/pwa'
 import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, routeFromHashValue, type AppRoute, type Page } from './utils/navigation'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
+import { buildPassportAchievements, buildPassportCollections, buildPassportRouteSuperlatives, buildPassportTimeline } from './utils/passport'
 import {
   formatAirportLocalTime,
   formatArrivalLocalTime,
@@ -1439,9 +1440,32 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   const mostFlightsTrip = trips.slice().sort((a, b) => b.flights.length - a.flights.length)[0]
   const shareYear = stats.bestTravelYear ?? new Date().getFullYear().toString()
   const yearlyShareData = flights.length > 0 ? yearlyPassportShareCardData(flights, shareYear, { distanceUnit: settings.distanceUnit }) : undefined
+  const achievements = buildPassportAchievements(flights, trips)
+  const timeline = buildPassportTimeline(flights, trips).slice(0, 4)
+  const collections = buildPassportCollections(flights)
+  const superlatives = buildPassportRouteSuperlatives(flights)
+  const superlativeRows = [
+    superlatives.northernmostAirport ? `Northernmost: ${superlatives.northernmostAirport.iata} - ${superlatives.northernmostAirport.city}` : '',
+    superlatives.southernmostAirport ? `Southernmost: ${superlatives.southernmostAirport.iata} - ${superlatives.southernmostAirport.city}` : '',
+    superlatives.easternmostAirport ? `Easternmost: ${superlatives.easternmostAirport.iata} - ${superlatives.easternmostAirport.city}` : '',
+    superlatives.westernmostAirport ? `Westernmost: ${superlatives.westernmostAirport.iata} - ${superlatives.westernmostAirport.city}` : '',
+    superlatives.shortestFlight ? `Shortest hop: ${routeKey(superlatives.shortestFlight)} - ${formatDistance(superlatives.shortestFlight.distanceKm, settings.distanceUnit)}` : '',
+    superlatives.mostRepeatedRoute ? `Most repeated: ${superlatives.mostRepeatedRoute.route} - ${superlatives.mostRepeatedRoute.flights}` : '',
+    `Red-eyes: ${superlatives.redEyeFlights}`,
+    `Aircraft families: ${superlatives.aircraftFamilies.length}`,
+  ].filter(Boolean)
   return (
     <main className="page passport">
-      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
+      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Flight passport achievements, superlatives, and shareable summaries are included for free and stay open source.</p><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
+      <section className="panel passport-open-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Open passport</p><h2>Achievement engine</h2></div><CheckCircle2 aria-hidden="true" /></div>
+        <div className="passport-open-grid">{achievements.map((achievement) => <article className={`passport-open-card ${achievement.unlocked ? 'unlocked' : 'locked'}`} key={achievement.id}><span>{achievement.unlocked ? 'Unlocked' : 'Locked'}</span><strong>{achievement.current}/{achievement.target}</strong><p>{achievement.label} · {achievement.description}</p>{achievement.firstUnlockedAt && <small>First unlocked {formatDate(achievement.firstUnlockedAt, settings.dateFormat)}</small>}</article>)}</div>
+      </section>
+      <section className="panel passport-timeline-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Passport timeline</p><h2>Year pages</h2></div></div>
+        {timeline.length === 0 ? <p className="muted">Log flights to build your first passport year page.</p> : <div className="passport-timeline-list">{timeline.map((year) => <article className="passport-year-card" key={year.year}><h3>{year.year}</h3><p>{year.flights} flights · {year.busiestMonth ? `Busiest ${year.busiestMonth.month}` : 'No busiest month yet'} · {year.favoriteRoute ? `Favorite ${year.favoriteRoute.route}` : 'No favorite route yet'}</p><p>First airports: {year.firstAirports.slice(0, 6).join(', ') || 'None'} · First countries: {year.firstCountries.slice(0, 4).join(', ') || 'None'}</p><p>{year.longestFlight ? `Longest: ${routeKey(year.longestFlight)} (${formatDistance(year.longestFlight.distanceKm, settings.distanceUnit)})` : 'Longest flight not available'}{year.notableTrips.length > 0 ? ` · Trips: ${year.notableTrips.map((trip) => trip.name).join(', ')}` : ''}</p></article>)}</div>}
+      </section>
+      <section className="three-columns"><ListPanel title="Airport collection" rows={collections.airports.slice(0, 8).map((row) => `${row.code}: first ${formatDate(row.firstVisitDate, settings.dateFormat)} · ${row.visitCount} visits · ${row.routes.slice(0, 2).join(', ')}`)} /><ListPanel title="Country collection" rows={collections.countries.slice(0, 8).map((row) => `${row.country}: first ${formatDate(row.firstVisitDate, settings.dateFormat)} · ${row.airports.length} airports · ${row.routes.length} routes`)} /><ListPanel title="Route superlatives" rows={superlativeRows} /></section>
       <section className="stats-grid">
         <StatCard icon={Gauge} label="Flight time" value={formatDuration(stats.totalDurationMinutes)} />
         <StatCard icon={Map} label="Airports unlocked" value={String(stats.airportsVisited.length)} />

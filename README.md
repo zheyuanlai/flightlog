@@ -376,6 +376,33 @@ Sample files are available at:
 - `public/samples/sample_flights.csv`
 - `public/samples/sample_flights.json`
 
+
+## Current Capabilities
+
+FlightLog already covers the core of a free, open-source personal flight passport:
+
+- Local-first flight logging with IndexedDB storage, manual entry, airport validation, and optional live lookup by flight number/date through a serverless proxy.
+- A mobile PWA shell with dashboard, add flow, flights, trips, map, backup, sync, settings, trash, and offline-aware states.
+- Passport statistics for lifetime flights, distance, flight time, airports, countries, airlines, aircraft types, favorite route/airline, best travel year, longest flights, yearly summaries, top airports, top routes, and favorite trips.
+- Typed Open Passport engine with locked/unlocked achievements, progress thresholds, first-unlocked dates, year timeline pages, airport/country collections, route superlatives, and a stable `flightlog.passport.v1` export shape.
+- Trip grouping, trip metadata, route atlas map, upcoming-flight reminders, calendar links, external flight-information links, and share-card previews.
+- Full local backup/import, CSV/JSON import/export, optional Supabase cloud backups, and manual Cloud Sync Lite with conflict and tombstone handling.
+
+## Open Flight Passport Direction
+
+The goal is to move toward the delight of a premium flight passport while staying free, local-first, and open source. Do not clone any commercial app UI; use FlightLog's own visual language and make the underlying calculations transparent.
+
+Recommended next steps:
+
+1. **Deepen the achievement engine**: add more badge definitions, richer categories, and persisted first-unlocked celebrations.
+2. **Expand Passport timeline**: add drill-down year pages with richer stamps, photos/notes-safe summaries, and shareable yearly cards.
+3. **Complete collection pages**: turn the airport/country collection summaries into searchable pages with visited/unvisited filters and route history.
+4. **Add more route superlatives**: include overwater-style routes when data is available, aircraft-family trends, red-eye streaks, and geospatial edge cases.
+5. **Shareable passport cards**: finish PNG export for yearly, trip, airport, route, and badge cards without adding heavy dependencies to the initial bundle.
+6. **Privacy-preserving optional sync**: add client-side encrypted backups before richer sync automation, so passport history remains user-owned.
+7. **Data quality tools**: add guided repair for missing aircraft, cabin, local times, airport coordinates, and provider-derived airport snapshots.
+8. **Open data exports**: document and version the `flightlog.passport.v1` schema so users can leave, fork, or build alternate visualizations.
+
 ## Roadmap
 
 - v2.1: flight lifecycle assistant.

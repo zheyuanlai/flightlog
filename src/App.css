@@ -1293,3 +1293,98 @@ a {
     padding-bottom: calc(24px + env(safe-area-inset-bottom));
   }
 }
+
+.passport-cover-copy {
+  max-width: 640px;
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.passport-open-panel {
+  border-color: rgba(20, 184, 166, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.16), transparent 34%),
+    #ffffff;
+}
+
+.passport-open-panel .section-heading svg {
+  color: #0f766e;
+}
+
+.passport-open-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.passport-open-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.passport-open-card span {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.passport-open-card strong {
+  color: #0f172a;
+  font-size: 24px;
+}
+
+.passport-open-card p {
+  margin: 0;
+  color: #475569;
+}
+
+.passport-insight-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding-left: 18px;
+  color: #334155;
+}
+
+.passport-open-card.unlocked {
+  border-color: rgba(20, 184, 166, 0.42);
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.94), #ffffff);
+}
+
+.passport-open-card.locked {
+  opacity: 0.84;
+}
+
+.passport-open-card small {
+  color: #0f766e;
+  font-weight: 800;
+}
+
+.passport-timeline-list {
+  display: grid;
+  gap: 12px;
+}
+
+.passport-year-card {
+  padding: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-left: 4px solid #0f766e;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.passport-year-card h3 {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+}
+
+.passport-year-card p {
+  margin: 6px 0 0;
+  color: #475569;
+}

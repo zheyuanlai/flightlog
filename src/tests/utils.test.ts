@@ -19,6 +19,7 @@ import { computeFlight } from '../utils/flights'
 import { lookupErrorCopy } from '../utils/lookupErrors'
 import { buildFlightStatusUrl, mockLiveStatus, normalizeLiveStatus, readFlightStatusError, refreshStatusLabel } from '../utils/liveStatus'
 import { mobileNavGroup, routeFromHashValue } from '../utils/navigation'
+import { buildPassportAchievements, buildPassportCollections, buildPassportRouteSuperlatives, buildPassportTimeline, createPassportExportV1 } from '../utils/passport'
 import { initialOnlineStatus, offlineActionMessage } from '../utils/offline'
 import { installGuidance, isStandaloneDisplay } from '../utils/pwa'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData } from '../utils/shareCards'
@@ -74,6 +75,36 @@ describe('flight utilities', () => {
     expect(stats.totalFlights).toBe(3)
     expect(stats.airportsVisited.map((airport) => airport.iata)).toContain('SFO')
     expect(stats.longestFlight?.flightNumber).toBe('SQ38')
+  })
+
+  it('builds passport achievements, timeline, collections, superlatives, and export schema', () => {
+    const flights = [
+      flight({ id: 'sfo-jfk', date: '2025-01-02', flightNumber: 'AA100', airline: 'American Airlines', origin: 'SFO', destination: 'JFK', scheduledDepartureLocal: '2025-01-02T22:30', aircraftType: 'A321neo' }),
+      flight({ id: 'jfk-lhr', date: '2025-02-03', flightNumber: 'BA178', airline: 'British Airways', origin: 'JFK', destination: 'LHR', scheduledDepartureLocal: '2025-02-03T08:00', aircraftType: '777-300ER' }),
+      flight({ id: 'sfo-jfk-2', date: '2025-03-04', flightNumber: 'AA101', airline: 'American Airlines', origin: 'SFO', destination: 'JFK', scheduledDepartureLocal: '2025-03-04T12:00', aircraftType: 'A321neo' }),
+      flight({ id: 'lhr-sin', date: '2026-03-04', flightNumber: 'SQ317', airline: 'Singapore Airlines', origin: 'LHR', destination: 'SIN', scheduledDepartureLocal: '2026-03-04T10:00', aircraftType: 'A380-800' }),
+    ]
+    const achievements = buildPassportAchievements(flights, [])
+    expect(achievements.find((achievement) => achievement.id === 'explorer-score')?.current).toBeGreaterThan(0)
+    expect(achievements.find((achievement) => achievement.id === 'countries-25')?.unlocked).toBe(false)
+
+    const timeline = buildPassportTimeline(flights, [])
+    expect(timeline[0].year).toBe('2026')
+    expect(timeline.find((year) => year.year === '2025')?.firstAirports).toContain('SFO')
+    expect(timeline.find((year) => year.year === '2025')?.favoriteRoute?.route).toBe('SFO-JFK')
+
+    const collections = buildPassportCollections(flights)
+    expect(collections.airports.find((airport) => airport.code === 'JFK')?.visitCount).toBe(3)
+    expect(collections.countries.map((country) => country.country)).toContain('United States')
+
+    const superlatives = buildPassportRouteSuperlatives(flights)
+    expect(superlatives.redEyeFlights).toBe(1)
+    expect(superlatives.aircraftFamilies).toContain('A321neo')
+    expect(superlatives.mostRepeatedRoute?.route).toBe('SFO-JFK')
+
+    const passportExport = createPassportExportV1(flights, [], '2026-06-26T00:00:00.000Z')
+    expect(passportExport.schema).toBe('flightlog.passport.v1')
+    expect(passportExport.exportedAt).toBe('2026-06-26T00:00:00.000Z')
   })
 
   it('builds the live status worker URL', () => {
