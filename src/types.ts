@@ -162,6 +162,8 @@ export interface TripMetadata extends TombstoneMetadata {
   notes?: string
   type: TripType
   isFavorite: boolean
+  isManual?: boolean
+  flightIds?: string[]
   createdAt: string
   updatedAt: string
 }

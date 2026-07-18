@@ -180,6 +180,12 @@ export async function bulkPutProviderAirportsRaw(airports: ProviderAirportSnapsh
   if (cleaned.length > 0) await db.providerAirports.bulkPut(cleaned)
 }
 
+function cleanTripFlightIds(flightIds: unknown): string[] | undefined {
+  if (!Array.isArray(flightIds)) return undefined
+  const cleaned = [...new Set(flightIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))]
+  return cleaned
+}
+
 function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>, touch = true): TripMetadata {
   const now = new Date().toISOString()
   const type: TripType = metadata.type === 'work' || metadata.type === 'school' || metadata.type === 'other' ? metadata.type : 'personal'
@@ -189,6 +195,8 @@ function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 
     notes: metadata.notes?.trim() || undefined,
     type,
     isFavorite: Boolean(metadata.isFavorite),
+    isManual: metadata.isManual === true ? true : undefined,
+    flightIds: metadata.isManual === true ? cleanTripFlightIds(metadata.flightIds) ?? [] : undefined,
     createdAt: metadata.createdAt ?? now,
     updatedAt: touch ? now : metadata.updatedAt ?? now,
     deletedAt: metadata.deletedAt,
