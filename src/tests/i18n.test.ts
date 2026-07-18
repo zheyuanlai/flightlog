@@ -51,6 +51,9 @@ describe('language resolution', () => {
     expect(resolveLanguage('system', 'zh')).toBe('zh-CN')
     expect(resolveLanguage('system', 'zh-TW')).toBe('zh-TW')
     expect(resolveLanguage('system', 'zh-Hant-HK')).toBe('zh-TW')
+    expect(resolveLanguage('system', 'zh-HK')).toBe('zh-TW')
+    // An explicit Simplified script subtag outranks a Traditional-leaning region.
+    expect(resolveLanguage('system', 'zh-Hans-HK')).toBe('zh-CN')
     expect(resolveLanguage('system', 'ja-JP')).toBe('ja')
     expect(resolveLanguage('system', 'fr-FR')).toBe('en')
     expect(resolveLanguage('system', undefined)).toBe('en')

@@ -113,6 +113,8 @@ export function resolveLanguage(setting: LanguageSetting, navigatorLanguage?: st
   if (setting !== 'system') return setting
   const raw = (navigatorLanguage ?? '').toLowerCase()
   if (raw.startsWith('zh')) {
+    // An explicit Simplified script subtag wins over a Traditional-leaning region.
+    if (/(?:^|[-_])hans(?:$|[-_])/.test(raw)) return 'zh-CN'
     return /(?:^|[-_])(?:tw|hk|mo|hant)/.test(raw) ? 'zh-TW' : 'zh-CN'
   }
   if (raw.startsWith('ja')) return 'ja'
