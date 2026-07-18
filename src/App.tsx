@@ -126,6 +126,7 @@ import { initialOnlineStatus, offlineActionMessage } from './utils/offline'
 import { installGuidance, isStandaloneDisplay } from './utils/pwa'
 import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, routeFromHashValue, type AppRoute, type Page } from './utils/navigation'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
+import { downloadShareCardPng } from './utils/shareImage'
 import {
   formatAirportLocalTime,
   formatArrivalLocalTime,
@@ -484,11 +485,25 @@ function ShareCardPreview({
   includeNotes?: boolean
   onIncludeNotesChange?: (includeNotes: boolean) => void
 }) {
+  const [exporting, setExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState('')
+  async function handleExport() {
+    setExporting(true)
+    setExportMessage('')
+    try {
+      await downloadShareCardPng(data)
+      setExportMessage('PNG downloaded.')
+    } catch (error) {
+      setExportMessage(error instanceof Error ? error.message : 'PNG export failed in this browser.')
+    } finally {
+      setExporting(false)
+    }
+  }
   return (
     <section className="panel share-panel">
       <div className="section-heading compact-heading">
-        <div><p className="eyebrow">Share card</p><h3>HTML preview</h3></div>
-        <span className="status scheduled">v2.0</span>
+        <div><p className="eyebrow">Share card</p><h3>Preview</h3></div>
+        <span className="status scheduled">v2.1</span>
       </div>
       <article className={`share-card share-card-${data.kind}`} aria-label={`${data.title} share card`}>
         <div className="share-card-brand"><Plane aria-hidden="true" /><span>{data.brand}</span></div>
@@ -508,9 +523,10 @@ function ShareCardPreview({
         {onIncludeNotesChange && (
           <label className="checkbox-row inline-checkbox"><input type="checkbox" checked={Boolean(includeNotes)} onChange={(event) => onIncludeNotesChange(event.target.checked)} /> Include notes</label>
         )}
-        <button type="button" className="secondary" disabled title="PNG export is planned for v2.1"><ImageIcon aria-hidden="true" /> Export image</button>
+        <button type="button" className="secondary" disabled={exporting} onClick={() => void handleExport()}><ImageIcon aria-hidden="true" /> {exporting ? 'Exporting…' : 'Export PNG'}</button>
       </div>
-      <p className="muted">PNG export is deferred to v2.1 to avoid adding a heavy image dependency to the initial bundle.</p>
+      {exportMessage && <p className="muted" role="status">{exportMessage}</p>}
+      <p className="muted">PNG export renders the card locally in your browser; nothing is uploaded.</p>
     </section>
   )
 }
