@@ -14,6 +14,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   backupAgeThresholdDays: 30,
   syncReminderEnabled: true,
   upcomingFlightRefreshReminderEnabled: true,
+  dayOfNotificationsEnabled: false,
   liveDataMode: 'real',
 }
 
@@ -58,6 +59,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     backupAgeThresholdDays: numberSetting(input.backupAgeThresholdDays, DEFAULT_APP_SETTINGS.backupAgeThresholdDays, 1, 365),
     syncReminderEnabled: booleanSetting(input.syncReminderEnabled, DEFAULT_APP_SETTINGS.syncReminderEnabled),
     upcomingFlightRefreshReminderEnabled: booleanSetting(input.upcomingFlightRefreshReminderEnabled, DEFAULT_APP_SETTINGS.upcomingFlightRefreshReminderEnabled),
+    dayOfNotificationsEnabled: booleanSetting(input.dayOfNotificationsEnabled, DEFAULT_APP_SETTINGS.dayOfNotificationsEnabled),
     liveDataMode: liveDataModes.has(input.liveDataMode as LiveDataMode) ? input.liveDataMode as LiveDataMode : DEFAULT_APP_SETTINGS.liveDataMode,
   }
 }

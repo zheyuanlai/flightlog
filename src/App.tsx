@@ -149,6 +149,14 @@ import {
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
+  detectDayOfNotifications,
+  notificationPermissionState,
+  requestNotificationPermission,
+  showSystemNotification,
+  type FlightWatchSnapshot,
+  type NotificationPermissionState,
+} from './utils/notifications'
+import {
   flightCompletionState,
   flightLifecycle,
   listFlightsNeedingCompletion,
@@ -941,6 +949,27 @@ function PassphraseDialog({ request }: { request?: PassphraseRequest }) {
         </form>
       </div>
     </div>
+  )
+}
+
+function DayOfNotificationsToggle({ enabled, onChange }: { enabled: boolean; onChange: (patch: Partial<AppSettings>) => Promise<void> }) {
+  const [permission, setPermission] = useState<NotificationPermissionState>(() => notificationPermissionState())
+  async function toggle(next: boolean) {
+    if (next) setPermission(await requestNotificationPermission())
+    await onChange({ dayOfNotificationsEnabled: next })
+  }
+  return (
+    <>
+      <label className="checkbox-row"><input type="checkbox" checked={enabled} onChange={(event) => void toggle(event.target.checked)} /> Day-of travel notifications</label>
+      {enabled && permission !== 'granted' && (
+        <p className="notice warning">{permission === 'unsupported'
+          ? 'System notifications are not supported in this browser; updates appear as in-app messages instead.'
+          : permission === 'denied'
+            ? 'Notification permission is blocked in the browser; updates appear as in-app messages instead.'
+            : 'Notification permission has not been granted yet; updates appear as in-app messages.'}</p>
+      )}
+      {enabled && <p className="muted">Check-in windows, departures, landings, gate changes, cancellations, and diversions notify while FlightLog is open. FlightLog never polls in the background.</p>}
+    </>
   )
 }
 
@@ -1980,6 +2009,7 @@ function SettingsPage({
           <label>Backup age threshold days<input type="number" min={1} max={365} value={settings.backupAgeThresholdDays} onChange={(event) => void onSettingsChange({ backupAgeThresholdDays: Number(event.target.value) })} /></label>
           <label className="checkbox-row"><input type="checkbox" checked={settings.syncReminderEnabled} onChange={(event) => void onSettingsChange({ syncReminderEnabled: event.target.checked })} /> Sync reminder</label>
           <label className="checkbox-row"><input type="checkbox" checked={settings.upcomingFlightRefreshReminderEnabled} onChange={(event) => void onSettingsChange({ upcomingFlightRefreshReminderEnabled: event.target.checked })} /> Upcoming flight refresh reminder</label>
+          <DayOfNotificationsToggle enabled={settings.dayOfNotificationsEnabled} onChange={onSettingsChange} />
         </article>
       </section>
 
@@ -3248,6 +3278,26 @@ function App() {
     root.dataset.theme = effectiveTheme
     root.style.colorScheme = effectiveTheme
   }, [settings.theme])
+
+  const watchSnapshotsRef = useRef<Map<string, FlightWatchSnapshot>>(new globalThis.Map())
+  useEffect(() => {
+    if (!settings.dayOfNotificationsEnabled) {
+      watchSnapshotsRef.current = new globalThis.Map()
+      return
+    }
+    const run = () => {
+      const { notifications, snapshots } = detectDayOfNotifications(flights, watchSnapshotsRef.current)
+      watchSnapshotsRef.current = snapshots
+      for (const notification of notifications) {
+        if (!showSystemNotification(notification)) {
+          setToast(`${notification.title} — ${notification.body}`)
+        }
+      }
+    }
+    run()
+    const id = window.setInterval(run, 60_000)
+    return () => window.clearInterval(id)
+  }, [settings.dayOfNotificationsEnabled, flights])
 
   function navigate(next: Page) {
     setMobileMoreOpen(false)
