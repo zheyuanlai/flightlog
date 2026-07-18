@@ -70,6 +70,39 @@ describe('delimited import', () => {
     expect(result.errors.some((error) => error.includes('Airline'))).toBe(true)
   })
 
+  it('combines a row date with myFlightradar24-style bare Dep/Arr time columns', () => {
+    const csv = [
+      'Date,Flight number,From,To,Airline,Dep time,Arr time',
+      '2026-06-02,SQ38,SIN,LAX,Singapore Airlines,14:05,08:30',
+    ].join('\n')
+    const result = importDelimitedFlights(csv, { preset: 'flightradar24' })
+    expect(result.errors).toEqual([])
+    expect(result.valid[0].scheduledDeparture).toBe('2026-06-02T14:05')
+    expect(result.valid[0].scheduledArrival).toBe('2026-06-02T08:30')
+  })
+
+  it('rejects impossible ISO dates instead of importing them verbatim', () => {
+    const csv = ['Date,Airline,Flight,From,To', '2026-02-30,Delta,DL1,ATL,LAX'].join('\n')
+    const result = importDelimitedFlights(csv)
+    expect(result.valid).toHaveLength(0)
+    expect(result.errors.some((error) => error.includes('could not parse date'))).toBe(true)
+  })
+
+  it('parses 2-digit-year and dd-MMM-yyyy dates', () => {
+    const csv = ['Date,Airline,Flight,From,To', '06/02/26,Delta,DL1,ATL,LAX', '04-Jun-2026,Delta,DL2,ATL,JFK'].join('\n')
+    const result = importDelimitedFlights(csv)
+    expect(result.valid).toHaveLength(2)
+    expect(result.valid[0].date).toBe('2026-06-02')
+    expect(result.valid[1].date).toBe('2026-06-04')
+  })
+
+  it('warns when slash dates are ambiguous', () => {
+    const csv = ['Date,Airline,Flight,From,To', '03/04/2026,Delta,DL1,ATL,LAX'].join('\n')
+    const result = importDelimitedFlights(csv)
+    expect(result.valid[0].date).toBe('2026-03-04') // US M/D default
+    expect(result.warnings.some((warning) => warning.includes('ambiguous'))).toBe(true)
+  })
+
   it('honors an explicit manual mapping', () => {
     const csv = ['When,Carrier Name,Nbr,Dep,Arr', '2026-06-02,Delta,DL1,ATL,LAX'].join('\n')
     const mapping = { date: 'When', airline: 'Carrier Name', flightNumber: 'Nbr', origin: 'Dep', destination: 'Arr' }

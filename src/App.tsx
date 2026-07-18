@@ -2688,6 +2688,7 @@ function BackupCenterPage({
               <div><dt>Rows with errors</dt><dd>{externalImport.errors.length}</dd></div>
               <div><dt>Detected columns</dt><dd>{Object.keys(externalImport.mapping).length}/{importFields.length}</dd></div>
             </dl>
+            {externalImport.warnings.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
             {externalImport.errors.slice(0, 5).map((error) => <p className="notice warning" key={error}>{error}</p>)}
             {externalImport.errors.length > 5 && <p className="muted">…and {externalImport.errors.length - 5} more row issue{externalImport.errors.length - 5 === 1 ? '' : 's'}.</p>}
             <div className="actions">
@@ -3295,7 +3296,9 @@ function App() {
       const params = parseQuickAddParams(window.location.hash)
       if (!params) return false
       // Consume the deep link so it does not re-open on the next hashchange.
-      window.location.hash = '/dashboard'
+      // replaceState (not a hash assignment) avoids a Back-button trap and does
+      // not fire hashchange, which is fine since setRoute is called directly.
+      window.history.replaceState(null, '', '#/dashboard')
       setRoute({ page: 'dashboard' })
       setEditing(undefined)
       setQuickAddPrefill(params)
@@ -3752,7 +3755,11 @@ function App() {
 
   function handleExportCalendarFeed() {
     const upcoming = listUpcomingFlights(flights).map((info) => info.flight)
-    const feed = buildFlightsIcsFeed(upcoming.length > 0 ? upcoming : flights, window.location.href)
+    // Prefer upcoming flights, but fall back to all flights when the upcoming
+    // subset has nothing with reliable calendar times (e.g. a timeless same-day
+    // import) so exportable past flights are not hidden.
+    const upcomingFeed = buildFlightsIcsFeed(upcoming, window.location.href)
+    const feed = upcomingFeed.ics ? upcomingFeed : buildFlightsIcsFeed(flights, window.location.href)
     if (!feed.ics) {
       setToast('No flights with reliable times are available to export to a calendar.')
       return

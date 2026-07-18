@@ -37,6 +37,7 @@ export interface DelimitedImportResult extends ImportPreview {
   headers: string[]
   mapping: Record<string, string>
   unmappedRequired: string[]
+  warnings: string[]
 }
 
 function normalizeHeader(header: string): string {
@@ -66,26 +67,44 @@ export function detectColumnMapping(headers: string[], preset: ImportPreset = 'g
   return mapping
 }
 
-function coerceDate(value: string): string | undefined {
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10)
-  const formats = ['LLL d, yyyy', 'LLL d yyyy', 'LLLL d, yyyy', 'LLLL d yyyy', 'd LLL yyyy', 'dd LLL yyyy', 'MM/dd/yyyy', 'M/d/yyyy', 'dd/MM/yyyy', 'yyyy/MM/dd']
-  for (const format of formats) {
-    const parsed = DateTime.fromFormat(trimmed, format)
-    if (parsed.isValid) return parsed.toISODate() ?? undefined
-  }
-  const iso = DateTime.fromISO(trimmed)
-  if (iso.isValid) return iso.toISODate() ?? undefined
-  return undefined
+interface DateCoercion {
+  date?: string
+  ambiguous?: boolean
 }
 
-function coerceDateTime(value: string | undefined): string | undefined {
+const DATE_FORMATS = [
+  'LLL d, yyyy', 'LLL d yyyy', 'LLLL d, yyyy', 'LLLL d yyyy',
+  'd LLL yyyy', 'dd LLL yyyy', 'd-LLL-yyyy', 'dd-LLL-yyyy',
+  'MM/dd/yyyy', 'M/d/yyyy', 'dd/MM/yyyy', 'yyyy/MM/dd',
+  'MM/dd/yy', 'M/d/yy', 'LLL d yy',
+]
+
+function coerceDate(value: string): DateCoercion {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  // ISO-shaped: validate through Luxon so impossible dates (2026-13-45) are rejected.
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (isoMatch) {
+    const parsed = DateTime.fromObject({ year: Number(isoMatch[1]), month: Number(isoMatch[2]), day: Number(isoMatch[3]) })
+    return parsed.isValid ? { date: parsed.toISODate() ?? undefined } : {}
+  }
+  const slash = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/\d{2,4}$/)
+  const ambiguous = Boolean(slash && Number(slash[1]) <= 12 && Number(slash[2]) <= 12)
+  for (const format of DATE_FORMATS) {
+    const parsed = DateTime.fromFormat(trimmed, format)
+    if (parsed.isValid) return { date: parsed.toISODate() ?? undefined, ambiguous }
+  }
+  const iso = DateTime.fromISO(trimmed)
+  return iso.isValid ? { date: iso.toISODate() ?? undefined } : {}
+}
+
+/** Combine the row date with a time cell so a bare HH:MM becomes a resolvable local datetime. */
+function combineDateTime(date: string, value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   if (!trimmed) return undefined
-  // Keep values the internal time resolver already understands; otherwise blank.
-  if (/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(trimmed)) return trimmed
-  if (/^\d{2}:\d{2}/.test(trimmed)) return undefined // bare time without a date is not resolvable
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(trimmed)) return trimmed.replace(' ', 'T')
+  const bareTime = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
+  if (bareTime) return `${date}T${bareTime[1].padStart(2, '0')}:${bareTime[2]}`
   const parsed = DateTime.fromISO(trimmed)
   return parsed.isValid ? parsed.toISO() ?? undefined : undefined
 }
@@ -99,28 +118,31 @@ export function importDelimitedFlights(
   const mapping = options.mapping ?? detectColumnMapping(headers, options.preset ?? 'generic')
   const unmappedRequired = requiredFields.filter((field) => !mapping[field])
   const errors: string[] = parsed.errors.map((error) => `CSV: ${error.message}`)
+  const warnings: string[] = []
   if (unmappedRequired.length > 0) {
     const labels = unmappedRequired.map((field) => importFields.find((entry) => entry.field === field)?.label ?? field)
     errors.push(`Could not detect a column for: ${labels.join(', ')}. Map them manually to import.`)
-    return { valid: [], errors, headers, mapping, unmappedRequired }
+    return { valid: [], errors, headers, mapping, unmappedRequired, warnings }
   }
   const valid: FlightLogEntry[] = []
+  let sawAmbiguousDate = false
   parsed.data.forEach((row, index) => {
     const rowLabel = `Row ${index + 2}`
     const input: Record<string, string | undefined> = { source: options.source ?? 'manual' }
     for (const [field, header] of Object.entries(mapping)) {
       input[field] = row[header]
     }
-    const coercedDate = coerceDate(input.date ?? '')
-    if (!coercedDate) {
+    const coercion = coerceDate(input.date ?? '')
+    if (!coercion.date) {
       errors.push(`${rowLabel}: could not parse date "${input.date ?? ''}"`)
       return
     }
-    input.date = coercedDate
-    input.scheduledDeparture = coerceDateTime(input.scheduledDeparture)
-    input.actualDeparture = coerceDateTime(input.actualDeparture)
-    input.scheduledArrival = coerceDateTime(input.scheduledArrival)
-    input.actualArrival = coerceDateTime(input.actualArrival)
+    input.date = coercion.date
+    if (coercion.ambiguous) sawAmbiguousDate = true
+    input.scheduledDeparture = combineDateTime(coercion.date, input.scheduledDeparture)
+    input.actualDeparture = combineDateTime(coercion.date, input.actualDeparture)
+    input.scheduledArrival = combineDateTime(coercion.date, input.scheduledArrival)
+    input.actualArrival = combineDateTime(coercion.date, input.actualArrival)
     const rowErrors = validateFlightInput(input, rowLabel)
     if (rowErrors.length > 0) {
       errors.push(...rowErrors)
@@ -128,5 +150,6 @@ export function importDelimitedFlights(
     }
     valid.push(flightFromInput(input))
   })
-  return { valid, errors, headers, mapping, unmappedRequired: [] }
+  if (sawAmbiguousDate) warnings.push('Some dates were ambiguous (M/D vs D/M) and were read as US month/day order. Double-check imported dates if your export uses day/month order.')
+  return { valid, errors, headers, mapping, unmappedRequired: [], warnings }
 }
