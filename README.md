@@ -407,6 +407,8 @@ Sample files are available at:
 
 ## Roadmap
 
+The full staged product plan — vision, feature parity with Flighty/Variflight, stage-by-stage scope, and which items need human input — lives in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 - Shipped in v2.1: flight lifecycle assistant, post-flight completion prompt, PNG share cards, and the manual trip editor.
 - Shipped in v2.2: client-side encrypted (E2EE) local and cloud backups, and field-level conflict merge in Sync Lite.
 - Shipped in v2.3: opt-in day-of travel notifications (phase transitions and gate changes) within PWA constraints.
