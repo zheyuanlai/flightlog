@@ -92,13 +92,13 @@ Lower switching cost from other trackers.
 - **Share-card themes**: 2–3 additional PNG palettes selectable in the share panel.
 - *Soft dependency:* real exported files from the owner's accounts would harden importer tests (optional assist, not a blocker — public format docs suffice for fixtures).
 
-### v2.6 — "你好": Chinese localization (autonomous build, human review gate)
+### v2.6 — "你好": localization, en / zh-CN / zh-TW / ja (autonomous build, human review gate) — ◐ foundation shipped
 
-Highest-leverage reach feature; the owner is bilingual and Variflight's market is Chinese-speaking.
+Highest-leverage reach feature; the owner is bilingual and Variflight's market is Chinese-speaking. Scope was widened (owner request) to add Traditional Chinese and Japanese concurrently.
 
-- **Dependency-free i18n**: a `t(key)` dictionary module, a `language` setting (`system | en | zh-CN`), locale-aware Luxon/Intl formatting.
-- **Full zh-CN dictionary** for every user-facing string; English fallback for missing keys; a test asserting dictionary completeness against the key registry.
-- ⚠️ **Human gate (quality, not build):** native-speaker review of aviation terminology (值机 / 登机口 / 经停 / 备降) before announcement.
+- **Dependency-free i18n (shipped)**: a `t(key)` dictionary module (`src/utils/i18n.ts`), a `language` setting (`system | en | zh-CN | zh-TW | ja`) with system detection that distinguishes Traditional from Simplified, `<html lang>` sync, and a completeness test across all locales.
+- **Coverage (progressive)**: navigation, mobile More menu, add action, footer, and the language setting are translated in all four languages; the remaining strings fall back to English and are keyed over subsequent iterations.
+- ⚠️ **Human gate (quality, not build):** native-speaker review of aviation terminology (值机 / 登机口 / 经停 / 备降 and their Traditional and Japanese equivalents) before announcement. Japanese needs a reviewer other than the (EN/zh-bilingual) owner.
 
 ### v2.7 — "Live depth": provider-powered day-of data (autonomous code, human deploy gate)
 

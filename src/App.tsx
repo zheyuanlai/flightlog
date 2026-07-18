@@ -126,6 +126,7 @@ import { currentDeviceSnapshot, getDeviceName, getOrCreateDeviceId, setDeviceNam
 import { computeFlight, routeKey } from './utils/flights'
 import { canRefreshLiveStatus, fetchLiveStatus, normalizeFlightNumber, refreshStatusLabel } from './utils/liveStatus'
 import { DEFAULT_APP_SETTINGS, appSettingsFromMetadata, migrateAppMetadataDefaults, normalizeAppSettings, patchSyncMetadata, settingsMetadataEntry, syncMetadataFromMetadata } from './utils/settings'
+import { createTranslator, languageOptions, resolveLanguage, type Translator } from './utils/i18n'
 import { localStorageSummary } from './utils/storage'
 import { createSyncEvent, syncHistorySummaryLabel } from './utils/syncHistory'
 import { syncStatusSnapshot, type SyncStatusSnapshot } from './utils/syncStatus'
@@ -195,6 +196,12 @@ const AppSettingsContext = createContext<AppSettings>(DEFAULT_APP_SETTINGS)
 
 function useAppSettings(): AppSettings {
   return useContext(AppSettingsContext)
+}
+
+function useTranslator(): Translator {
+  const settings = useAppSettings()
+  const language = resolveLanguage(settings.language, typeof navigator !== 'undefined' ? navigator.language : undefined)
+  return createTranslator(language)
 }
 
 function flightTimeDisplayOptions(settings: AppSettings) {
@@ -1960,6 +1967,7 @@ function SettingsPage({
   onCompareSync?: () => Promise<void>
 }) {
   const displayOptions = flightTimeDisplayOptions(settings)
+  const translator = useTranslator()
   const [email, setEmail] = useState('')
   const [diagnosticsMessage, setDiagnosticsMessage] = useState('')
   const storage = localStorageSummary({ flights, allFlights, tripMetadata: allTripMetadata, providerAirports, appMetadata, localSchemaVersion: LOCAL_SCHEMA_VERSION })
@@ -2056,6 +2064,10 @@ function SettingsPage({
           <div className="segmented" role="group" aria-label="Theme">
             {(['system', 'light', 'dark'] as const).map((theme) => <button key={theme} type="button" className={settings.theme === theme ? 'active' : ''} onClick={() => void onSettingsChange({ theme })}>{theme}</button>)}
           </div>
+          <div className="form-grid compact">
+            <label>{translator('settings.language')}<select value={settings.language} onChange={(event) => void onSettingsChange({ language: event.target.value as AppSettings['language'] })}>{languageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          </div>
+          <p className="muted">{translator('settings.languageHelp')}</p>
         </article>
         <article className="panel" id="units">
           <p className="eyebrow">Units & Formatting</p>
@@ -3102,17 +3114,18 @@ function MobileMoreMenu({
   onNavigate: (page: Page) => void
   onClose: () => void
 }) {
+  const t = useTranslator()
   if (!open) return null
   return (
     <div className="mobile-more-sheet" role="dialog" aria-label="More navigation">
       <div className="mobile-more-header">
-        <strong>More</strong>
+        <strong>{t('nav.more')}</strong>
         <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Close more navigation"><X aria-hidden="true" /></button>
       </div>
       <div className="mobile-more-grid">
         {moreNavItems.map((item) => (
           <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => onNavigate(item.page)}>
-            {item.label}
+            {t(`nav.${item.page}`, item.label)}
           </button>
         ))}
       </div>
@@ -3428,6 +3441,10 @@ function App() {
     root.dataset.theme = effectiveTheme
     root.style.colorScheme = effectiveTheme
   }, [settings.theme])
+
+  useEffect(() => {
+    document.documentElement.lang = resolveLanguage(settings.language, typeof navigator !== 'undefined' ? navigator.language : undefined)
+  }, [settings.language])
 
   useEffect(() => {
     if (!settings.dayOfNotificationsEnabled) {
@@ -3835,7 +3852,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.5',
+        appVersion: 'v2.6',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4552,6 +4569,8 @@ function App() {
   }
 
   const mobileGroup = mobileNavGroup(route)
+  const language = resolveLanguage(settings.language, typeof navigator !== 'undefined' ? navigator.language : undefined)
+  const t = createTranslator(language)
   const appShellClass = ['app-shell', isStandalone ? 'is-standalone' : '', isOnline ? '' : 'is-offline'].filter(Boolean).join(' ')
 
   return (
@@ -4559,8 +4578,8 @@ function App() {
     <div className={appShellClass}>
       <header>
         <button type="button" className="brand" onClick={() => navigate('dashboard')}><Plane aria-hidden="true" /><span>FlightLog</span></button>
-        <nav aria-label="Primary navigation">{desktopNavItems.map((item) => <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => navigate(item.page)}>{item.label}</button>)}</nav>
-        <button type="button" onClick={openQuickAdd}><Plus aria-hidden="true" /> Add flight</button>
+        <nav aria-label="Primary navigation">{desktopNavItems.map((item) => <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => navigate(item.page)}>{t(`nav.${item.page}`, item.label)}</button>)}</nav>
+        <button type="button" onClick={openQuickAdd}><Plus aria-hidden="true" /> {t('action.addFlight')}</button>
       </header>
       {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
@@ -4580,13 +4599,13 @@ function App() {
       {route.page === 'trash' && <TrashPage flights={deletedFlightList} tripMetadata={deletedTripMetadataList} busy={cloudBusy} signedIn={Boolean(authSession)} onRestore={handleRestoreDeletedFlight} onPermanentDelete={handlePermanentDeleteFlight} onRestoreSelected={handleRestoreDeletedFlights} onPermanentDeleteSelected={handlePermanentDeleteFlights} onEmptyTrash={handleEmptyTrash} onExport={handleExportDeletedRecord} onCreateSafetyBackup={handleCreateSafetyBackup} onNavigateSettings={() => navigate('settings')} />}
       <MobileMoreMenu open={mobileMoreOpen} route={route} onNavigate={navigate} onClose={() => setMobileMoreOpen(false)} />
       <nav className="bottom-nav" aria-label="Mobile navigation">
-        <button type="button" className={mobileGroup === 'home' ? 'active' : ''} onClick={() => navigate('dashboard')}><Home aria-hidden="true" /> Home</button>
-        <button type="button" className="bottom-add" onClick={openQuickAdd}><Plus aria-hidden="true" /> Add</button>
-        <button type="button" className={mobileGroup === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}><Plane aria-hidden="true" /> Flights</button>
-        <button type="button" className={mobileGroup === 'trips' ? 'active' : ''} onClick={() => navigate('trips')}><CalendarDays aria-hidden="true" /> Trips</button>
-        <button type="button" className={mobileGroup === 'more' || mobileMoreOpen ? 'active' : ''} onClick={() => setMobileMoreOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /> More</button>
+        <button type="button" className={mobileGroup === 'home' ? 'active' : ''} onClick={() => navigate('dashboard')}><Home aria-hidden="true" /> {t('nav.home')}</button>
+        <button type="button" className="bottom-add" onClick={openQuickAdd}><Plus aria-hidden="true" /> {t('nav.add')}</button>
+        <button type="button" className={mobileGroup === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}><Plane aria-hidden="true" /> {t('nav.flights')}</button>
+        <button type="button" className={mobileGroup === 'trips' ? 'active' : ''} onClick={() => navigate('trips')}><CalendarDays aria-hidden="true" /> {t('nav.trips')}</button>
+        <button type="button" className={mobileGroup === 'more' || mobileMoreOpen ? 'active' : ''} onClick={() => setMobileMoreOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /> {t('nav.more')}</button>
       </nav>
-      <footer><strong>FlightLog</strong><span>personal flight passport</span><span>data stored locally in your browser</span></footer>
+      <footer><strong>FlightLog</strong><span>{t('footer.tagline')}</span><span>{t('footer.storage')}</span></footer>
     </div>
     </AppSettingsContext.Provider>
   )

@@ -174,11 +174,14 @@ export interface AppMetadata {
   updatedAt: string
 }
 
+export type LanguageSetting = 'system' | 'en' | 'zh-CN' | 'zh-TW' | 'ja'
+
 export interface AppSettings {
   distanceUnit: DistanceUnit
   timeFormat: TimeFormat
   dateFormat: DateFormat
   theme: ThemePreference
+  language: LanguageSetting
   defaultCabin: '' | 'Economy' | 'Premium Economy' | 'Business' | 'First'
   defaultPurpose: '' | FlightPurpose
   backupReminderEnabled: boolean
