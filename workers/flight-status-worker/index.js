@@ -426,16 +426,194 @@ async function handleFlightStatus(request, env, ctx, origin, url) {
   }
 }
 
+// --- Airport status board (v2.7) ---
+//
+// Returns a normalized `AirportStatus` for an airport: on-time / delayed /
+// cancelled counts and average delay for departures and arrivals in a short
+// forward window, plus a small sample. Mock mode is deterministic and fully
+// covers the contract. Real mode maps AeroDataBox FIDS defensively — the exact
+// live payload should be verified once when the Worker is deployed (see README).
+
+export function validateAirportStatusRequest(url) {
+  const iata = String(url.searchParams.get('iata') ?? '').trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(iata)) return { error: 'iata must be a 3-letter IATA airport code' }
+  const hoursRaw = Number(url.searchParams.get('hours') ?? 6)
+  const hours = Number.isFinite(hoursRaw) ? Math.min(12, Math.max(1, Math.round(hoursRaw))) : 6
+  return { iata, hours }
+}
+
+function movementDelayMinutes(movement) {
+  const scheduled = movement?.scheduledTime?.utc ?? movement?.scheduledTime?.local
+  const revised = movement?.revisedTime?.utc ?? movement?.revisedTime?.local ?? movement?.runwayTime?.utc ?? movement?.predictedTime?.utc
+  if (!scheduled || !revised) return undefined
+  const scheduledMs = Date.parse(String(scheduled).replace(' ', 'T'))
+  const revisedMs = Date.parse(String(revised).replace(' ', 'T'))
+  if (Number.isNaN(scheduledMs) || Number.isNaN(revisedMs)) return undefined
+  return Math.round((revisedMs - scheduledMs) / 60000)
+}
+
+export function summarizeMovements(items, direction) {
+  const list = Array.isArray(items) ? items : []
+  let onTime = 0
+  let delayed = 0
+  let cancelled = 0
+  const delays = []
+  const sample = []
+  for (const item of list) {
+    const status = String(item?.status ?? '').toLowerCase()
+    const movement = direction === 'departure'
+      ? (item.departure ?? item.movement ?? item)
+      : (item.arrival ?? item.movement ?? item)
+    const delay = movementDelayMinutes(movement)
+    const isCancelled = status.includes('cancel')
+    if (isCancelled) {
+      cancelled += 1
+    } else {
+      if (delay !== undefined && delay > 15) delayed += 1
+      else onTime += 1
+      // Average delay is over all non-cancelled movements with a known delay.
+      if (delay !== undefined) delays.push(delay)
+    }
+    const otherEnd = direction === 'departure' ? (item.arrival ?? item.movement) : (item.departure ?? item.movement)
+    if (sample.length < 8) {
+      sample.push(stripUndefined({
+        flightNumber: normalizeFlightNumber(item.number ?? item.flightNumber) || undefined,
+        direction,
+        status: isCancelled ? 'cancelled' : delay !== undefined && delay > 15 ? 'delayed' : 'on-time',
+        delayMinutes: delay,
+        scheduledLocal: cleanString(movement?.scheduledTime?.local),
+        otherAirport: cleanString(otherEnd?.airport?.iata)?.toUpperCase(),
+      }))
+    }
+  }
+  const total = onTime + delayed + cancelled
+  const avgDelayMinutes = delays.length > 0 ? Math.round(delays.reduce((sum, value) => sum + value, 0) / delays.length) : 0
+  return { total, onTime, delayed, cancelled, avgDelayMinutes, onTimePercent: total > 0 ? Math.round((onTime / total) * 100) : 0, sample }
+}
+
+export function normalizeAirportFids(iata, data, warnings = []) {
+  const departures = summarizeMovements(data?.departures, 'departure')
+  const arrivals = summarizeMovements(data?.arrivals, 'arrival')
+  return stripUndefined({
+    airport: iata,
+    departures: { total: departures.total, onTime: departures.onTime, delayed: departures.delayed, cancelled: departures.cancelled, avgDelayMinutes: departures.avgDelayMinutes, onTimePercent: departures.onTimePercent },
+    arrivals: { total: arrivals.total, onTime: arrivals.onTime, delayed: arrivals.delayed, cancelled: arrivals.cancelled, avgDelayMinutes: arrivals.avgDelayMinutes, onTimePercent: arrivals.onTimePercent },
+    sample: [...departures.sample, ...arrivals.sample].slice(0, 12),
+    provider: 'AeroDataBox',
+    warnings,
+  })
+}
+
+export function mockAirportStatus(iata) {
+  return {
+    airport: iata,
+    departures: { total: 20, onTime: 15, delayed: 4, cancelled: 1, avgDelayMinutes: 22, onTimePercent: 75 },
+    arrivals: { total: 18, onTime: 14, delayed: 3, cancelled: 1, avgDelayMinutes: 18, onTimePercent: 78 },
+    sample: [
+      { flightNumber: 'SQ38', direction: 'departure', status: 'on-time', delayMinutes: 0, otherAirport: 'LAX' },
+      { flightNumber: 'UA60', direction: 'departure', status: 'delayed', delayMinutes: 35, otherAirport: 'NRT' },
+      { flightNumber: 'BA11', direction: 'arrival', status: 'on-time', delayMinutes: 5, otherAirport: 'LHR' },
+    ],
+    provider: 'mock-worker',
+    warnings: [],
+  }
+}
+
+export function buildAeroDataBoxFidsUrl(iata, fromLocal, toLocal) {
+  const url = new URL(`/flights/airports/iata/${encodeURIComponent(iata)}/${encodeURIComponent(fromLocal)}/${encodeURIComponent(toLocal)}`, AERODATABOX_BASE_URL)
+  url.searchParams.set('direction', 'Both')
+  url.searchParams.set('withLeg', 'false')
+  url.searchParams.set('withCancelled', 'true')
+  url.searchParams.set('withCodeshared', 'false')
+  url.searchParams.set('withCargo', 'false')
+  url.searchParams.set('withPrivate', 'false')
+  return url
+}
+
+// KNOWN REAL-MODE LIMITATION (see Worker README "Airport status board"):
+// The AeroDataBox FIDS endpoint interprets the {from}/{to} path segments as the
+// airport's LOCAL time, but we emit a UTC wall-clock string here. That shifts the
+// real window by the airport's UTC offset (e.g. for SIN, UTC+8, a "next 6h" board
+// can surface past flights). A correct fix needs the airport's local offset, which
+// the Worker does not have without a timezone lookup or an extra provider call.
+// This approximation only affects real mode (mock mode is unaffected) and must be
+// corrected during the post-deploy verification step, alongside the FIDS field
+// mapping in normalizeAirportFids/summarizeMovements.
+function fidsWindow(hours, nowMs = Date.now()) {
+  const from = new Date(nowMs).toISOString().slice(0, 16)
+  const to = new Date(nowMs + hours * 60 * 60 * 1000).toISOString().slice(0, 16)
+  return { from, to }
+}
+
+export async function fetchAeroDataBoxAirportStatus(iata, hours, env) {
+  if (!env.AERODATABOX_API_KEY) {
+    throw new ProviderError(503, 'AeroDataBox API key is not configured')
+  }
+  const host = env.AERODATABOX_API_HOST || DEFAULT_AERODATABOX_HOST
+  const { from, to } = fidsWindow(hours)
+  const endpoint = buildAeroDataBoxFidsUrl(iata, from, to)
+  const response = await fetch(endpoint, {
+    headers: {
+      'x-rapidapi-host': host,
+      'x-rapidapi-key': env.AERODATABOX_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+  })
+  // 204 = the provider found no movements in the window. Mirror the flight-status
+  // 204 handling and degrade gracefully to an empty board rather than a 502 parse error.
+  if (response.status === 204) return normalizeAirportFids(iata, {}, [])
+  if (!response.ok) throw await providerErrorFromResponse(response)
+  let data
+  try {
+    data = await response.json()
+  } catch {
+    throw new ProviderError(502, 'Unable to parse aviation data provider response.')
+  }
+  const warnings = []
+  if (!Array.isArray(data?.departures) && !Array.isArray(data?.arrivals)) {
+    warnings.push('Provider returned an unexpected airport payload shape; counts may be incomplete.')
+  }
+  return normalizeAirportFids(iata, data, warnings)
+}
+
+async function handleAirportStatus(request, env, ctx, origin, url) {
+  const input = validateAirportStatusRequest(url)
+  if (input.error) return json({ error: input.error }, 400, origin)
+
+  const cacheUrl = new URL(url)
+  cacheUrl.searchParams.set('iata', input.iata)
+  cacheUrl.searchParams.set('hours', String(input.hours))
+  cacheUrl.searchParams.set('schema', 'airport-v1')
+  const cacheKey = new Request(cacheUrl.toString(), request)
+  const cached = await caches.default.match(cacheKey)
+  if (cached) return cached
+
+  try {
+    const status = providerMode(env) === 'mock'
+      ? mockAirportStatus(input.iata)
+      : await fetchAeroDataBoxAirportStatus(input.iata, input.hours, env)
+    const response = json(status, 200, origin, 60 * 5)
+    ctx.waitUntil(caches.default.put(cacheKey, response.clone()))
+    return response
+  } catch (error) {
+    if (error instanceof ProviderError) return json({ error: error.message }, error.status, origin)
+    return json({ error: 'Unable to fetch airport status.' }, 500, origin)
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin') || ''
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders(origin) })
 
     const url = new URL(request.url)
-    if (request.method !== 'GET' || url.pathname !== '/flight-status') {
-      return json({ error: 'Not found' }, 404, origin)
+    if (request.method === 'GET' && url.pathname === '/flight-status') {
+      return handleFlightStatus(request, env, ctx, origin, url)
     }
-
-    return handleFlightStatus(request, env, ctx, origin, url)
+    if (request.method === 'GET' && url.pathname === '/airport-status') {
+      return handleAirportStatus(request, env, ctx, origin, url)
+    }
+    return json({ error: 'Not found' }, 404, origin)
   },
 }

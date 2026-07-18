@@ -2,10 +2,11 @@
 
 Cloudflare Worker proxy for FlightLog live status. The static app calls this Worker; the Worker calls AeroDataBox RapidAPI with secrets stored in the Worker environment.
 
-## Endpoint
+## Endpoints
 
 ```txt
 GET /flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Departure
+GET /airport-status?iata=SIN&hours=6
 ```
 
 The Worker validates and normalizes the query, calls AeroDataBox `GET /flights/number/{flightNumber}/{dateLocal}?dateLocalRole=Departure`, and returns the normalized `FlightLiveStatus` JSON shape used by the frontend. `dateRole` may be `Departure` or `Arrival`; `Departure` is the default. It does not request `withFlightPlan=true`.
@@ -83,6 +84,25 @@ Production curl:
 ```sh
 curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?flightNumber=SQ38&date=2026-06-02"
 ```
+
+## Airport status board (v2.7)
+
+`GET /airport-status?iata=SIN&hours=6` returns a normalized `AirportStatus`: on-time / delayed / cancelled counts and average delay for departures and arrivals in a short forward window (1–12h, default 6h), plus a small sample of recent flights. `hours` is clamped to `[1, 12]`.
+
+In `FLIGHTLOG_PROVIDER_MODE=mock` (or with no API key path exercised) it returns deterministic demo data. In real mode it calls the AeroDataBox airport FIDS endpoint:
+
+```txt
+GET https://aerodatabox.p.rapidapi.com/flights/airports/iata/{iata}/{fromLocal}/{toLocal}?direction=Both&withCancelled=true
+```
+
+and maps the response in `normalizeAirportFids` / `summarizeMovements`. **This mapping is best-effort and isolated** — after deploying, verify it against one real response (the exact FIDS field shapes can vary by plan) and adjust `summarizeMovements`/`movementDelayMinutes` if the counts look off. The frontend works in mock mode regardless.
+
+Two separate real-mode caveats to check during that post-deploy verification:
+
+1. **Time window is UTC-approximated.** The FIDS endpoint reads the `{from}`/`{to}` path segments as the airport's **local** time, but `fidsWindow` currently emits a UTC wall-clock string. The queried window is therefore shifted by the airport's UTC offset (e.g. for `SIN` at UTC+8 a "next 6h" board can surface flights from the past). A correct fix requires the airport's local offset, which the Worker does not carry. Resolve this when you verify against a live response — either convert `fidsWindow` to airport-local time (timezone lookup or an extra provider call) or confirm the offset is acceptable for your use. Mock mode is unaffected.
+2. **Field mapping** — the `normalizeAirportFids` / `summarizeMovements` shape assumptions described above.
+
+A provider `204` (no movements in the window) degrades to an empty board rather than an error.
 
 ## Notes
 

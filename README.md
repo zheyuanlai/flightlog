@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v27`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v28`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -88,6 +88,15 @@ FlightLog v2.6 adds a dependency-free localization layer and initial languages.
 - Architecture: a small `t(key)` dictionary (`src/utils/i18n.ts`) with English as the source of truth and fallback; a test asserts every key is present in every language and that no locale carries stray keys. `<html lang>` is set from the active language.
 - Coverage today: navigation, the mobile More menu, the Add-flight action, the footer, and the language setting itself are translated in all four languages. The long tail of strings falls back to English and will be keyed progressively.
 - The current translations have been reviewed by the maintainer. Traditional Chinese uses Taiwan conventions (e.g. 設定, 新增), not a Simplified auto-conversion.
+
+## v2.7 Live Depth
+
+FlightLog v2.7 deepens day-of awareness with a live airport delay board and a smarter refresh cadence.
+
+- Airport status board: on the Map page, enter an IATA code for a live on-time snapshot of an airport — departures and arrivals with on-time / delayed / cancelled counts, average delay, and a sample of recent flights. It calls a new `/airport-status` endpoint on the flight-status Worker and works with mock/demo data out of the box.
+- Smarter refresh cadence: an on-device recommendation (`src/utils/refreshCadence.ts`) suggests how often live status is worth refreshing based on the flight's lifecycle phase (roughly every 10 minutes en route or departing soon, hourly during check-in), and the day-of-travel card shows a "Refresh recommended" hint when the data is stale. This never polls in the background — it only shapes the hint while the app is open.
+
+> Deploying the airport board: the `/airport-status` endpoint ships in the Worker with a deterministic mock mode. For **real** airport data, redeploy the Worker (`cd workers/flight-status-worker && npx wrangler deploy`). The AeroDataBox airport FIDS response mapping is best-effort and isolated in the Worker (`normalizeAirportFids`) — verify it against a live response once after deploying and adjust the field mapping if needed. The frontend degrades gracefully to mock/demo data without it.
 
 ## Timezones
 
@@ -205,7 +214,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v27`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v28`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 

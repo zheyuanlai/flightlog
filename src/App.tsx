@@ -149,6 +149,8 @@ import {
   resolveFlightTime,
 } from './utils/flightTime'
 import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleArc, overallPunctuality, routeDelayHistory, routePunctuality, type PunctualityStat } from './utils/insights'
+import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } from './utils/airportStatus'
+import { refreshRecommendation } from './utils/refreshCadence'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
@@ -1021,6 +1023,7 @@ function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTra
   const displayOptions = flightTimeDisplayOptions(settings)
   const { flight, lifecycle } = item
   const checkInLink = externalFlightLinks(flight).find((link) => link.label.toLowerCase().includes('check-in'))
+  const cadence = refreshRecommendation(flight)
   return (
     <section className="panel day-of-panel">
       <div className="flight-main">
@@ -1032,6 +1035,7 @@ function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTra
       </div>
       {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
       {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      {(cadence.urgency === 'now' || cadence.urgency === 'soon') && <p className={`notice ${cadence.urgency === 'now' ? 'warning' : ''}`}>{cadence.label}{cadence.suggestedIntervalMinutes ? ` — live status is worth refreshing about every ${cadence.suggestedIntervalMinutes} min while ${lifecycle.label.toLowerCase()}.` : '.'}</p>}
       <dl className="meta-grid">
         <div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div>
         <div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div>
@@ -1687,7 +1691,80 @@ function FlightDetailPage({
   )
 }
 
-function MapPage({ flights, airportVersion }: { flights: FlightLogEntry[]; airportVersion: number }) {
+function onTimeClass(percent: number): string {
+  return percent >= 80 ? 'ontime-strong' : percent >= 60 ? 'ontime-mid' : 'ontime-weak'
+}
+
+function AirportBoardRow({ label, summary }: { label: string; summary: AirportMovementSummary }) {
+  return (
+    <div className="airport-board-row">
+      <div className="airport-board-head"><p className="eyebrow">{label}</p><strong className={onTimeClass(summary.onTimePercent)}>{summary.onTimePercent}% on time</strong></div>
+      <dl className="meta-grid">
+        <div><dt>Flights</dt><dd>{summary.total}</dd></div>
+        <div><dt>Delayed</dt><dd>{summary.delayed}</dd></div>
+        <div><dt>Cancelled</dt><dd>{summary.cancelled}</dd></div>
+        <div><dt>Avg delay</dt><dd>{summary.avgDelayMinutes}m</dd></div>
+      </dl>
+    </div>
+  )
+}
+
+function AirportStatusPanel({ isOnline }: { isOnline: boolean }) {
+  const settings = useAppSettings()
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState<AirportStatus | undefined>()
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  async function lookup(event: FormEvent) {
+    event.preventDefault()
+    if (!isOnline && settings.liveDataMode !== 'mock') {
+      setMessage(offlineActionMessage('airport status'))
+      return
+    }
+    setBusy(true)
+    setMessage('')
+    setStatus(undefined)
+    try {
+      setStatus(await fetchAirportStatus(query, { liveDataMode: settings.liveDataMode }))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to fetch airport status.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="panel airport-status-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Airport status</p><h3>Live delay board</h3></div><Gauge aria-hidden="true" /></div>
+      <p className="muted">How is an airport doing right now? Enter an IATA code for a live on-time snapshot from the flight-status proxy.</p>
+      <form onSubmit={lookup} className="airport-status-form">
+        <input value={query} onChange={(event) => setQuery(event.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3))} placeholder="e.g. SIN" aria-label="Airport IATA code" />
+        <button type="submit" disabled={busy || query.trim().length !== 3}><Search aria-hidden="true" /> {busy ? 'Checking…' : 'Check'}</button>
+      </form>
+      {message && <p className="notice warning">{message}</p>}
+      {status && (
+        <div className="airport-board">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">{status.airport}{status.provider === 'mock' ? ' · demo data' : ''}</p><h4>Delay board</h4></div></div>
+          <div className="two-columns">
+            <AirportBoardRow label="Departures" summary={status.departures} />
+            <AirportBoardRow label="Arrivals" summary={status.arrivals} />
+          </div>
+          {status.sample.length > 0 && (
+            <ul className="airport-sample">
+              {status.sample.slice(0, 8).map((item, index) => (
+                <li key={`${item.flightNumber ?? 'flight'}-${index}`} className={`sample-${item.status}`}>
+                  {item.flightNumber ?? 'Flight'} · {item.direction === 'departure' ? 'to' : 'from'} {item.otherAirport ?? '—'} · {item.status}{item.delayMinutes ? ` (${item.delayMinutes}m)` : ''}
+                </li>
+              ))}
+            </ul>
+          )}
+          {status.warnings?.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function MapPage({ flights, airportVersion, isOnline }: { flights: FlightLogEntry[]; airportVersion: number; isOnline: boolean }) {
   const mapRef = useRef<HTMLDivElement | null>(null)
   const leafletRef = useRef<import('leaflet').Map | null>(null)
   const leafletModuleRef = useRef<typeof import('leaflet') | null>(null)
@@ -1752,7 +1829,7 @@ function MapPage({ flights, airportVersion }: { flights: FlightLogEntry[]; airpo
   }, [computed, leafletReady])
 
   const mappedFlights = computed.filter((flight) => flight.hasRouteCoordinates).length
-  return <main className="page"><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}</main>
+  return <main className="page"><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}<AirportStatusPanel isOnline={isOnline} /></main>
 }
 
 function ListPanel({ title, rows }: { title: string; rows: string[] }) {
@@ -3851,7 +3928,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.6',
+        appVersion: 'v2.7',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4589,7 +4666,7 @@ function App() {
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
-      {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
+      {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
