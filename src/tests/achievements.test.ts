@@ -20,6 +20,9 @@ const AIRPORTS: Record<string, Airport> = {
   LHR: { iata: 'LHR', name: 'London Heathrow', city: 'London', country: 'United Kingdom', countryCode: 'GB', lat: 51.47, lon: -0.46 },
   GRU: { iata: 'GRU', name: 'São Paulo Guarulhos', city: 'São Paulo', country: 'Brazil', countryCode: 'BR', lat: -23.43, lon: -46.47 },
   NRT: { iata: 'NRT', name: 'Tokyo Narita', city: 'Tokyo', country: 'Japan', countryCode: 'JP', lat: 35.76, lon: 140.39 },
+  // Two US airports for the same country: one carries an ISO-2 code, one only a name.
+  AAA: { iata: 'AAA', name: 'Alpha Field', city: 'Alpha', country: 'United States', countryCode: 'US', lat: 40, lon: -100 },
+  BBB: { iata: 'BBB', name: 'Bravo Field', city: 'Bravo', country: 'United States', lat: 41, lon: -101 },
 }
 
 const lookup = (iata: string): Airport | undefined => AIRPORTS[iata]
@@ -89,6 +92,12 @@ describe('red-eye detection', () => {
     expect(isRedEye(flight({ scheduledDepartureLocal: '2026-06-02T14:00', scheduledArrivalLocal: '2026-06-03T15:00' }))).toBe(false)
     expect(isRedEye(flight({}))).toBe(false)
   })
+
+  it('treats date-only local values as unknown times, not midnight red-eyes', () => {
+    expect(isRedEye(flight({ scheduledDepartureLocal: '2026-06-02', scheduledArrivalLocal: '2026-06-03' }))).toBe(false)
+    // A real midnight departure with a clock time is still eligible.
+    expect(isRedEye(flight({ scheduledDepartureLocal: '2026-06-02T00:15', scheduledArrivalLocal: '2026-06-03T06:00' }))).toBe(true)
+  })
 })
 
 describe('longestConsecutiveYears', () => {
@@ -120,6 +129,20 @@ describe('buildPassportSummary', () => {
     const summary = buildPassportSummary([flight({ id: 'x', deletedAt: '2025-01-01T00:00:00Z' })], lookup)
     expect(summary.totalFlights).toBe(0)
     expect(buildPassportSummary([], lookup).continents).toEqual([])
+  })
+
+  it('counts one country once whether an airport carries a code or only a name', () => {
+    // Coded (AAA=US) then name-only (BBB=United States, no code).
+    const codedFirst = buildPassportSummary([flight({ id: 'c1', origin: 'AAA', destination: 'BBB' })], lookup)
+    expect(codedFirst.countryCount).toBe(1)
+    expect(codedFirst.countries).toEqual(['United States'])
+    // Name-only first then coded — the code-less entry migrates onto the code.
+    const nameFirst = buildPassportSummary([flight({ id: 'c2', origin: 'BBB', destination: 'AAA' })], lookup)
+    expect(nameFirst.countryCount).toBe(1)
+    expect(nameFirst.countries).toEqual(['United States'])
+    // And the reach milestone is credited for one country, not two.
+    const achievements = new Map(buildAchievements([flight({ id: 'c3', origin: 'AAA', destination: 'BBB' })], lookup).map((a) => [a.id, a]))
+    expect(achievements.get('countries-5')?.progress).toBe(1)
   })
 })
 

@@ -51,6 +51,10 @@ interface LocalMoment {
 
 function localMoment(iso?: string): LocalMoment | undefined {
   if (!iso) return undefined
+  // Require an actual clock time. A date-only value (no "T HH:MM") has genuinely
+  // unknown times — Luxon would report midnight — and must never be treated as a
+  // red-eye, keeping the function conservative as documented.
+  if (!/T\d{2}:\d{2}/.test(iso)) return undefined
   const dt = DateTime.fromISO(iso, { setZone: true })
   if (!dt.isValid) return undefined
   const date = dt.toISODate()
@@ -80,20 +84,65 @@ function resolveEndpoint(flight: FlightLogEntry, role: 'origin' | 'destination',
     ?? airportFromSnapshot(role === 'origin' ? flight.originAirportSnapshot : flight.destinationAirportSnapshot)
 }
 
-function countryIdentity(airport: Airport): { key: string; name: string } | undefined {
+interface CountryAccumulator {
+  keys: Set<string>
+  names: Map<string, string>
+  continents: Map<string, Continent>
+  nameToKey: Map<string, string>
+}
+
+function newCountryAccumulator(): CountryAccumulator {
+  return { keys: new Set(), names: new Map(), continents: new Map(), nameToKey: new Map() }
+}
+
+/**
+ * Record a country visit under a single canonical key, collapsing the two ways the
+ * same country can appear: an ISO-2 country code, or a bare country name (a provider
+ * snapshot or curated entry with no code). A country first seen code-less is migrated
+ * onto its code once any coded airport of that country is seen, so a country is never
+ * counted twice. Returns the canonical key, or undefined if unidentifiable.
+ */
+function registerCountry(acc: CountryAccumulator, airport: Airport): string | undefined {
   const code = airport.countryCode?.trim().toUpperCase()
   const name = (airport.countryName || airport.country || '').trim()
-  if (code) return { key: code, name: name || code }
-  if (name) return { key: `name:${name.toLowerCase()}`, name }
+  const nameKey = name.toLowerCase()
+
+  if (code) {
+    const existing = nameKey ? acc.nameToKey.get(nameKey) : undefined
+    if (existing && existing !== code && existing.startsWith('name:')) {
+      // Fold an earlier code-less entry for this name onto the canonical code.
+      acc.keys.delete(existing)
+      const priorName = acc.names.get(existing)
+      acc.names.delete(existing)
+      if (priorName && !acc.names.has(code)) acc.names.set(code, priorName)
+      const priorContinent = acc.continents.get(existing)
+      acc.continents.delete(existing)
+      if (priorContinent && !acc.continents.has(code)) acc.continents.set(code, priorContinent)
+    }
+    acc.keys.add(code)
+    if (!acc.names.has(code)) acc.names.set(code, name || code)
+    if (nameKey) acc.nameToKey.set(nameKey, code)
+    return code
+  }
+
+  if (nameKey) {
+    // Reuse an existing key for this name — which may already be a canonical code.
+    const existing = acc.nameToKey.get(nameKey)
+    if (existing) return existing
+    const key = `name:${nameKey}`
+    acc.keys.add(key)
+    if (!acc.names.has(key)) acc.names.set(key, name)
+    acc.nameToKey.set(nameKey, key)
+    return key
+  }
+
   return undefined
 }
 
 interface Metrics {
   flights: number
   distanceKm: number
-  countryCodes: Set<string>
-  countryNames: Map<string, string>
-  countryContinents: Map<string, Continent>
+  countries: CountryAccumulator
   continents: Set<Continent>
   airports: Set<string>
   airlines: Set<string>
@@ -113,9 +162,7 @@ function freshMetrics(): Metrics {
   return {
     flights: 0,
     distanceKm: 0,
-    countryCodes: new Set(),
-    countryNames: new Map(),
-    countryContinents: new Map(),
+    countries: newCountryAccumulator(),
     continents: new Set(),
     airports: new Set(),
     airlines: new Set(),
@@ -153,14 +200,12 @@ function applyFlight(metrics: Metrics, flight: FlightLogEntry, lookup: AirportLo
   const destination = resolveEndpoint(flight, 'destination', lookup)
   for (const airport of [origin, destination]) {
     if (!airport) continue
-    const identity = countryIdentity(airport)
-    if (identity) {
-      metrics.countryCodes.add(identity.key)
-      metrics.countryNames.set(identity.key, identity.name)
+    const countryKey = registerCountry(metrics.countries, airport)
+    if (countryKey) {
       const continent = continentForCountryCode(airport.countryCode)
       if (continent) {
         metrics.continents.add(continent)
-        metrics.countryContinents.set(identity.key, continent)
+        metrics.countries.continents.set(countryKey, continent)
       }
     }
     if (hasCoordinates(airport)) {
@@ -224,8 +269,8 @@ export interface PassportSummary {
 }
 
 function summarize(metrics: Metrics): PassportSummary {
-  const countryList: VisitedCountry[] = [...metrics.countryNames.entries()]
-    .map(([key, name]) => ({ key, name, continent: metrics.countryContinents.get(key) }))
+  const countryList: VisitedCountry[] = [...metrics.countries.names.entries()]
+    .map(([key, name]) => ({ key, name, continent: metrics.countries.continents.get(key) }))
     .sort((a, b) => a.name.localeCompare(b.name))
   const countries = countryList.map((country) => country.name)
   const continents = CONTINENTS.filter((continent) => metrics.continents.has(continent))
@@ -234,7 +279,7 @@ function summarize(metrics: Metrics): PassportSummary {
     totalDistanceKm: Math.round(metrics.distanceKm),
     countries,
     countryList,
-    countryCount: metrics.countryCodes.size,
+    countryCount: metrics.countries.keys.size,
     continents,
     airports: [...metrics.airports].sort(),
     airlines: [...metrics.airlines].sort((a, b) => a.localeCompare(b)),
@@ -289,9 +334,9 @@ const ACHIEVEMENT_DEFS: AchievementDef[] = [
   { id: 'frequent-500', category: 'frequency', tier: 'platinum', title: 'Century Club', description: 'Log 500 flights.', icon: '👑', target: 500, metric: (m) => m.flights },
   { id: 'airports-25', category: 'reach', tier: 'bronze', title: 'Airport Collector', description: 'Visit 25 unique airports.', icon: '🛄', target: 25, metric: (m) => m.airports.size },
   { id: 'airports-50', category: 'reach', tier: 'silver', title: 'Terminal Velocity', description: 'Visit 50 unique airports.', icon: '🧳', target: 50, metric: (m) => m.airports.size },
-  { id: 'countries-5', category: 'reach', tier: 'bronze', title: 'Passport Stamped', description: 'Visit 5 countries.', icon: '🛂', target: 5, metric: (m) => m.countryCodes.size },
-  { id: 'countries-15', category: 'reach', tier: 'silver', title: 'Globe Trotter', description: 'Visit 15 countries.', icon: '🌍', target: 15, metric: (m) => m.countryCodes.size },
-  { id: 'countries-30', category: 'reach', tier: 'gold', title: 'Border Runner', description: 'Visit 30 countries.', icon: '🗺️', target: 30, metric: (m) => m.countryCodes.size },
+  { id: 'countries-5', category: 'reach', tier: 'bronze', title: 'Passport Stamped', description: 'Visit 5 countries.', icon: '🛂', target: 5, metric: (m) => m.countries.keys.size },
+  { id: 'countries-15', category: 'reach', tier: 'silver', title: 'Globe Trotter', description: 'Visit 15 countries.', icon: '🌍', target: 15, metric: (m) => m.countries.keys.size },
+  { id: 'countries-30', category: 'reach', tier: 'gold', title: 'Border Runner', description: 'Visit 30 countries.', icon: '🗺️', target: 30, metric: (m) => m.countries.keys.size },
   { id: 'continents-3', category: 'reach', tier: 'bronze', title: 'Three Continents', description: 'Set foot on 3 continents.', icon: '🧭', target: 3, metric: (m) => m.continents.size },
   { id: 'continents-5', category: 'reach', tier: 'silver', title: 'Five Continents', description: 'Set foot on 5 continents.', icon: '🌐', target: 5, metric: (m) => m.continents.size },
   { id: 'continents-7', category: 'reach', tier: 'platinum', title: 'Seven Continents', description: 'Set foot on all 7 continents.', icon: '🏆', target: 7, metric: (m) => m.continents.size },
@@ -368,22 +413,19 @@ export interface GoalProgress {
  */
 export function computeGoalProgress(flights: FlightLogEntry[], goals: PassportGoals, year: number, lookup: AirportLookup = lookupAirport): GoalProgress[] {
   const inYear = flights.filter((flight) => !flight.deletedAt && Number(flight.date?.slice(0, 4)) === year)
-  const countryKeys = new Set<string>()
+  const countries = newCountryAccumulator()
   const airportKeys = new Set<string>()
   for (const flight of inYear) {
     for (const role of ['origin', 'destination'] as const) {
       const code = normalizeIata(role === 'origin' ? flight.origin ?? '' : flight.destination ?? '')
       if (/^[A-Z]{3}$/.test(code)) airportKeys.add(code)
       const airport = resolveEndpoint(flight, role, lookup)
-      if (airport) {
-        const identity = countryIdentity(airport)
-        if (identity) countryKeys.add(identity.key)
-      }
+      if (airport) registerCountry(countries, airport)
     }
   }
   const rows: Array<{ id: GoalProgress['id']; label: string; target?: number; current: number }> = [
     { id: 'flightsPerYear', label: 'Flights', target: goals.flightsPerYear, current: inYear.length },
-    { id: 'countriesPerYear', label: 'Countries', target: goals.countriesPerYear, current: countryKeys.size },
+    { id: 'countriesPerYear', label: 'Countries', target: goals.countriesPerYear, current: countries.keys.size },
     { id: 'airportsPerYear', label: 'Airports', target: goals.airportsPerYear, current: airportKeys.size },
   ]
   return rows
