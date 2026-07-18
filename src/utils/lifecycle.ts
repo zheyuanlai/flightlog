@@ -57,6 +57,10 @@ const PHASE_LABELS: Record<FlightLifecyclePhase, string> = {
 const CHECK_IN_HINT = 'Most airlines open online check-in 24 to 48 hours before departure.'
 const DEPARTING_SOON_HINT = 'Leave time for the trip to the airport and security.'
 
+export function flightBestInstantMs(flight: FlightLogEntry, direction: 'departure' | 'arrival'): number | undefined {
+  return bestInstantMs(flight, direction)
+}
+
 function bestInstantMs(flight: FlightLogEntry, direction: 'departure' | 'arrival'): number | undefined {
   for (const kind of ['actual', 'estimated', 'scheduled'] as const) {
     const time = resolveFlightTime(flight, kind, direction)

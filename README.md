@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v22`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v23`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -54,6 +54,15 @@ FlightLog v2.2 focuses on protecting the data you back up and on resolving sync 
 - Encrypted cloud snapshots: cloud backups can be encrypted end-to-end before upload. Supabase then stores only the encrypted envelope plus non-sensitive summary columns (counts, schema version, plaintext checksum for change detection). Preview and restore prompt for the passphrase; downloads of encrypted snapshots stay encrypted. Cloud Sync Lite records remain unencrypted — use encrypted snapshots when end-to-end encryption matters.
 - Upload verification: after any cloud backup upload, FlightLog re-downloads the snapshot and recomputes the content checksum (decrypting first for encrypted snapshots) to confirm what was stored matches what was sent.
 - Field-level conflict merge: flight conflicts in Sync Lite now offer a merge editor. Each differing field shows the local and cloud value with a per-field choice; the merged record is saved locally and pushed in one step. System fields (tombstones, timestamps) are never merged.
+
+## v2.3 Day-of Notifications
+
+FlightLog v2.3 adds opt-in day-of travel notifications within PWA constraints.
+
+- A new Settings reminder toggle (default off) enables notifications and requests browser Notification permission. When the API is unsupported or blocked, updates fall back to in-app messages, and Settings says so.
+- While FlightLog is open, a one-minute watcher detects lifecycle transitions — check-in window opening, departing soon, departed, landed, cancelled, diverted — plus meaningful departure delays and departure-gate changes, then shows a system notification (or an in-app toast as fallback). Phase alerts are forward-only, so a delay that pushes a flight back never re-announces an earlier phase.
+- Delivery uses the service worker's `showNotification` where available (required on Android Chromium) and falls back to the page notification API, then to in-app toasts when permission is unavailable. Each transition uses a distinct notification tag so time-critical alerts are never silently coalesced.
+- Constraints are deliberate: FlightLog never polls providers in the background and has no push server, so notifications fire only while the app is open in a tab or installed PWA. Refreshing a flight's live status feeds the same watcher, so gate changes surface right after a refresh.
 
 ## Timezones
 
@@ -171,7 +180,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v22`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v23`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 
@@ -399,10 +408,13 @@ Sample files are available at:
 
 ## Roadmap
 
+The full staged product plan — vision, feature parity with Flighty/Variflight, stage-by-stage scope, and which items need human input — lives in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 - Shipped in v2.1: flight lifecycle assistant, post-flight completion prompt, PNG share cards, and the manual trip editor.
 - Shipped in v2.2: client-side encrypted (E2EE) local and cloud backups, and field-level conflict merge in Sync Lite.
+- Shipped in v2.3: opt-in day-of travel notifications (phase transitions and gate changes) within PWA constraints.
 - Future: Chinese (zh-CN) localization and a language toggle.
-- Future: airline check-in deep links per airline and richer day-of-travel notifications within PWA constraints.
+- Future: airline check-in deep links per airline.
 - Future: Apple login after Apple Developer configuration is available.
 - Still intentionally out of scope: payments, native iOS work, Apple login, realtime sync, background polling, and exposing provider API keys in the frontend.
 

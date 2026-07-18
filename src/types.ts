@@ -185,6 +185,7 @@ export interface AppSettings {
   backupAgeThresholdDays: number
   syncReminderEnabled: boolean
   upcomingFlightRefreshReminderEnabled: boolean
+  dayOfNotificationsEnabled: boolean
   liveDataMode: LiveDataMode
 }
 
