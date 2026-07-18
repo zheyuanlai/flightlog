@@ -23,7 +23,7 @@ export function utcToIcsDate(value: string): string {
   return value.replace(/[-:]/g, '').replace(/\.\d{3}/, '').replace('+0000', 'Z')
 }
 
-export function buildIcsEvent(fields: {
+export interface IcsEventFields {
   uid: string
   dtstamp: string
   dtstart: string
@@ -32,13 +32,10 @@ export function buildIcsEvent(fields: {
   location: string
   description: string
   url?: string
-}): string {
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//FlightLog//FlightLog v1.4//EN',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
+}
+
+function veventLines(fields: IcsEventFields): string[] {
+  return [
     'BEGIN:VEVENT',
     `UID:${escapeIcsText(fields.uid)}`,
     `DTSTAMP:${utcToIcsDate(fields.dtstamp)}`,
@@ -47,9 +44,24 @@ export function buildIcsEvent(fields: {
     `SUMMARY:${escapeIcsText(fields.summary)}`,
     `LOCATION:${escapeIcsText(fields.location)}`,
     `DESCRIPTION:${escapeIcsText(fields.description)}`,
-    fields.url ? `URL:${escapeIcsText(fields.url)}` : undefined,
+    ...(fields.url ? [`URL:${escapeIcsText(fields.url)}`] : []),
     'END:VEVENT',
+  ]
+}
+
+export function buildIcsCalendar(events: IcsEventFields[]): string {
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//FlightLog//FlightLog//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    ...events.flatMap(veventLines),
     'END:VCALENDAR',
-  ].filter((line): line is string => Boolean(line))
+  ]
   return `${lines.map(foldIcsLine).join('\r\n')}\r\n`
+}
+
+export function buildIcsEvent(fields: IcsEventFields): string {
+  return buildIcsCalendar([fields])
 }

@@ -2,7 +2,7 @@ import { DateTime } from 'luxon'
 import type { FlightLogEntry } from '../types'
 import { externalFlightLinks } from './externalFlightLinks'
 import { formatArrivalLocalTime, formatDepartureLocalTime, getCalendarStartEnd, type CalendarTimeRange } from './flightTime'
-import { buildIcsEvent } from './ics'
+import { buildIcsCalendar, buildIcsEvent, type IcsEventFields } from './ics'
 
 export interface CalendarEventDetails {
   available: boolean
@@ -105,6 +105,28 @@ function unavailableDetails(flight: FlightLogEntry, range: CalendarTimeRange): C
     location: calendarLocation(flight),
     description: calendarDescription(flight),
   }
+}
+
+export function buildFlightsIcsFeed(flights: FlightLogEntry[], appUrl?: string): { ics?: string; count: number } {
+  const dtstamp = DateTime.utc().toISO() ?? new Date().toISOString()
+  const events: IcsEventFields[] = []
+  for (const flight of flights) {
+    const range = getCalendarStartEnd(flight)
+    if (!range.available || !range.startUtc || !range.endUtc) continue
+    const flightUrl = appUrl ? `${appUrl.split('#')[0]}#/flights/${encodeURIComponent(flight.id)}` : undefined
+    events.push({
+      uid: `flightlog-${flight.id}@flightlog`,
+      dtstamp,
+      dtstart: range.startUtc,
+      dtend: range.endUtc,
+      summary: calendarTitle(flight),
+      location: calendarLocation(flight),
+      description: calendarDescription(flight, flightUrl),
+      url: flightUrl,
+    })
+  }
+  if (events.length === 0) return { count: 0 }
+  return { ics: buildIcsCalendar(events), count: events.length }
 }
 
 export function buildCalendarEventDetails(flight: FlightLogEntry, appUrl?: string): CalendarEventDetails {
