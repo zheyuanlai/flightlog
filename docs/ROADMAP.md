@@ -72,7 +72,7 @@ Closed the v2.3 review findings before building more on top of notifications.
 - **Snapshot reset** on backup restore/import and cloud pulls so a wholesale data swap doesn't emit stale transitions.
 - **Settings sync**: normalize the `appSettings` record before comparing so the new `dayOfNotificationsEnabled` field doesn't create a phantom conflict against pre-upgrade cloud records.
 
-### v2.4 — "Insights": Variflight-style analytics from your own data (autonomous)
+### v2.4 — "Insights": Variflight-style analytics from your own data (autonomous) — ✅ shipped
 
 Variflight's superpower is data depth; much of it is computable on device from the user's own history.
 
