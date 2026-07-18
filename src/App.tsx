@@ -1313,13 +1313,19 @@ function TripCard({ trip, onOpen, onUpdate }: { trip: TripGroup; onOpen: (trip: 
           <p className="eyebrow">{trip.startDate} to {trip.endDate}</p>
           <input className="inline-name-input" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
         </div>
-        <span className="status scheduled">{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
+        <span className="status scheduled">{trip.isManual ? 'Editable · ' : ''}{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
       </div>
-      <p className="trip-route-chain">{trip.routeSummary}</p>
-      <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
+      {trip.flights.length > 0 ? (
+        <>
+          <p className="trip-route-chain">{trip.routeSummary}</p>
+          <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
+        </>
+      ) : (
+        <p className="empty-inline">No flights in this trip yet. Open it to add flights.</p>
+      )}
       <dl className="meta-grid">
         <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
-        <div><dt>Airports</dt><dd>{trip.airports.join(', ')}</dd></div>
+        <div><dt>Airports</dt><dd>{trip.airports.join(', ') || 'Not set'}</dd></div>
         <div><dt>Countries</dt><dd>{trip.countries.join(', ') || 'Not set'}</dd></div>
         <div><dt>Trip type</dt><dd>{trip.type}</dd></div>
       </dl>
@@ -1334,17 +1340,23 @@ function TripsPage({
   trips,
   onOpen,
   onUpdate,
+  onCreateTrip,
 }: {
   trips: TripGroup[]
   onOpen: (trip: TripGroup) => void
   onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
+  onCreateTrip: () => Promise<void>
 }) {
   return (
     <main className="page">
-      <div className="section-heading"><div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div></div>
+      <div className="section-heading">
+        <div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div>
+        <button type="button" onClick={() => void onCreateTrip()}><Plus aria-hidden="true" /> New trip</button>
+      </div>
+      <p className="muted">Flights within three days group automatically. Editable trips let you choose exactly which flights belong together.</p>
       <div className="stack">
         {trips.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={onOpen} onUpdate={onUpdate} />)}
-        {trips.length === 0 && <p className="empty-inline">Log flights to build your first trip.</p>}
+        {trips.length === 0 && <p className="empty-inline">Log flights to build your first trip, or create one manually.</p>}
       </div>
     </main>
   )
@@ -1352,22 +1364,44 @@ function TripsPage({
 
 function TripDetailPage({
   trip,
+  trips,
+  flights,
   onBack,
   onOpenFlight,
   onUpdate,
+  onAddFlight,
+  onRemoveFlight,
+  onConvertToManual,
+  onDeleteTrip,
 }: {
   trip?: TripGroup
+  trips: TripGroup[]
+  flights: FlightLogEntry[]
   onBack: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
   onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
+  onAddFlight: (trip: TripGroup, flightId: string) => Promise<void>
+  onRemoveFlight: (trip: TripGroup, flightId: string) => Promise<void>
+  onConvertToManual: (trip: TripGroup) => Promise<void>
+  onDeleteTrip: (trip: TripGroup) => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const [includeShareNotes, setIncludeShareNotes] = useState(false)
+  const [flightQuery, setFlightQuery] = useState('')
   if (!trip) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Trip not found</h2><button type="button" onClick={onBack}>Back to trips</button></section></main>
   }
   const shareData = tripShareCardData(trip, { distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
+  const memberIds = new Set(trip.flights.map((flight) => flight.id))
+  const claimedElsewhere = new Set(trips.filter((other) => other.isManual && other.id !== trip.id).flatMap((other) => other.metadata?.flightIds ?? []))
+  const query = flightQuery.trim().toLowerCase()
+  const candidateFlights = trip.isManual
+    ? flights
+        .filter((flight) => !memberIds.has(flight.id) && !claimedElsewhere.has(flight.id))
+        .filter((flight) => !query || `${flight.flightNumber} ${flight.airline} ${flight.origin} ${flight.destination} ${getFlightDepartureLocalDate(flight)}`.toLowerCase().includes(query))
+        .slice(0, 8)
+    : []
   return (
     <main className="page detail-page">
       <div className="section-heading">
@@ -1379,7 +1413,7 @@ function TripDetailPage({
       </div>
       <section className="panel">
         <input className="inline-name-input large" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
-        <div className="route-mini-map trip-route"><span>{trip.routeSummary}</span></div>
+        <div className="route-mini-map trip-route"><span>{trip.routeSummary || 'No flights yet'}</span></div>
         <dl className="meta-grid">
           <div><dt>Flights</dt><dd>{trip.flights.length}</dd></div>
           <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
@@ -1396,10 +1430,44 @@ function TripDetailPage({
           <article className="flight-card" key={flight.id}>
             <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className="status scheduled">{flight.origin}{' -> '}{flight.destination}</span></div>
             <dl className="meta-grid"><div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div><div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div><div><dt>Distance</dt><dd>{formatDistance(flight.distanceKm, settings.distanceUnit)}</dd></div></dl>
-            <div className="actions"><button type="button" onClick={() => onOpenFlight(flight)}>View flight</button></div>
+            <div className="actions">
+              <button type="button" onClick={() => onOpenFlight(flight)}>View flight</button>
+              {trip.isManual && <button type="button" className="ghost" onClick={() => void onRemoveFlight(trip, flight.id)}><X aria-hidden="true" /> Remove from trip</button>}
+            </div>
           </article>
         ))}
+        {trip.isManual && trip.flights.length === 0 && <p className="empty-inline">No flights in this trip yet. Add flights below.</p>}
       </div>
+      {trip.isManual ? (
+        <section className="panel trip-editor-panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Trip editor</p><h3>Add flights to this trip</h3></div></div>
+          <p className="muted">This trip is editable: it keeps exactly the flights you add. Removed flights return to automatic grouping.</p>
+          <label className="wide">Search your flights<input className="search" value={flightQuery} onChange={(event) => setFlightQuery(event.target.value)} placeholder="Flight number, airline, route, or date" /></label>
+          <div className="stack compact-stack">
+            {candidateFlights.map((flight) => (
+              <article className="trip-candidate" key={flight.id}>
+                <div>
+                  <p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p>
+                  <h4>{flight.flightNumber} · {flight.origin} {'->'} {flight.destination}</h4>
+                  <p className="muted">{flight.airline}</p>
+                </div>
+                <button type="button" className="secondary" onClick={() => void onAddFlight(trip, flight.id)}><Plus aria-hidden="true" /> Add</button>
+              </article>
+            ))}
+            {candidateFlights.length === 0 && <p className="empty-inline">{query ? 'No available flights match this search.' : 'All of your flights are already in this or another editable trip.'}</p>}
+          </div>
+          <div className="actions trip-editor-danger">
+            <button type="button" className="ghost danger" onClick={() => void onDeleteTrip(trip)}><Trash2 aria-hidden="true" /> Delete this trip</button>
+          </div>
+          <p className="muted">Deleting a trip never deletes flights; they simply regroup automatically.</p>
+        </section>
+      ) : (
+        <section className="panel trip-editor-panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Trip editor</p><h3>Make this trip editable</h3></div></div>
+          <p className="muted">This trip was grouped automatically from flights within three days of each other. Convert it to an editable trip to add or remove flights manually; its name, notes, and pin carry over.</p>
+          <div className="actions"><button type="button" className="secondary" onClick={() => void onConvertToManual(trip)}><SlidersHorizontal aria-hidden="true" /> Convert to editable trip</button></div>
+        </section>
+      )}
       <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
     </main>
   )
@@ -3116,6 +3184,73 @@ function App() {
     await markLocalChange()
   }
 
+  async function handleCreateTrip() {
+    const id = crypto.randomUUID()
+    await saveTripMetadata({ id, name: 'New trip', isManual: true, flightIds: [] })
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip created. Add flights from the trip editor.')
+    navigateToTrip(id)
+  }
+
+  async function handleConvertTripToManual(trip: TripGroup) {
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
+    await saveTripMetadata({
+      id,
+      name: trip.metadata?.name ?? trip.name,
+      notes: trip.notes,
+      type: trip.type,
+      isFavorite: trip.isFavorite,
+      isManual: true,
+      flightIds: trip.flights.map((flight) => flight.id),
+    })
+    if (trip.metadata && !trip.metadata.isManual) {
+      await saveTripMetadata({
+        id: trip.metadata.id,
+        deletedAt: now,
+        deletedByDeviceId: deviceId,
+        deleteReason: 'Converted to editable trip',
+        tombstoneVersion: trip.metadata.tombstoneVersion ?? 1,
+        lastOperation: 'delete',
+      })
+    }
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip is now editable. Add or remove flights freely.')
+    navigateToTrip(id)
+  }
+
+  async function handleAddFlightToTrip(trip: TripGroup, flightId: string) {
+    if (!trip.isManual) return
+    const roster = trip.metadata?.flightIds ?? trip.flights.map((flight) => flight.id)
+    if (roster.includes(flightId)) return
+    await handleTripMetadataUpdate(trip.id, { flightIds: [...roster, flightId] })
+  }
+
+  async function handleRemoveFlightFromTrip(trip: TripGroup, flightId: string) {
+    if (!trip.isManual) return
+    const roster = trip.metadata?.flightIds ?? trip.flights.map((flight) => flight.id)
+    await handleTripMetadataUpdate(trip.id, { flightIds: roster.filter((id) => id !== flightId) })
+  }
+
+  async function handleDeleteTrip(trip: TripGroup) {
+    if (!trip.isManual || !trip.metadata) return
+    if (!window.confirm(`Delete trip "${trip.name}"? Flights stay in your log and return to automatic grouping.`)) return
+    await saveTripMetadata({
+      id: trip.id,
+      deletedAt: new Date().toISOString(),
+      deletedByDeviceId: deviceId,
+      deleteReason: 'Trip deleted from trip editor',
+      tombstoneVersion: trip.metadata.tombstoneVersion ?? 1,
+      lastOperation: 'delete',
+    })
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip deleted. Its flights returned to automatic grouping.')
+    navigate('trips')
+  }
+
   async function updateSyncMetadata(patch: Partial<SyncMetadata>, now = new Date().toISOString()) {
     await bulkSetAppMetadata([patchSyncMetadata(await getAllAppMetadata(), deviceId, patch, now)])
     await loadAppMetadata()
@@ -3886,8 +4021,8 @@ function App() {
       {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
-      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
-      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
+      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
+      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}

@@ -46,6 +46,7 @@
 :root[data-theme="dark"] .share-card,
 :root[data-theme="dark"] .day-of-panel,
 :root[data-theme="dark"] .completion-item,
+:root[data-theme="dark"] .trip-candidate,
 :root[data-theme="dark"] .passport-pro-panel,
 :root[data-theme="dark"] .passport-pro-card {
   border-color: rgba(148, 163, 184, 0.22);
@@ -1471,4 +1472,34 @@ a {
 
 .lifecycle-panel .day-of-detail {
   font-size: 17px;
+}
+
+.trip-editor-panel .search {
+  width: 100%;
+  min-width: 0;
+}
+
+.trip-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.trip-candidate h4 {
+  margin: 2px 0;
+}
+
+.trip-candidate p {
+  margin: 0;
+}
+
+.trip-editor-danger {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(180, 35, 24, 0.2);
 }
