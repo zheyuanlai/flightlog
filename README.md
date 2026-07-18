@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v21`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v22`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -45,6 +45,15 @@ FlightLog v2.1 focuses on the day of travel and on trip curation, keeping everyt
 - Post-flight completion: after a flight lands, a "Complete your flight log" prompt lists recently landed flights missing actual times, with confirm-details, refresh-from-provider, and dismiss actions. Dismissals are stored on the flight (`completionDismissedAt`) and sync like any other edit.
 - PNG share cards: the share panel now exports a branded 1080x1350 PNG rendered locally with the Canvas API. Nothing is uploaded, and no image library is added to the bundle.
 - Manual trip editor: create editable trips from the Trips page, add or remove flights with a search picker, and convert an automatically grouped trip into an editable one (name, notes, type, and pin carry over). Editable trips own their flight roster in `TripMetadata.flightIds`, so they survive membership changes; deleting one returns its flights to automatic grouping. Deleted trip metadata becomes a tombstone and shows in Trash.
+
+## v2.2 Data Security Overview
+
+FlightLog v2.2 focuses on protecting the data you back up and on resolving sync conflicts precisely.
+
+- Encrypted backups (E2EE): the Backup Center can export a full backup encrypted on-device with AES-GCM-256, using a key derived from your passphrase via PBKDF2-SHA256 (600,000 iterations). The passphrase never leaves the device and cannot be recovered; an optional plaintext hint can be stored in the file. The restore flow accepts both plain and encrypted backup files and decrypts locally.
+- Encrypted cloud snapshots: cloud backups can be encrypted end-to-end before upload. Supabase then stores only the encrypted envelope plus non-sensitive summary columns (counts, schema version, plaintext checksum for change detection). Preview and restore prompt for the passphrase; downloads of encrypted snapshots stay encrypted. Cloud Sync Lite records remain unencrypted — use encrypted snapshots when end-to-end encryption matters.
+- Upload verification: after any cloud backup upload, FlightLog re-downloads the snapshot and recomputes the content checksum (decrypting first for encrypted snapshots) to confirm what was stored matches what was sent.
+- Field-level conflict merge: flight conflicts in Sync Lite now offer a merge editor. Each differing field shows the local and cloud value with a per-field choice; the merged record is saved locally and pushed in one step. System fields (tombstones, timestamps) are never merged.
 
 ## Timezones
 
@@ -162,7 +171,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v21`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v22`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 
@@ -201,7 +210,7 @@ FlightLog is local-first. Without sign-in, flight data stays in your browser sto
 
 With Supabase configured and a signed-in user, FlightLog can upload plain JSON backup snapshots to the `cloud_backups` table. Snapshots are protected by Supabase Auth and Row Level Security policies so users can only read, write, update, and delete their own rows. Signing out does not delete local data, and cloud backups remain in Supabase until deleted.
 
-Cloud Sync Lite stores record-level JSON in Supabase under the signed-in user. Cloud backup and Cloud Sync Lite data are protected by Supabase Auth and RLS, but they are not end-to-end encrypted yet. Do not store a Supabase service role key in frontend code, GitHub Pages variables, or Vite env vars.
+Cloud Sync Lite stores record-level JSON in Supabase under the signed-in user. Cloud backup and Cloud Sync Lite data are protected by Supabase Auth and RLS. Since v2.2, cloud backup snapshots can additionally be encrypted end-to-end with a passphrase before upload; Cloud Sync Lite records remain unencrypted. Do not store a Supabase service role key in frontend code, GitHub Pages variables, or Vite env vars.
 
 ## Settings
 
@@ -226,7 +235,7 @@ Cloud Backup and Cloud Sync Lite solve different problems:
 - Backup is a snapshot restore point. It can be downloaded, previewed, merged, or used to replace local data after a typed confirmation.
 - Sync Lite is manual record-level push/pull. It can compare local and cloud records, push local-only records, pull cloud-only records, sync deletion tombstones, and show conflicts before overwrite.
 
-Sync Lite does not run automatically, does not poll in the background, and does not do realtime sync. It does not field-merge conflicts in v1.9. Deleted flights move to Trash and sync as tombstones only after an explicit sync action. Permanent deletion is not automatic.
+Sync Lite does not run automatically, does not poll in the background, and does not do realtime sync. Since v2.2, flight conflicts can be resolved field by field with the merge editor. Deleted flights move to Trash and sync as tombstones only after an explicit sync action. Permanent deletion is not automatic.
 
 ## Tombstones and Trash
 
@@ -391,7 +400,8 @@ Sample files are available at:
 ## Roadmap
 
 - Shipped in v2.1: flight lifecycle assistant, post-flight completion prompt, PNG share cards, and the manual trip editor.
-- Future: client-side encrypted backups and richer field-level merge tools.
+- Shipped in v2.2: client-side encrypted (E2EE) local and cloud backups, and field-level conflict merge in Sync Lite.
+- Future: Chinese (zh-CN) localization and a language toggle.
 - Future: airline check-in deep links per airline and richer day-of-travel notifications within PWA constraints.
 - Future: Apple login after Apple Developer configuration is available.
 - Still intentionally out of scope: payments, native iOS work, Apple login, realtime sync, background polling, and exposing provider API keys in the frontend.
