@@ -185,6 +185,10 @@ async function toSyncRecord(entityType: SyncEntityType, localId: string, record:
   }
 }
 
+export async function buildSyncRecord(entityType: SyncEntityType, localId: string, record: unknown, deviceId?: string): Promise<SyncRecord> {
+  return toSyncRecord(entityType, localId, record, deviceId)
+}
+
 export async function getLocalSyncState(input: {
   flights: FlightLogEntry[]
   tripMetadata: TripMetadata[]
