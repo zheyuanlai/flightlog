@@ -3383,7 +3383,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.0',
+        appVersion: 'v2.1',
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum })
       await bulkSetAppMetadata([
