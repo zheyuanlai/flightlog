@@ -3653,7 +3653,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.2',
+        appVersion: 'v2.3',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
