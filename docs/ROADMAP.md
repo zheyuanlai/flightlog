@@ -100,7 +100,7 @@ Highest-leverage reach feature; the owner is bilingual and Variflight's market i
 - **Coverage (progressive)**: navigation, mobile More menu, add action, footer, and the language setting are translated in all four languages; the remaining strings fall back to English and are keyed over subsequent iterations.
 - **Review gate — resolved:** the maintainer reviewed and approved the current translations, so the in-app "pending review" disclaimer was removed. Future added keys should still be reviewed as they land.
 
-### v2.7 — "Live depth": provider-powered day-of data (autonomous code, human deploy gate)
+### v2.7 — "Live depth": provider-powered day-of data (autonomous code, human deploy gate) — ◐ shipped (airport board + refresh cadence; inbound-aircraft deferred)
 
 Where Flighty/Variflight parity needs richer upstream data; the Worker grows.
 
