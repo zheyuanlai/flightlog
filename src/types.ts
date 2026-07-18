@@ -270,6 +270,7 @@ export interface FlightLogEntry extends TombstoneMetadata {
   destinationAirportSnapshot?: ProviderAirportSnapshot
   providerWarnings?: string[]
   lookupDateRole?: LookupDateRole
+  completionDismissedAt?: string
   createdAt: string
   updatedAt: string
 }
