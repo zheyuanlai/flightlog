@@ -1723,10 +1723,14 @@ function MapPage({ flights, airportVersion }: { flights: FlightLogEntry[]; airpo
         destinationAirport?.lat === undefined ||
         destinationAirport.lon === undefined
       ) continue
-      const originPoint: import('leaflet').LatLngTuple = [originAirport.lat, originAirport.lon]
-      const destinationPoint: import('leaflet').LatLngTuple = [destinationAirport.lat, destinationAirport.lon]
       const arc = greatCircleArc([originAirport.lat, originAirport.lon], [destinationAirport.lat, destinationAirport.lon]) as import('leaflet').LatLngTuple[]
-      bounds.push(originPoint, destinationPoint)
+      // Keep the arc, its markers, and the fitted bounds in one coordinate frame:
+      // the arc's longitudes are unwrapped across the antimeridian, so anchoring
+      // markers/bounds to the arc endpoints (not raw airport coords) keeps a
+      // trans-Pacific route connected and framed, apex included.
+      const originPoint = arc[0]
+      const destinationPoint = arc[arc.length - 1]
+      for (const point of arc) bounds.push(point)
       L.polyline(arc, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${flight.flightNumber}: ${flight.origin} to ${flight.destination}`).addTo(layer)
       L.marker(originPoint, { icon: markerIcon }).bindPopup(`<strong>${originAirport.iata}</strong><br>${originAirport.name}<br>${[originAirport.city, originAirport.country].filter(Boolean).join(', ')}`).addTo(layer)
       L.marker(destinationPoint, { icon: markerIcon }).bindPopup(`<strong>${destinationAirport.iata}</strong><br>${destinationAirport.name}<br>${[destinationAirport.city, destinationAirport.country].filter(Boolean).join(', ')}`).addTo(layer)

@@ -68,7 +68,7 @@ function buildPunctuality(entries: Array<{ key: string; label: string; delay: nu
         onTimeCount,
         onTimePercent: Math.round((onTimeCount / flights) * 100),
         averageDelayMinutes: Math.round(sum / flights),
-        medianDelayMinutes: delays[Math.floor((flights - 1) / 2)],
+        medianDelayMinutes: flights % 2 ? delays[(flights - 1) / 2] : Math.round((delays[flights / 2 - 1] + delays[flights / 2]) / 2),
         worstDelayMinutes: delays[flights - 1],
       }
     })

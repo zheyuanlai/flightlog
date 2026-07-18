@@ -75,6 +75,20 @@ describe('punctuality aggregation', () => {
     expect(stats.find((row) => row.label === 'SFO-NRT')?.flights).toBe(1)
   })
 
+  it('computes median delay, averaging the two central values for even counts', () => {
+    const even = routePunctuality([
+      flight({ id: 'e1', origin: 'SIN', destination: 'LAX', actualDepartureUtc: '2026-06-02T12:05:00Z' }), // 5
+      flight({ id: 'e2', origin: 'SIN', destination: 'LAX', actualDepartureUtc: '2026-06-02T12:50:00Z' }), // 50
+    ])
+    expect(even[0].medianDelayMinutes).toBe(28) // round((5 + 50) / 2)
+    const odd = routePunctuality([
+      flight({ id: 'o1', origin: 'SIN', destination: 'LAX', actualDepartureUtc: '2026-06-02T12:05:00Z' }), // 5
+      flight({ id: 'o2', origin: 'SIN', destination: 'LAX', actualDepartureUtc: '2026-06-02T12:10:00Z' }), // 10
+      flight({ id: 'o3', origin: 'SIN', destination: 'LAX', actualDepartureUtc: '2026-06-02T12:50:00Z' }), // 50
+    ])
+    expect(odd[0].medianDelayMinutes).toBe(10)
+  })
+
   it('computes overall on-time percentage across measurable flights', () => {
     const overall = overallPunctuality(flights)
     expect(overall?.measuredFlights).toBe(3)
