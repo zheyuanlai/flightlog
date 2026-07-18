@@ -2067,7 +2067,6 @@ function SettingsPage({
           <div className="form-grid compact">
             <label>{translator('settings.language')}<select value={settings.language} onChange={(event) => void onSettingsChange({ language: event.target.value as AppSettings['language'] })}>{languageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           </div>
-          <p className="muted">{translator('settings.languageHelp')}</p>
         </article>
         <article className="panel" id="units">
           <p className="eyebrow">Units & Formatting</p>

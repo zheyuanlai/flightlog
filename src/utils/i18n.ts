@@ -32,7 +32,6 @@ const en: Record<string, string> = {
   'nav.more': 'More',
   'action.addFlight': 'Add flight',
   'settings.language': 'Language',
-  'settings.languageHelp': 'Translations are best-effort and pending native-speaker review. Untranslated text falls back to English.',
   'footer.tagline': 'personal flight passport',
   'footer.storage': 'data stored locally in your browser',
 }
@@ -53,7 +52,6 @@ const zhCN: Record<string, string> = {
   'nav.more': '更多',
   'action.addFlight': '添加航班',
   'settings.language': '语言',
-  'settings.languageHelp': '翻译为尽力而为的版本，尚待母语者校对。未翻译的内容将回退为英文。',
   'footer.tagline': '个人航班护照',
   'footer.storage': '数据保存在你的浏览器本地',
 }
@@ -74,7 +72,6 @@ const zhTW: Record<string, string> = {
   'nav.more': '更多',
   'action.addFlight': '新增航班',
   'settings.language': '語言',
-  'settings.languageHelp': '翻譯為盡力而為的版本，尚待母語者校對。未翻譯的內容將回退為英文。',
   'footer.tagline': '個人航班護照',
   'footer.storage': '資料儲存在你的瀏覽器本機',
 }
@@ -95,7 +92,6 @@ const ja: Record<string, string> = {
   'nav.more': 'その他',
   'action.addFlight': 'フライトを追加',
   'settings.language': '言語',
-  'settings.languageHelp': '翻訳は暫定版で、ネイティブによる確認待ちです。未翻訳の項目は英語で表示されます。',
   'footer.tagline': '個人フライトパスポート',
   'footer.storage': 'データはブラウザー内にローカル保存されます',
 }

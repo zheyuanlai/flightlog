@@ -1,4 +1,4 @@
-const CACHE_NAME = 'flightlog-v26'
+const CACHE_NAME = 'flightlog-v27'
 const APP_SHELL = [
   './',
   './index.html',
