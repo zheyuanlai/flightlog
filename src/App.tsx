@@ -153,6 +153,7 @@ import {
   notificationPermissionState,
   requestNotificationPermission,
   showSystemNotification,
+  type DayOfNotification,
   type FlightWatchSnapshot,
   type NotificationPermissionState,
 } from './utils/notifications'
@@ -953,22 +954,41 @@ function PassphraseDialog({ request }: { request?: PassphraseRequest }) {
 }
 
 function DayOfNotificationsToggle({ enabled, onChange }: { enabled: boolean; onChange: (patch: Partial<AppSettings>) => Promise<void> }) {
-  const [permission, setPermission] = useState<NotificationPermissionState>(() => notificationPermissionState())
+  const [, setPermissionTick] = useState(0)
+  const refresh = () => setPermissionTick((value) => value + 1)
+  useEffect(() => {
+    const onFocus = () => setPermissionTick((value) => value + 1)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [])
+  const permission: NotificationPermissionState = notificationPermissionState()
   async function toggle(next: boolean) {
-    if (next) setPermission(await requestNotificationPermission())
+    if (next) await requestNotificationPermission()
     await onChange({ dayOfNotificationsEnabled: next })
+    refresh()
+  }
+  async function enable() {
+    await requestNotificationPermission()
+    refresh()
   }
   return (
     <>
       <label className="checkbox-row"><input type="checkbox" checked={enabled} onChange={(event) => void toggle(event.target.checked)} /> Day-of travel notifications</label>
+      {enabled && permission === 'default' && (
+        <div className="actions"><button type="button" className="secondary" onClick={() => void enable()}>Enable system notifications</button></div>
+      )}
       {enabled && permission !== 'granted' && (
         <p className="notice warning">{permission === 'unsupported'
           ? 'System notifications are not supported in this browser; updates appear as in-app messages instead.'
           : permission === 'denied'
-            ? 'Notification permission is blocked in the browser; updates appear as in-app messages instead.'
-            : 'Notification permission has not been granted yet; updates appear as in-app messages.'}</p>
+            ? 'Notification permission is blocked in the browser; updates appear as in-app messages instead. Re-enable it in browser site settings.'
+            : 'Notification permission has not been granted yet; updates appear as in-app messages until you enable them.'}</p>
       )}
-      {enabled && <p className="muted">Check-in windows, departures, landings, gate changes, cancellations, and diversions notify while FlightLog is open. FlightLog never polls in the background.</p>}
+      {enabled && <p className="muted">Check-in windows, departures, delays, landings, gate changes, cancellations, and diversions notify while FlightLog is open. FlightLog never polls in the background.</p>}
     </>
   )
 }
@@ -3016,6 +3036,7 @@ function App() {
   const [cloudMessage, setCloudMessage] = useState('')
   const [cloudPreview, setCloudPreview] = useState<{ snapshot: CloudBackupSnapshot; backup?: FlightLogBackup; preview: BackupImportPreview } | undefined>()
   const [cloudPassphraseRequest, setCloudPassphraseRequest] = useState<PassphraseRequest | undefined>()
+  const watchSnapshotsRef = useRef<Map<string, FlightWatchSnapshot>>(new globalThis.Map())
   const [currentBackupChecksum, setCurrentBackupChecksum] = useState<string | undefined>()
   const [syncComparison, setSyncComparison] = useState<SyncComparison | undefined>()
   const [syncBusy, setSyncBusy] = useState(false)
@@ -3073,6 +3094,10 @@ function App() {
   }
 
   async function reloadLocalData() {
+    // Wholesale data swap (import, restore, replace, sync pull, repair, clear):
+    // reseed the notification watcher so replaced flights are not diffed against
+    // pre-swap snapshots and mistaken for live transitions.
+    watchSnapshotsRef.current = new globalThis.Map()
     await Promise.all([loadFlights(), refreshProviderAirports(), loadTripMetadata(), loadAppMetadata(), loadSyncEvents()])
   }
 
@@ -3279,23 +3304,23 @@ function App() {
     root.style.colorScheme = effectiveTheme
   }, [settings.theme])
 
-  const watchSnapshotsRef = useRef<Map<string, FlightWatchSnapshot>>(new globalThis.Map())
   useEffect(() => {
     if (!settings.dayOfNotificationsEnabled) {
       watchSnapshotsRef.current = new globalThis.Map()
       return
     }
-    const run = () => {
+    const run = async () => {
       const { notifications, snapshots } = detectDayOfNotifications(flights, watchSnapshotsRef.current)
       watchSnapshotsRef.current = snapshots
+      const fallbacks: DayOfNotification[] = []
       for (const notification of notifications) {
-        if (!showSystemNotification(notification)) {
-          setToast(`${notification.title} — ${notification.body}`)
-        }
+        if (!(await showSystemNotification(notification))) fallbacks.push(notification)
       }
+      if (fallbacks.length === 1) setToast(`${fallbacks[0].title} — ${fallbacks[0].body}`)
+      else if (fallbacks.length > 1) setToast(`${fallbacks.length} flight updates · ${fallbacks.map((notification) => notification.title).join(' · ')}`)
     }
-    run()
-    const id = window.setInterval(run, 60_000)
+    void run()
+    const id = window.setInterval(() => void run(), 60_000)
     return () => window.clearInterval(id)
   }, [settings.dayOfNotificationsEnabled, flights])
 

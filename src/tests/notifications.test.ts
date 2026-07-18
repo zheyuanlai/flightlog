@@ -28,13 +28,22 @@ function snapshots(entries: Array<[string, FlightWatchSnapshot]>): Map<string, F
 }
 
 describe('day-of notifications', () => {
-  it('captures the current phase and gate in a snapshot', () => {
+  it('captures the current phase and gate (value alone) in a snapshot', () => {
     const snapshot = flightWatchSnapshot(
       flight({ liveStatus: { status: 'scheduled', departureTerminal: '3', departureGate: 'B4' } }),
       DateTime.fromISO('2026-06-02T10:30:00Z'),
     )
     expect(snapshot.phase).toBe('departing-soon')
-    expect(snapshot.gate).toBe('3 / B4')
+    expect(snapshot.gate).toBe('B4')
+    expect(snapshot.maxPhaseRank).toBeGreaterThan(0)
+  })
+
+  it('reads the nested terminalGate shape for the gate value', () => {
+    const snapshot = flightWatchSnapshot(
+      flight({ liveStatus: { status: 'scheduled', terminalGate: { departureTerminal: '3', departureGate: 'A12' } } }),
+      DateTime.fromISO('2026-06-02T10:30:00Z'),
+    )
+    expect(snapshot.gate).toBe('A12')
   })
 
   it('notifies when the check-in window opens', () => {
@@ -42,7 +51,7 @@ describe('day-of notifications', () => {
     const before = snapshots([[f.id, { phase: 'scheduled' }]])
     const { notifications } = detectDayOfNotifications([f], before, DateTime.fromISO('2026-06-01T20:00:00Z'))
     expect(notifications).toHaveLength(1)
-    expect(notifications[0].title).toContain('Check-in window open')
+    expect(notifications[0].title).toContain('Check-in open')
   })
 
   it('notifies on departure and landing transitions', () => {
@@ -81,6 +90,55 @@ describe('day-of notifications', () => {
     const { notifications } = detectDayOfNotifications([f], snapshots([[f.id, { phase: 'departing-soon', gate: 'B4' }]]), DateTime.fromISO('2026-06-02T10:30:00Z'))
     const gateNotification = notifications.find((item) => item.kind === 'gate')
     expect(gateNotification?.body).toContain('C7')
+    expect(gateNotification?.tag).toContain('C7')
+  })
+
+  it('does not re-announce a phase when a delay regresses the lifecycle', () => {
+    // Was en-route (rank 3); a provider refresh pushes departure out so the phase regresses.
+    const delayed = flight({ scheduledDepartureUtc: '2026-06-02T18:00:00Z', scheduledArrivalUtc: '2026-06-03T08:00:00Z' })
+    const before = snapshots([[delayed.id, { phase: 'en-route', maxPhaseRank: 3, departureMs: Date.parse('2026-06-02T12:00:00Z') }]])
+    const { notifications } = detectDayOfNotifications([delayed], before, DateTime.fromISO('2026-06-02T13:00:00Z'))
+    expect(notifications.some((item) => item.kind === 'phase')).toBe(false)
+  })
+
+  it('emits a delay notification when departure is pushed meaningfully later', () => {
+    const delayed = flight({ scheduledDepartureUtc: '2026-06-02T13:00:00Z' })
+    const before = snapshots([[delayed.id, { phase: 'check-in', maxPhaseRank: 1, departureMs: Date.parse('2026-06-02T12:00:00Z') }]])
+    const { notifications } = detectDayOfNotifications([delayed], before, DateTime.fromISO('2026-06-02T09:00:00Z'))
+    const delay = notifications.find((item) => item.kind === 'delay')
+    expect(delay?.title).toContain('Delayed')
+    expect(delay?.body).toContain('60m')
+  })
+
+  it('does not fire a phase notification twice across the same rank', () => {
+    const f = flight()
+    const before = snapshots([[f.id, { phase: 'en-route', maxPhaseRank: 3 }]])
+    // Provider glitch: status regressed to scheduled then back; phase is en-route again.
+    const { notifications } = detectDayOfNotifications([f], before, DateTime.fromISO('2026-06-02T13:00:00Z'))
+    expect(notifications.some((item) => item.kind === 'phase')).toBe(false)
+  })
+
+  it('softens the landed message when there is no arrival time on record', () => {
+    const noArrival = flight({ scheduledArrivalUtc: undefined })
+    const before = snapshots([[noArrival.id, { phase: 'en-route', maxPhaseRank: 3 }]])
+    // Departure 12:00 + 2h estimated arrival; at 14:30 it reads as landed with an estimated arrival.
+    const { notifications } = detectDayOfNotifications([noArrival], before, DateTime.fromISO('2026-06-02T14:30:00Z'))
+    const landed = notifications.find((item) => item.kind === 'phase')
+    expect(landed?.body).toContain('may have landed')
+  })
+
+  it('suppresses departing-soon for flights with no resolvable departure instant', () => {
+    const dateOnly = flight({
+      origin: 'LAX',
+      date: '2026-07-18',
+      scheduledDepartureUtc: undefined,
+      scheduledArrivalUtc: undefined,
+      originTimeZone: undefined,
+      destinationTimeZone: undefined,
+    })
+    const before = snapshots([[dateOnly.id, { phase: 'scheduled', maxPhaseRank: 0 }]])
+    const { notifications } = detectDayOfNotifications([dateOnly], before, DateTime.fromISO('2026-07-18T20:00:00Z'))
+    expect(notifications.some((item) => item.kind === 'phase')).toBe(false)
   })
 
   it('stays quiet for gate assignments on long-past flights', () => {

@@ -231,9 +231,13 @@ export async function getRemoteSyncState(client: SupabaseLike | null | undefined
   if (error) throw new Error(cloudSyncErrorMessage(error, 'Unable to load cloud sync records. Run migration 002 and 003 if Sync Lite is not set up yet.'))
   const records = await Promise.all(((data ?? []) as SyncedRecordRow[]).map(async (row) => {
     const deletedAt = row.deleted_at ?? recordString(row.record_json, 'deletedAt')
-    const record = row.record_json && typeof row.record_json === 'object' && deletedAt
+    const rawRecord = row.record_json && typeof row.record_json === 'object' && deletedAt
       ? { ...row.record_json as Record<string, unknown>, deletedAt }
       : row.record_json
+    // Normalize the remote appSettings record to the same canonical shape the
+    // local side uses (line ~204), so a device that predates a newly added
+    // setting field does not produce a phantom, sticky conflict after upgrade.
+    const record = row.entity_type === 'appSettings' ? normalizeAppSettings(rawRecord) : rawRecord
     return {
       entityType: row.entity_type,
       localId: row.local_id,

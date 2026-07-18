@@ -11,6 +11,7 @@ import {
   SYNC_METADATA_KEY,
   appSettingsFromMetadata,
   migrateAppMetadataDefaults,
+  normalizeAppSettings,
   settingsMetadataEntry,
 } from '../utils/settings'
 import {
@@ -110,6 +111,32 @@ describe('settings and sync foundation', () => {
     expect(migrated.changed).toBe(true)
     expect(migrated.metadata.map((item) => item.key).sort()).toEqual([SETTINGS_METADATA_KEY, SYNC_METADATA_KEY])
     expect(appSettingsFromMetadata(migrated.metadata)).toMatchObject({ distanceUnit: 'kilometers', timeFormat: 'system', theme: 'system' })
+  })
+
+  it('does not create a phantom appSettings conflict against a record predating a new setting field', async () => {
+    const settingsUpdatedAt = '2026-06-01T00:00:00.000Z'
+    // Simulate a cloud record pushed by an older client: normalized settings WITHOUT a field this build adds.
+    const olderSettings = { ...normalizeAppSettings(DEFAULT_APP_SETTINGS) } as Record<string, unknown>
+    delete olderSettings.dayOfNotificationsEnabled
+    const { client } = mockSyncClient([
+      {
+        entity_type: 'appSettings',
+        local_id: 'settings',
+        record_json: olderSettings,
+        record_checksum: 'ignored-server-value',
+        record_updated_at: settingsUpdatedAt,
+        deleted_at: null,
+        device_id: 'device-b',
+      },
+    ])
+    const local = await getLocalSyncState({
+      flights: [], tripMetadata: [], providerAirports: [],
+      settings: DEFAULT_APP_SETTINGS, deviceId: 'device-a', settingsUpdatedAt,
+    })
+    const remote = await getRemoteSyncState(client)
+    const comparison = compareLocalAndRemote(local, remote)
+    const item = comparison.items.find((entry) => entry.entityType === 'appSettings')
+    expect(item?.status).toBe('same')
   })
 
   it('keeps settings in full backup exports', () => {
