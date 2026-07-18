@@ -1516,7 +1516,7 @@ a {
 
 .merge-field-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 12px;
   margin: 12px 0;
 }
@@ -1540,4 +1540,28 @@ a {
 
 .merge-field .checkbox-row {
   overflow-wrap: anywhere;
+}
+
+.passphrase-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.passphrase-dialog {
+  width: min(440px, 100%);
+  margin: 0;
+}
+
+.passphrase-dialog label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  font-weight: 700;
 }

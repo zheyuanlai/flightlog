@@ -196,7 +196,10 @@ export async function createCloudBackupSnapshot(options: {
       label: options.label?.trim() || null,
       schema_version: summary.schemaVersion,
       backup_json: payload,
-      backup_checksum: checksum,
+      // For encrypted snapshots the plaintext checksum would act as an
+      // equality/change oracle for anyone with database read access, so it is
+      // intentionally not stored; verification decrypts and recomputes instead.
+      backup_checksum: options.encryptPassphrase ? null : checksum,
       flight_count: summary.flightCount,
       trip_metadata_count: summary.tripMetadataCount,
       provider_airport_count: summary.providerAirportCount,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_PBKDF2_ITERATIONS,
   ENCRYPTED_BACKUP_FORMAT,
+  UNSUPPORTED_PARAMS_MESSAGE,
   WRONG_PASSPHRASE_MESSAGE,
   decryptBackupEnvelope,
   encryptBackupJson,
@@ -40,6 +41,33 @@ describe('encrypted backups', () => {
   it('refuses envelopes from a newer format version', async () => {
     const envelope = await encryptBackupJson(PLAIN, PASSPHRASE, { iterations: FAST_ITERATIONS })
     await expect(decryptBackupEnvelope({ ...envelope, version: 99 }, PASSPHRASE)).rejects.toThrow(/newer FlightLog version/)
+  })
+
+  it('rejects tampered header metadata via AEAD binding', async () => {
+    const envelope = await encryptBackupJson(PLAIN, PASSPHRASE, { iterations: FAST_ITERATIONS, hint: 'real hint' })
+    await expect(decryptBackupEnvelope({ ...envelope, hint: 'attacker hint' }, PASSPHRASE)).rejects.toThrow(WRONG_PASSPHRASE_MESSAGE)
+    await expect(decryptBackupEnvelope({ ...envelope, createdAt: '1999-01-01T00:00:00Z' }, PASSPHRASE)).rejects.toThrow(WRONG_PASSPHRASE_MESSAGE)
+  })
+
+  it('rejects out-of-range iteration counts without deriving a key', async () => {
+    const envelope = await encryptBackupJson(PLAIN, PASSPHRASE, { iterations: FAST_ITERATIONS })
+    const started = Date.now()
+    await expect(decryptBackupEnvelope({ ...envelope, kdf: { ...envelope.kdf, iterations: 4_000_000_000 } }, PASSPHRASE)).rejects.toThrow(UNSUPPORTED_PARAMS_MESSAGE)
+    await expect(decryptBackupEnvelope({ ...envelope, kdf: { ...envelope.kdf, iterations: 0 } }, PASSPHRASE)).rejects.toThrow(UNSUPPORTED_PARAMS_MESSAGE)
+    await expect(decryptBackupEnvelope({ ...envelope, kdf: { ...envelope.kdf, iterations: 1.5 } }, PASSPHRASE)).rejects.toThrow(UNSUPPORTED_PARAMS_MESSAGE)
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('rejects unexpected algorithm declarations explicitly', async () => {
+    const envelope = await encryptBackupJson(PLAIN, PASSPHRASE, { iterations: FAST_ITERATIONS })
+    await expect(decryptBackupEnvelope({ ...envelope, cipher: { ...envelope.cipher, name: 'AES-CBC' as 'AES-GCM' } }, PASSPHRASE)).rejects.toThrow(UNSUPPORTED_PARAMS_MESSAGE)
+    await expect(decryptBackupEnvelope({ ...envelope, kdf: { ...envelope.kdf, hash: 'SHA-512' as 'SHA-256' } }, PASSPHRASE)).rejects.toThrow(UNSUPPORTED_PARAMS_MESSAGE)
+  })
+
+  it('rejects envelopes with malformed header field types', async () => {
+    const envelope = await encryptBackupJson(PLAIN, PASSPHRASE, { iterations: FAST_ITERATIONS })
+    expect(isEncryptedBackupEnvelope({ ...envelope, createdAt: 123 })).toBe(false)
+    expect(isEncryptedBackupEnvelope({ ...envelope, hint: 42 })).toBe(false)
   })
 
   it('uses a fresh salt and IV for every export', async () => {

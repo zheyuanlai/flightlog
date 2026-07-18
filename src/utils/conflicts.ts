@@ -35,6 +35,20 @@ const systemFields: Array<{ field: keyof FlightLogEntry; label: string }> = [
 
 export const mergeableFlightFields = mergeableFields
 
+// Fields that must travel together with a user-visible field when a side is
+// chosen, so merged records stay internally consistent (e.g. picking the cloud
+// destination also takes the cloud destination timezone and airport snapshot,
+// and picking a cloud local time also takes its UTC twin and legacy field).
+const mergeCompanions: Partial<Record<keyof FlightLogEntry, Array<keyof FlightLogEntry>>> = {
+  origin: ['originTimeZone', 'originAirportSnapshot'],
+  destination: ['destinationTimeZone', 'destinationAirportSnapshot'],
+  airline: ['airlineIata', 'airlineIcao'],
+  scheduledDepartureLocal: ['scheduledDeparture', 'scheduledDepartureUtc'],
+  scheduledArrivalLocal: ['scheduledArrival', 'scheduledArrivalUtc'],
+  actualDepartureLocal: ['actualDeparture', 'actualDepartureUtc'],
+  actualArrivalLocal: ['actualArrival', 'actualArrivalUtc'],
+}
+
 function stringify(value: unknown): string {
   if (value === undefined || value === null || value === '') return 'Not set'
   if (typeof value === 'string') return value
@@ -67,7 +81,11 @@ export function mergeFlightRecords(
 ): FlightLogEntry {
   const merged: Record<string, unknown> = { ...local }
   for (const { field } of mergeableFields) {
-    if (choices[field] === 'cloud') merged[field] = cloud[field]
+    if (choices[field] !== 'cloud') continue
+    merged[field] = cloud[field]
+    for (const companion of mergeCompanions[field] ?? []) {
+      merged[companion] = cloud[companion]
+    }
   }
   merged.updatedAt = new Date().toISOString()
   merged.lastOperation = 'update'

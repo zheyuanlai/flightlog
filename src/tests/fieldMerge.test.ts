@@ -42,6 +42,49 @@ describe('field-level conflict merge', () => {
     expect(merged.updatedAt > '2026-06-02T00:00:00.000Z').toBe(true)
   })
 
+  it('carries companion fields when a time is taken from the cloud side', () => {
+    const localTimes = flight({
+      scheduledDepartureLocal: '2026-06-02T13:00',
+      scheduledDeparture: '2026-06-02T13:00',
+      scheduledDepartureUtc: '2026-06-02T05:00:00Z',
+    })
+    const cloudTimes = flight({
+      scheduledDepartureLocal: '2026-06-02T14:30',
+      scheduledDeparture: '2026-06-02T14:30',
+      scheduledDepartureUtc: '2026-06-02T06:30:00Z',
+    })
+    const merged = mergeFlightRecords(localTimes, cloudTimes, { scheduledDepartureLocal: 'cloud' })
+    expect(merged.scheduledDepartureLocal).toBe('2026-06-02T14:30')
+    expect(merged.scheduledDepartureUtc).toBe('2026-06-02T06:30:00Z')
+    expect(merged.scheduledDeparture).toBe('2026-06-02T14:30')
+  })
+
+  it('clears a stale local companion when the cloud side lacks it', () => {
+    const localTimes = flight({ scheduledDepartureLocal: '2026-06-02T13:00', scheduledDepartureUtc: '2026-06-02T05:00:00Z' })
+    const cloudTimes = flight({ scheduledDepartureLocal: '2026-06-02T14:30', scheduledDepartureUtc: undefined })
+    const merged = mergeFlightRecords(localTimes, cloudTimes, { scheduledDepartureLocal: 'cloud' })
+    expect(merged.scheduledDepartureLocal).toBe('2026-06-02T14:30')
+    expect(merged.scheduledDepartureUtc).toBeUndefined()
+  })
+
+  it('carries timezone and airport snapshot when an airport is taken from the cloud side', () => {
+    const localAirport = flight({ destination: 'LAX', destinationTimeZone: 'America/Los_Angeles', destinationAirportSnapshot: { iata: 'LAX' } })
+    const cloudAirport = flight({ destination: 'NRT', destinationTimeZone: 'Asia/Tokyo', destinationAirportSnapshot: { iata: 'NRT' } })
+    const merged = mergeFlightRecords(localAirport, cloudAirport, { destination: 'cloud' })
+    expect(merged.destination).toBe('NRT')
+    expect(merged.destinationTimeZone).toBe('Asia/Tokyo')
+    expect(merged.destinationAirportSnapshot?.iata).toBe('NRT')
+  })
+
+  it('carries airline codes when the airline is taken from the cloud side', () => {
+    const localAirline = flight({ airline: 'Singapore Airlines', airlineIata: 'SQ', airlineIcao: 'SIA' })
+    const cloudAirline = flight({ airline: 'United Airlines', airlineIata: 'UA', airlineIcao: 'UAL' })
+    const merged = mergeFlightRecords(localAirline, cloudAirline, { airline: 'cloud' })
+    expect(merged.airline).toBe('United Airlines')
+    expect(merged.airlineIata).toBe('UA')
+    expect(merged.airlineIcao).toBe('UAL')
+  })
+
   it('never merges system fields even if asked', () => {
     const deletedCloud = flight({ deletedAt: '2026-06-03T00:00:00.000Z' })
     const merged = mergeFlightRecords(local, deletedCloud, { deletedAt: 'cloud', updatedAt: 'cloud' })

@@ -201,7 +201,7 @@ describe('cloud backup utilities', () => {
     const { client, store } = mockClient([])
     await createCloudBackupSnapshot({ client, userId: 'user-1', backup: sourceBackup, label: 'Encrypted', encryptPassphrase: passphrase })
     expect(isEncryptedBackupEnvelope(store.inserted?.backup_json)).toBe(true)
-    expect(store.inserted).toMatchObject({ flight_count: 1, trip_metadata_count: 1 })
+    expect(store.inserted).toMatchObject({ flight_count: 1, trip_metadata_count: 1, backup_checksum: null })
     expect(JSON.stringify(store.inserted?.backup_json)).not.toContain('SQ38')
 
     const encryptedRow = rowFromBackup('backup-enc', store.inserted?.backup_json as EncryptedBackupEnvelope, 'Encrypted')
