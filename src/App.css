@@ -47,6 +47,8 @@
 :root[data-theme="dark"] .day-of-panel,
 :root[data-theme="dark"] .completion-item,
 :root[data-theme="dark"] .trip-candidate,
+:root[data-theme="dark"] .merge-editor,
+:root[data-theme="dark"] .merge-field,
 :root[data-theme="dark"] .passport-pro-panel,
 :root[data-theme="dark"] .passport-pro-card {
   border-color: rgba(148, 163, 184, 0.22);
@@ -1502,4 +1504,40 @@ a {
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid rgba(180, 35, 24, 0.2);
+}
+
+.merge-editor {
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 12px;
+  background: rgba(240, 253, 250, 0.7);
+}
+
+.merge-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.merge-field {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.merge-field-label {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.merge-field .checkbox-row {
+  overflow-wrap: anywhere;
 }

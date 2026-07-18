@@ -93,6 +93,7 @@ import {
   type EncryptedBackupEnvelope,
 } from './utils/encryptedBackup'
 import {
+  buildSyncRecord,
   cloudSyncErrorMessage,
   compareLocalAndRemote,
   getLocalSyncState,
@@ -117,7 +118,7 @@ import { appMetadataValue, backupAgeWarning, createFullBackup, parseFullBackupJs
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { deletedFlights as sortDeletedFlights, deletedTripMetadata } from './utils/deletedRecords'
-import { diffFlightFields } from './utils/conflicts'
+import { diffFlightFields, mergeFlightRecords, mergeableFlightFieldDiffs, type MergeSide } from './utils/conflicts'
 import { diagnosticsText } from './utils/diagnostics'
 import { formatDate, formatDateTime, formatDistance, formatDuration } from './utils/dates'
 import { currentDeviceSnapshot, getDeviceName, getOrCreateDeviceId, setDeviceName } from './utils/device'
@@ -2631,6 +2632,7 @@ function SyncPage({
   onSyncSafe,
   onResolveConflict,
   onResolveAll,
+  onMergeFields,
   onRenameDevice,
   onNavigateSettings,
   onNavigateBackup,
@@ -2655,6 +2657,7 @@ function SyncPage({
   onSyncSafe: () => Promise<void>
   onResolveConflict: (item: SyncComparisonItem, action: SyncConflictAction) => Promise<void>
   onResolveAll: (action: SyncConflictAction) => Promise<void>
+  onMergeFields: (item: SyncComparisonItem, choices: Record<string, MergeSide>) => Promise<void>
   onRenameDevice: (name: string) => Promise<void>
   onNavigateSettings: () => void
   onNavigateBackup: () => void
@@ -2663,6 +2666,12 @@ function SyncPage({
   const displayOptions = flightTimeDisplayOptions(settings)
   const [deviceDraft, setDeviceDraft] = useState(deviceName)
   const [nowMs] = useState(() => Date.now())
+  const [mergeOpen, setMergeOpen] = useState<Record<string, boolean>>({})
+  const [mergeChoices, setMergeChoices] = useState<Record<string, Record<string, MergeSide>>>({})
+
+  function setMergeChoice(itemKey: string, field: string, side: MergeSide) {
+    setMergeChoices((choices) => ({ ...choices, [itemKey]: { ...choices[itemKey], [field]: side } }))
+  }
   const latestBackup = cloudBackups[0]
   const recentBackup = latestBackup && nowMs - Date.parse(latestBackup.createdAt) < 24 * 60 * 60 * 1000
   const localCount = comparison?.local.records.length ?? 0
@@ -2768,7 +2777,11 @@ function SyncPage({
             </div>
           </div>
           <div className="stack compact-stack">
-            {comparison.conflicts.map((item) => (
+            {comparison.conflicts.map((item) => {
+              const mergeDiffs = item.entityType === 'flight' && item.local?.record && item.remote?.record && !item.local.deletedAt && !item.remote.deletedAt
+                ? mergeableFlightFieldDiffs(item.local.record as Partial<FlightLogEntry>, item.remote.record as Partial<FlightLogEntry>)
+                : []
+              return (
               <article className="flight-card compact-card" key={item.key}>
                 <div className="flight-main">
                   <div><p className="eyebrow">{item.entityType}</p><h3>{syncRecordLabel(item)}</h3></div>
@@ -2793,7 +2806,29 @@ function SyncPage({
                     ))}
                   </div>
                 )}
+                {mergeOpen[item.key] && mergeDiffs.length > 0 && (
+                  <div className="merge-editor">
+                    <p className="muted">Choose which side to keep for each differing field. Fields not listed keep the local value. The merged record is saved locally and pushed to the cloud.</p>
+                    <div className="merge-field-grid">
+                      {mergeDiffs.map((diff) => {
+                        const side = mergeChoices[item.key]?.[diff.field] ?? 'local'
+                        return (
+                          <div className="merge-field" key={diff.field}>
+                            <span className="merge-field-label">{diff.label}</span>
+                            <label className="checkbox-row"><input type="radio" name={`merge-${item.key}-${diff.field}`} checked={side === 'local'} onChange={() => setMergeChoice(item.key, diff.field, 'local')} /> Local: {diff.localValue}</label>
+                            <label className="checkbox-row"><input type="radio" name={`merge-${item.key}-${diff.field}`} checked={side === 'cloud'} onChange={() => setMergeChoice(item.key, diff.field, 'cloud')} /> Cloud: {diff.cloudValue}</label>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="actions">
+                      <button type="button" disabled={busy} onClick={() => void onMergeFields(item, mergeChoices[item.key] ?? {})}>Apply merge and push</button>
+                      <button type="button" className="ghost" onClick={() => setMergeOpen((open) => ({ ...open, [item.key]: false }))}>Close merge editor</button>
+                    </div>
+                  </div>
+                )}
                 <div className="actions">
+                  {mergeDiffs.length > 0 && <button type="button" disabled={busy} onClick={() => setMergeOpen((open) => ({ ...open, [item.key]: !open[item.key] }))}><SlidersHorizontal aria-hidden="true" /> {mergeOpen[item.key] ? 'Hide merge editor' : 'Merge fields'}</button>}
                   <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveConflict(item, 'keep-local')}>Keep local</button>
                   <button type="button" className="secondary" disabled={busy} onClick={() => void onResolveConflict(item, 'use-cloud')}>Use cloud</button>
                   <button type="button" className="secondary" disabled={busy || (!item.local?.deletedAt && !item.remote?.deletedAt)} onClick={() => void onResolveConflict(item, 'keep-deleted')}>Keep deleted</button>
@@ -2802,7 +2837,8 @@ function SyncPage({
                   <button type="button" className="ghost" disabled={busy} onClick={() => void onResolveConflict(item, 'skip')}>Skip</button>
                 </div>
               </article>
-            ))}
+              )
+            })}
           </div>
         </section>
       )}
@@ -4043,6 +4079,45 @@ function App() {
     }
   }
 
+  async function handleMergeConflictFields(item: SyncComparisonItem, choices: Record<string, MergeSide>) {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('sync conflict merge'))
+      return
+    }
+    if (!supabase || !authSession) return
+    if (item.entityType !== 'flight' || !item.local?.record || !item.remote?.record) return
+    setSyncBusy(true)
+    setSyncMessage('')
+    try {
+      const local = rehydrateSyncRecord<FlightLogEntry>(item.local)
+      const cloud = rehydrateSyncRecord<FlightLogEntry>(item.remote)
+      const merged = mergeFlightRecords(local, cloud, choices)
+      const savedId = await saveFlight(merged)
+      const saved = (await getAllFlights()).find((flight) => flight.id === savedId)
+      if (!saved) throw new Error('Merged flight was not found after saving.')
+      const record = await buildSyncRecord('flight', saved.id, saved, deviceId)
+      await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [record], deviceId })
+      await loadFlights()
+      const now = new Date().toISOString()
+      await recordSyncEvent('conflict_resolve', { action: 'merge-fields', conflicts: 1 })
+      await updateSyncMetadata({
+        lastConflictResolutionAt: now,
+        lastConflictResolutionSummary: `merge-fields for ${item.entityType}:${item.localId}`,
+        lastSyncEventAt: now,
+        lastSyncSummary: `Merged fields for ${syncRecordLabel(item)}`,
+        lastCloudPushAt: now,
+        lastLocalChangeAt: now,
+      }, now)
+      await refreshSyncDevices(now)
+      await refreshSyncComparison(`Merged fields for ${syncRecordLabel(item)} and pushed the result to the cloud.`)
+    } catch (error) {
+      await recordSyncEvent('error', { operation: 'conflict_merge_fields' }, error)
+      setSyncMessage(cloudSyncErrorMessage(error, 'Unable to merge conflict fields.'))
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
   async function handleResolveAllConflicts(action: SyncConflictAction) {
     if (!syncComparison) return
     if (!isOnline && action !== 'skip') {
@@ -4183,7 +4258,7 @@ function App() {
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
-      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
+      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onMergeFields={handleMergeConflictFields} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
       {route.page === 'trash' && <TrashPage flights={deletedFlightList} tripMetadata={deletedTripMetadataList} busy={cloudBusy} signedIn={Boolean(authSession)} onRestore={handleRestoreDeletedFlight} onPermanentDelete={handlePermanentDeleteFlight} onRestoreSelected={handleRestoreDeletedFlights} onPermanentDeleteSelected={handlePermanentDeleteFlights} onEmptyTrash={handleEmptyTrash} onExport={handleExportDeletedRecord} onCreateSafetyBackup={handleCreateSafetyBackup} onNavigateSettings={() => navigate('settings')} />}
       <MobileMoreMenu open={mobileMoreOpen} route={route} onNavigate={navigate} onClose={() => setMobileMoreOpen(false)} />
       <nav className="bottom-nav" aria-label="Mobile navigation">
