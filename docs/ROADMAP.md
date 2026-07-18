@@ -19,7 +19,7 @@ Each stage is scoped so a single implementation session can pick it up and ship 
 3. **No secrets in the frontend.** Provider API keys live only in the Cloudflare Worker environment.
 4. **Privacy by default.** Nothing is uploaded without an explicit user action; E2EE is offered wherever data leaves the device.
 5. **No heavy dependencies.** Prefer WebCrypto, Canvas, and hand-rolled utilities over new packages.
-6. **Permanently out of scope** (unless overruled): payments, native app-store builds, realtime sync, background server-side polling of provider data.
+6. **Permanently out of scope** (unless overruled): payments, native app-store builds, realtime sync, background server-side polling of provider data, and **Apple login** (declined by the owner — the Apple Developer Program cost is not justified; recorded in §10).
 
 The vision is fixed. The **non-negotiables are a living contract**: some later-horizon features (push, collaboration) tension against them. Where that happens the feature is gated behind an explicit owner decision recorded in §10 — never quietly relaxed.
 
@@ -92,13 +92,13 @@ Lower switching cost from other trackers.
 - **Share-card themes**: 2–3 additional PNG palettes selectable in the share panel.
 - *Soft dependency:* real exported files from the owner's accounts would harden importer tests (optional assist, not a blocker — public format docs suffice for fixtures).
 
-### v2.6 — "你好": localization, en / zh-CN / zh-TW / ja (autonomous build, human review gate) — ◐ foundation shipped
+### v2.6 — "你好": localization, en / zh-CN / zh-TW / ja (autonomous build + owner review) — ◐ foundation shipped, translations reviewed
 
 Highest-leverage reach feature; the owner is bilingual and Variflight's market is Chinese-speaking. Scope was widened (owner request) to add Traditional Chinese and Japanese concurrently.
 
 - **Dependency-free i18n (shipped)**: a `t(key)` dictionary module (`src/utils/i18n.ts`), a `language` setting (`system | en | zh-CN | zh-TW | ja`) with system detection that distinguishes Traditional from Simplified, `<html lang>` sync, and a completeness test across all locales.
 - **Coverage (progressive)**: navigation, mobile More menu, add action, footer, and the language setting are translated in all four languages; the remaining strings fall back to English and are keyed over subsequent iterations.
-- ⚠️ **Human gate (quality, not build):** native-speaker review of aviation terminology (值机 / 登机口 / 经停 / 备降 and their Traditional and Japanese equivalents) before announcement. Japanese needs a reviewer other than the (EN/zh-bilingual) owner.
+- **Review gate — resolved:** the maintainer reviewed and approved the current translations, so the in-app "pending review" disclaimer was removed. Future added keys should still be reviewed as they land.
 
 ### v2.7 — "Live depth": provider-powered day-of data (autonomous code, human deploy gate)
 
@@ -255,13 +255,15 @@ Legend: ✅ done · ◐ partial/planned · — absent.
 
 Everything not listed here is autonomously implementable within the non-negotiables. Grouped by stage.
 
+Owner status is noted inline where a gate has already been resolved or declined.
+
 **Credentials / infra**
-1. **Provider accounts + Worker deploys** (v2.7, v4.0, v4.3): RapidAPI/secondary provider signup, `wrangler secret put`, `wrangler deploy`.
-2. **Apple Developer configuration** (v3.x Apple login, if pursued): account, Services ID, Supabase Apple provider.
-3. **Supabase console actions** (any future migration): running SQL, auth URL config. Near-term stages avoid new tables on purpose.
+1. **Provider accounts + Worker deploys** (v2.7, v4.0, v4.3): RapidAPI/secondary provider signup, `wrangler secret put`, `wrangler deploy`. — *Worker + Supabase + Pages already configured by the owner; v2.7 endpoints can build against the live Worker.*
+2. ~~**Apple Developer configuration** (v3.x Apple login)~~ — **declined by the owner (cost).** Apple login is not pursued; it moves to the permanently-out-of-scope list unless revisited.
+3. **Supabase console actions** (any future migration): running SQL, auth URL config. Near-term stages avoid new tables on purpose. — *Current migrations 001–003 already applied by the owner.*
 
 **Quality / review**
-4. **zh-CN translation review** (v2.6) and community-language reviews (v5.1): native-speaker passes.
+4. ~~**zh-CN / zh-TW / ja translation review** (v2.6)~~ — **done: reviewed and approved by the owner.** Community-language reviews (v5.1) still apply as new languages are added.
 5. **Accessibility audit sign-off** (v5.0): human verification alongside automated checks.
 
 **Decisions (recorded in §10)**
@@ -280,7 +282,8 @@ The non-negotiables are a contract; this ledger is where the owner records any d
 
 | Date | Constraint touched | Feature | Decision | Owner |
 | --- | --- | --- | --- | --- |
-| — | (none yet) | — | — | — |
+| 2026-07-18 | — (scope) | Apple login | **Declined** — Apple Developer Program cost not justified; added to the permanent out-of-scope list. | zheyuanlai |
+| 2026-07-18 | — (quality gate) | v2.6 translations (zh-CN / zh-TW / ja) | **Reviewed and approved**; in-app "pending review" disclaimer removed. | zheyuanlai |
 
 Candidate future entries (pending, not decided): push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
 
