@@ -530,6 +530,15 @@ export function buildAeroDataBoxFidsUrl(iata, fromLocal, toLocal) {
   return url
 }
 
+// KNOWN REAL-MODE LIMITATION (see Worker README "Airport status board"):
+// The AeroDataBox FIDS endpoint interprets the {from}/{to} path segments as the
+// airport's LOCAL time, but we emit a UTC wall-clock string here. That shifts the
+// real window by the airport's UTC offset (e.g. for SIN, UTC+8, a "next 6h" board
+// can surface past flights). A correct fix needs the airport's local offset, which
+// the Worker does not have without a timezone lookup or an extra provider call.
+// This approximation only affects real mode (mock mode is unaffected) and must be
+// corrected during the post-deploy verification step, alongside the FIDS field
+// mapping in normalizeAirportFids/summarizeMovements.
 function fidsWindow(hours, nowMs = Date.now()) {
   const from = new Date(nowMs).toISOString().slice(0, 16)
   const to = new Date(nowMs + hours * 60 * 60 * 1000).toISOString().slice(0, 16)
@@ -551,6 +560,9 @@ export async function fetchAeroDataBoxAirportStatus(iata, hours, env) {
       Accept: 'application/json',
     },
   })
+  // 204 = the provider found no movements in the window. Mirror the flight-status
+  // 204 handling and degrade gracefully to an empty board rather than a 502 parse error.
+  if (response.status === 204) return normalizeAirportFids(iata, {}, [])
   if (!response.ok) throw await providerErrorFromResponse(response)
   let data
   try {

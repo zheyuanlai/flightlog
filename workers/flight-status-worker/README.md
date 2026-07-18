@@ -97,6 +97,13 @@ GET https://aerodatabox.p.rapidapi.com/flights/airports/iata/{iata}/{fromLocal}/
 
 and maps the response in `normalizeAirportFids` / `summarizeMovements`. **This mapping is best-effort and isolated** — after deploying, verify it against one real response (the exact FIDS field shapes can vary by plan) and adjust `summarizeMovements`/`movementDelayMinutes` if the counts look off. The frontend works in mock mode regardless.
 
+Two separate real-mode caveats to check during that post-deploy verification:
+
+1. **Time window is UTC-approximated.** The FIDS endpoint reads the `{from}`/`{to}` path segments as the airport's **local** time, but `fidsWindow` currently emits a UTC wall-clock string. The queried window is therefore shifted by the airport's UTC offset (e.g. for `SIN` at UTC+8 a "next 6h" board can surface flights from the past). A correct fix requires the airport's local offset, which the Worker does not carry. Resolve this when you verify against a live response — either convert `fidsWindow` to airport-local time (timezone lookup or an extra provider call) or confirm the offset is acceptable for your use. Mock mode is unaffected.
+2. **Field mapping** — the `normalizeAirportFids` / `summarizeMovements` shape assumptions described above.
+
+A provider `204` (no movements in the window) degrades to an empty board rather than an error.
+
 ## Notes
 
 - `AERODATABOX_API_KEY` is never logged, returned, or sent to the frontend.

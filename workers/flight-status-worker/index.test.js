@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   buildAeroDataBoxFidsUrl,
   buildAeroDataBoxUrl,
+  fetchAeroDataBoxAirportStatus,
   mapAeroDataBoxStatus,
   mockAirportStatus,
   normalizeAeroDataBoxFlight,
@@ -138,5 +139,19 @@ describe('airport status endpoint', () => {
     expect(mock.airport).toBe('SIN')
     expect(mock.provider).toBe('mock-worker')
     expect(mock.departures.onTimePercent).toBe(75)
+  })
+
+  it('degrades a provider 204 (no movements) to an empty board instead of a 502', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }))
+    try {
+      const status = await fetchAeroDataBoxAirportStatus('SIN', 6, { AERODATABOX_API_KEY: 'k', AERODATABOX_API_HOST: 'h' })
+      expect(status.airport).toBe('SIN')
+      expect(status.departures.total).toBe(0)
+      expect(status.arrivals.total).toBe(0)
+      expect(status.sample).toEqual([])
+    } finally {
+      globalThis.fetch = original
+    }
   })
 })

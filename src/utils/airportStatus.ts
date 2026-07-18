@@ -73,10 +73,30 @@ function normalizeSummary(value: unknown): AirportMovementSummary {
   }
 }
 
+function normalizeSampleFlight(value: unknown): AirportStatusSampleFlight | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const str = (key: string) => (typeof record[key] === 'string' ? (record[key] as string) : undefined)
+  const direction: AirportStatusSampleFlight['direction'] = record.direction === 'arrival' ? 'arrival' : 'departure'
+  const status: AirportStatusSampleFlight['status'] =
+    record.status === 'delayed' || record.status === 'cancelled' ? record.status : 'on-time'
+  const flight: AirportStatusSampleFlight = { direction, status }
+  const flightNumber = str('flightNumber')
+  if (flightNumber) flight.flightNumber = flightNumber
+  const scheduledLocal = str('scheduledLocal')
+  if (scheduledLocal) flight.scheduledLocal = scheduledLocal
+  const otherAirport = str('otherAirport')
+  if (otherAirport) flight.otherAirport = otherAirport
+  if (typeof record.delayMinutes === 'number' && Number.isFinite(record.delayMinutes)) {
+    flight.delayMinutes = record.delayMinutes
+  }
+  return flight
+}
+
 export function normalizeAirportStatus(value: unknown, fallbackIata: string): AirportStatus {
   const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
   const sample = Array.isArray(record.sample)
-    ? (record.sample as unknown[]).filter((item): item is AirportStatusSampleFlight => Boolean(item) && typeof item === 'object')
+    ? (record.sample as unknown[]).map(normalizeSampleFlight).filter((item): item is AirportStatusSampleFlight => Boolean(item))
     : []
   return {
     airport: typeof record.airport === 'string' && record.airport ? record.airport : normalizeIata(fallbackIata),

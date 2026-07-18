@@ -64,6 +64,27 @@ describe('airport status client', () => {
     expect(status.departures.total).toBe(0)
     expect(status.sample).toEqual([])
   })
+
+  it('sanitizes sample entries so only primitives reach the renderer', () => {
+    const status = normalizeAirportStatus({
+      airport: 'SIN',
+      sample: [
+        { direction: 'departure', status: { code: 1 }, flightNumber: { x: 1 }, delayMinutes: 'later' },
+        { direction: 'arrival', status: 'delayed', flightNumber: 'BA11', delayMinutes: 20, otherAirport: 'LHR' },
+        null,
+        42,
+      ],
+    }, 'SIN')
+    expect(status.sample).toHaveLength(2)
+    // Non-primitive status/flightNumber coerced to safe defaults / dropped.
+    expect(status.sample[0]).toEqual({ direction: 'departure', status: 'on-time' })
+    expect(status.sample[1]).toEqual({ direction: 'arrival', status: 'delayed', flightNumber: 'BA11', delayMinutes: 20, otherAirport: 'LHR' })
+    for (const item of status.sample) {
+      for (const val of Object.values(item)) {
+        expect(typeof val === 'string' || typeof val === 'number').toBe(true)
+      }
+    }
+  })
 })
 
 describe('refresh cadence', () => {
