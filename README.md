@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v23`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v24`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -63,6 +63,14 @@ FlightLog v2.3 adds opt-in day-of travel notifications within PWA constraints.
 - While FlightLog is open, a one-minute watcher detects lifecycle transitions — check-in window opening, departing soon, departed, landed, cancelled, diverted — plus meaningful departure delays and departure-gate changes, then shows a system notification (or an in-app toast as fallback). Phase alerts are forward-only, so a delay that pushes a flight back never re-announces an earlier phase.
 - Delivery uses the service worker's `showNotification` where available (required on Android Chromium) and falls back to the page notification API, then to in-app toasts when permission is unavailable. Each transition uses a distinct notification tag so time-critical alerts are never silently coalesced.
 - Constraints are deliberate: FlightLog never polls providers in the background and has no push server, so notifications fire only while the app is open in a tab or installed PWA. Refreshing a flight's live status feeds the same watcher, so gate changes surface right after a refresh.
+
+## v2.4 Insights
+
+FlightLog v2.4 turns your own logged history into Variflight-style analytics, computed entirely on device.
+
+- On-time performance: from flights that have both scheduled and actual departure times, FlightLog computes on-time rate (15-minute threshold), average/median/worst delay per airline and per route, and an overall summary on the Passport page. Nothing is sent anywhere.
+- Route delay context: Flight Detail shows how the current flight performed and your history on that route ("SIN-LAX: 4 measured flights, 75% on time, avg 12m late").
+- True flight paths: the Map now draws great-circle arcs (the actual shortest path over the globe) instead of straight lines, with longitudes unwrapped so trans-Pacific routes render continuously across the date line.
 
 ## Timezones
 
@@ -180,7 +188,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v23`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v24`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 

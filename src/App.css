@@ -67,8 +67,22 @@
   color: #5eead4;
 }
 
-:root[data-theme="dark"] .lifecycle-progress {
+:root[data-theme="dark"] .lifecycle-progress,
+:root[data-theme="dark"] .punctuality-bar {
   background: rgba(148, 163, 184, 0.25);
+}
+
+:root[data-theme="dark"] .route-insight {
+  background: rgba(20, 184, 166, 0.14);
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .route-insight strong {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .punctuality-row {
+  border-color: rgba(148, 163, 184, 0.2);
 }
 
 :root[data-theme="dark"] .passport-pro-card strong {
@@ -1564,4 +1578,69 @@ a {
   gap: 6px;
   margin: 12px 0;
   font-weight: 700;
+}
+
+.route-insight {
+  background: #f0fdfa;
+  color: #0f172a;
+}
+
+.route-insight strong {
+  color: #0f766e;
+}
+
+.insights-panel .two-columns {
+  margin-top: 16px;
+}
+
+.punctuality-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(90px, 1fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.punctuality-row:last-child {
+  border-bottom: 0;
+}
+
+.punctuality-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.punctuality-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f766e, #14b8a6);
+}
+
+.punctuality-figures {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ontime-strong { color: #0f766e; }
+.ontime-mid { color: #92400e; }
+.ontime-weak { color: #b42318; }
+
+@media (max-width: 800px) {
+  .punctuality-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .punctuality-figures {
+    align-items: flex-start;
+    flex-direction: row;
+    gap: 12px;
+  }
 }

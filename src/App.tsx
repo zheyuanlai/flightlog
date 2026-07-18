@@ -146,6 +146,7 @@ import {
   isFutureOrSameDayFlight,
   resolveFlightTime,
 } from './utils/flightTime'
+import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleArc, overallPunctuality, routeDelayHistory, routePunctuality, type PunctualityStat } from './utils/insights'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
@@ -1569,6 +1570,7 @@ function TripDetailPage({
 
 function FlightDetailPage({
   flight,
+  flights,
   airportVersion,
   isOnline,
   onBack,
@@ -1578,6 +1580,7 @@ function FlightDetailPage({
   onDismissCompletion,
 }: {
   flight?: FlightLogEntry
+  flights: FlightLogEntry[]
   airportVersion: number
   isOnline: boolean
   onBack: () => void
@@ -1606,6 +1609,8 @@ function FlightDetailPage({
   const calendar = buildCalendarEventDetails(flight, detailsUrl)
   const links = externalFlightLinks(flight)
   const shareData = flightShareCardData(flight, { ...displayOptions, distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
+  const ownDelay = flightDelayMinutes(flight, 'departure')
+  const routeHistory = routeDelayHistory(flights.filter((item) => item.id !== flight.id), flight)
   return (
     <main className="page detail-page">
       <div className="section-heading">
@@ -1640,6 +1645,12 @@ function FlightDetailPage({
           <div><dt>Status check</dt><dd>{refreshLabel}</dd></div>
         </dl>
         {flight.notes && <p className="notice">{flight.notes}</p>}
+        {(ownDelay !== undefined || routeHistory) && (
+          <p className="notice route-insight">
+            {ownDelay !== undefined && <span><strong>This flight:</strong> departed {formatDelayLabel(ownDelay)}. </span>}
+            {routeHistory && <span><strong>Your {routeHistory.route} history:</strong> {routeHistory.measuredFlights} measured flight{routeHistory.measuredFlights === 1 ? '' : 's'}, {routeHistory.onTimePercent}% on time, avg {formatDelayLabel(routeHistory.averageDelayMinutes)}.</span>}
+          </p>
+        )}
         {warnings.map((warning, index) => <p className="notice warning" key={`detail-${index}-${warning}`}>{warning}</p>)}
         <div className="actions action-row">
           <button type="button" className="secondary" disabled={!isOnline || !refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh' : refreshLabel}</button>
@@ -1712,11 +1723,15 @@ function MapPage({ flights, airportVersion }: { flights: FlightLogEntry[]; airpo
         destinationAirport?.lat === undefined ||
         destinationAirport.lon === undefined
       ) continue
-      const originPoint: import('leaflet').LatLngTuple = [originAirport.lat, originAirport.lon]
-      const destinationPoint: import('leaflet').LatLngTuple = [destinationAirport.lat, destinationAirport.lon]
-      const points: import('leaflet').LatLngTuple[] = [originPoint, destinationPoint]
-      bounds.push(...points)
-      L.polyline(points, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${flight.flightNumber}: ${flight.origin} to ${flight.destination}`).addTo(layer)
+      const arc = greatCircleArc([originAirport.lat, originAirport.lon], [destinationAirport.lat, destinationAirport.lon]) as import('leaflet').LatLngTuple[]
+      // Keep the arc, its markers, and the fitted bounds in one coordinate frame:
+      // the arc's longitudes are unwrapped across the antimeridian, so anchoring
+      // markers/bounds to the arc endpoints (not raw airport coords) keeps a
+      // trans-Pacific route connected and framed, apex included.
+      const originPoint = arc[0]
+      const destinationPoint = arc[arc.length - 1]
+      for (const point of arc) bounds.push(point)
+      L.polyline(arc, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${flight.flightNumber}: ${flight.origin} to ${flight.destination}`).addTo(layer)
       L.marker(originPoint, { icon: markerIcon }).bindPopup(`<strong>${originAirport.iata}</strong><br>${originAirport.name}<br>${[originAirport.city, originAirport.country].filter(Boolean).join(', ')}`).addTo(layer)
       L.marker(destinationPoint, { icon: markerIcon }).bindPopup(`<strong>${destinationAirport.iata}</strong><br>${destinationAirport.name}<br>${[destinationAirport.city, destinationAirport.country].filter(Boolean).join(', ')}`).addTo(layer)
     }
@@ -1738,9 +1753,31 @@ function tripHasUpcomingFlight(trip: TripGroup): boolean {
   return trip.flights.some((flight) => listUpcomingFlights([flight]).length > 0)
 }
 
+function PunctualityPanel({ title, eyebrow, stats }: { title: string; eyebrow: string; stats: PunctualityStat[] }) {
+  return (
+    <article className="panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">{eyebrow}</p><h3>{title}</h3></div></div>
+      {stats.length === 0 ? <p className="muted">Log flights with scheduled and actual times to see on-time performance.</p> : (
+        <div className="stack compact-stack">
+          {stats.slice(0, 6).map((row) => (
+            <div className="punctuality-row" key={row.key}>
+              <div><strong>{row.label}</strong><span className="muted"> · {row.flights} flight{row.flights === 1 ? '' : 's'}</span></div>
+              <div className="punctuality-bar" aria-hidden="true"><span style={{ width: `${row.onTimePercent}%` }} /></div>
+              <div className="punctuality-figures"><span className={row.onTimePercent >= 80 ? 'ontime-strong' : row.onTimePercent >= 60 ? 'ontime-mid' : 'ontime-weak'}>{row.onTimePercent}% on time</span><span className="muted">avg {formatDelayLabel(row.averageDelayMinutes)}</span></div>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  )
+}
+
 function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: TripGroup[] }) {
   const settings = useAppSettings()
   const stats = aggregateStats(flights)
+  const overall = overallPunctuality(flights)
+  const airlineOnTime = airlinePunctuality(flights)
+  const routeOnTime = routePunctuality(flights)
   const computedFlights = flights.map(computeFlight)
   const longestFlights = computedFlights.filter((flight) => flight.distanceKm > 0).sort((a, b) => b.distanceKm - a.distanceKm).slice(0, 5)
   const favoriteAirline = stats.topAirlines[0]
@@ -1783,6 +1820,18 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
         <div className="section-heading compact-heading"><div><p className="eyebrow">Open Passport Pro</p><h2>Free achievement board</h2></div><CheckCircle2 aria-hidden="true" /></div>
         <div className="passport-pro-grid">{milestoneCards.map((card) => <article className="passport-pro-card" key={card.label}><span>{card.label}</span><strong>{card.value}</strong><p>{card.detail}</p></article>)}</div>
         <ul className="passport-insight-list">{proInsights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
+      </section>
+      <section className="panel insights-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Insights</p><h2>On-time performance</h2></div><Gauge aria-hidden="true" /></div>
+        {overall ? (
+          <p className="muted">Across {overall.measuredFlights} flight{overall.measuredFlights === 1 ? '' : 's'} with both scheduled and actual times, you departed on time {overall.onTimePercent}% of the time (avg {formatDelayLabel(overall.averageDelayMinutes)}). Computed entirely on this device from your own history.</p>
+        ) : (
+          <p className="muted">On-time performance appears once you log flights with both scheduled and actual departure times (from a live refresh or manual entry).</p>
+        )}
+        <div className="two-columns">
+          <PunctualityPanel eyebrow="By airline" title="Airline on-time rate" stats={airlineOnTime} />
+          <PunctualityPanel eyebrow="By route" title="Route on-time rate" stats={routeOnTime} />
+        </div>
       </section>
       <section className="stats-grid">
         <StatCard icon={Gauge} label="Flight time" value={formatDuration(stats.totalDurationMinutes)} />
@@ -3678,7 +3727,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.3',
+        appVersion: 'v2.4',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4411,7 +4460,7 @@ function App() {
       {showForm && <FlightForm editing={editing} isOnline={isOnline} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
       {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
-      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
+      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
