@@ -79,11 +79,19 @@ import {
   getCloudBackup,
   hasLocalDataChangedSinceCloudBackup,
   listCloudBackups,
-  restoreCloudBackup,
+  resolveSnapshotBackup,
   verifyCloudBackupSnapshot,
+  EncryptedCloudBackupError,
   type CloudBackupSummary,
   type CloudBackupSnapshot,
 } from './lib/cloudBackup'
+import {
+  decryptBackupEnvelope,
+  encryptBackupJson,
+  parseEncryptedBackupJson,
+  validateBackupPassphrase,
+  type EncryptedBackupEnvelope,
+} from './utils/encryptedBackup'
 import {
   cloudSyncErrorMessage,
   compareLocalAndRemote,
@@ -2132,7 +2140,7 @@ interface CloudBackupControls {
   preview?: { snapshot: CloudBackupSnapshot; preview: BackupImportPreview }
   onNavigateAccount: () => void
   onNavigateSync: () => void
-  onUpload: (label: string) => Promise<void>
+  onUpload: (label: string, encryptPassphrase?: string) => Promise<void>
   onRefresh: () => Promise<void>
   onPreview: (id: string) => Promise<void>
   onRestore: (id: string, mode: 'merge' | 'replace') => Promise<void>
@@ -2149,6 +2157,10 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const [label, setLabel] = useState('')
+  const [encryptEnabled, setEncryptEnabled] = useState(false)
+  const [encryptPassphrase, setEncryptPassphrase] = useState('')
+  const [encryptConfirm, setEncryptConfirm] = useState('')
+  const [encryptError, setEncryptError] = useState('')
   const lastCloudRestoreAt = appMetadataValue(appMetadata, 'lastCloudRestoreAt')
   const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
   const reminderEnabled = settings.backupReminderEnabled && appMetadataValue(appMetadata, 'cloudBackupReminderEnabled') !== 'false'
@@ -2156,7 +2168,20 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
   const latest = cloud.backups[0]
 
   async function upload() {
-    await cloud.onUpload(label || `Manual backup - ${new Date().toISOString().slice(0, 10)}`)
+    setEncryptError('')
+    const baseLabel = label || `Manual backup - ${new Date().toISOString().slice(0, 10)}`
+    if (encryptEnabled) {
+      const validationError = validateBackupPassphrase(encryptPassphrase, encryptConfirm)
+      if (validationError) {
+        setEncryptError(validationError)
+        return
+      }
+      await cloud.onUpload(`${baseLabel} · encrypted`, encryptPassphrase)
+      setEncryptPassphrase('')
+      setEncryptConfirm('')
+    } else {
+      await cloud.onUpload(baseLabel)
+    }
     setLabel('')
   }
 
@@ -2192,7 +2217,16 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
           {localChanged && <p className="notice warning">Local data has changed since your last cloud backup.</p>}
           <div className="form-grid compact">
             <label>Backup label<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={`Manual backup - ${new Date().toISOString().slice(0, 10)}`} /></label>
+            <label className="checkbox-row"><input type="checkbox" checked={encryptEnabled} onChange={(event) => setEncryptEnabled(event.target.checked)} /> Encrypt this snapshot end-to-end</label>
+            {encryptEnabled && (
+              <>
+                <label>Passphrase<input type="password" value={encryptPassphrase} onChange={(event) => setEncryptPassphrase(event.target.value)} autoComplete="new-password" /></label>
+                <label>Confirm passphrase<input type="password" value={encryptConfirm} onChange={(event) => setEncryptConfirm(event.target.value)} autoComplete="new-password" /></label>
+              </>
+            )}
           </div>
+          {encryptEnabled && <p className="notice warning">The passphrase never leaves this device and cannot be recovered. Losing it makes the encrypted snapshot unreadable, even for you.</p>}
+          {encryptError && <p className="notice warning">{encryptError}</p>}
           <div className="actions">
             <button type="button" disabled={cloud.busy} onClick={() => void upload()}><Cloud aria-hidden="true" /> Back up now</button>
             <button type="button" className="secondary" disabled={cloud.busy} onClick={() => void cloud.onRefresh()}><RefreshCw aria-hidden="true" /> Refresh list</button>
@@ -2268,6 +2302,7 @@ function BackupCenterPage({
   cloud,
   onImported,
   onExportBackup,
+  onExportEncryptedBackup,
   onMergeBackup,
   onReplaceBackup,
   onRepairData,
@@ -2287,6 +2322,7 @@ function BackupCenterPage({
   cloud: CloudBackupControls
   onImported: () => Promise<void>
   onExportBackup: () => Promise<void>
+  onExportEncryptedBackup: (passphrase: string, hint?: string) => Promise<void>
   onMergeBackup: (preview: BackupImportPreview) => Promise<void>
   onReplaceBackup: (preview: BackupImportPreview) => Promise<void>
   onRepairData: () => Promise<void>
@@ -2298,6 +2334,12 @@ function BackupCenterPage({
   const [preview, setPreview] = useState<{ valid: FlightLogEntry[]; errors: string[] }>({ valid: [], errors: [] })
   const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
   const [backupMessage, setBackupMessage] = useState('')
+  const [encryptedImport, setEncryptedImport] = useState<EncryptedBackupEnvelope | undefined>()
+  const [importPassphrase, setImportPassphrase] = useState('')
+  const [exportPassphrase, setExportPassphrase] = useState('')
+  const [exportConfirm, setExportConfirm] = useState('')
+  const [exportHint, setExportHint] = useState('')
+  const [exportError, setExportError] = useState('')
   const health = analyzeDataHealth(flights, { allFlights, tripMetadata: allTripMetadata, activeTripIds: trips.map((trip) => trip.id), syncComparison })
   const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
   const lastImportAt = appMetadataValue(appMetadata, 'lastImportAt')
@@ -2307,13 +2349,48 @@ function BackupCenterPage({
   }
   async function handleBackupFile(file: File) {
     setBackupMessage('')
+    setEncryptedImport(undefined)
+    setImportPassphrase('')
     try {
-      const backup = parseFullBackupJson(await file.text())
+      const text = await file.text()
+      const envelope = parseEncryptedBackupJson(text)
+      if (envelope) {
+        setBackupPreview(undefined)
+        setEncryptedImport(envelope)
+        return
+      }
+      const backup = parseFullBackupJson(text)
       setBackupPreview(previewBackupImport(backup, flights))
     } catch (error) {
       setBackupPreview(undefined)
       setBackupMessage(error instanceof Error ? error.message : 'Unable to read backup file')
     }
+  }
+  async function decryptImport() {
+    if (!encryptedImport) return
+    setBackupMessage('')
+    try {
+      const decrypted = await decryptBackupEnvelope(encryptedImport, importPassphrase)
+      const backup = parseFullBackupJson(decrypted)
+      setBackupPreview(previewBackupImport(backup, flights))
+      setEncryptedImport(undefined)
+      setImportPassphrase('')
+      setBackupMessage('Encrypted backup decrypted locally. Review the preview below before applying it.')
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : 'Unable to decrypt backup file')
+    }
+  }
+  async function exportEncrypted() {
+    setExportError('')
+    const validationError = validateBackupPassphrase(exportPassphrase, exportConfirm)
+    if (validationError) {
+      setExportError(validationError)
+      return
+    }
+    await onExportEncryptedBackup(exportPassphrase, exportHint)
+    setExportPassphrase('')
+    setExportConfirm('')
+    setExportHint('')
   }
   async function savePreview() {
     await bulkSaveFlights(preview.valid)
@@ -2358,10 +2435,35 @@ function BackupCenterPage({
         </article>
         <article className="panel">
           <h3>Restore backup</h3>
-          <p className="muted">Preview a full backup before merging or replacing local data.</p>
+          <p className="muted">Preview a full backup before merging or replacing local data. Plain and encrypted backup files are both accepted.</p>
           <label className="file-drop"><Upload aria-hidden="true" /><span>Choose backup JSON</span><input type="file" accept=".json,application/json" onChange={(event) => event.target.files?.[0] && void handleBackupFile(event.target.files[0])} /></label>
         </article>
       </section>
+      <section className="panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">End-to-end encryption</p><h3>Encrypted backup export</h3></div><Shield aria-hidden="true" /></div>
+        <p className="muted">Encrypts the full backup on this device with AES-GCM before it is written, using a key derived from your passphrase (PBKDF2, 600k iterations). The passphrase is never stored and cannot be recovered.</p>
+        <div className="form-grid compact">
+          <label>Passphrase<input type="password" value={exportPassphrase} onChange={(event) => setExportPassphrase(event.target.value)} autoComplete="new-password" /></label>
+          <label>Confirm passphrase<input type="password" value={exportConfirm} onChange={(event) => setExportConfirm(event.target.value)} autoComplete="new-password" /></label>
+          <label>Optional hint (stored unencrypted)<input value={exportHint} onChange={(event) => setExportHint(event.target.value)} placeholder="e.g. the usual travel one" /></label>
+        </div>
+        {exportError && <p className="notice warning">{exportError}</p>}
+        <div className="actions"><button type="button" onClick={() => void exportEncrypted()}><Shield aria-hidden="true" /> Export encrypted backup</button></div>
+      </section>
+      {encryptedImport && (
+        <section className="panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Encrypted backup</p><h3>Passphrase needed</h3></div><Shield aria-hidden="true" /></div>
+          <p className="muted">This file is an end-to-end encrypted FlightLog backup{encryptedImport.createdAt ? ` from ${formatDateTime(encryptedImport.createdAt, displayOptions)}` : ''}. It will be decrypted locally in your browser.</p>
+          {encryptedImport.hint && <p className="notice">Passphrase hint: {encryptedImport.hint}</p>}
+          <div className="form-grid compact">
+            <label>Passphrase<input type="password" value={importPassphrase} onChange={(event) => setImportPassphrase(event.target.value)} autoComplete="current-password" /></label>
+          </div>
+          <div className="actions">
+            <button type="button" disabled={!importPassphrase} onClick={() => void decryptImport()}>Decrypt backup</button>
+            <button type="button" className="ghost" onClick={() => { setEncryptedImport(undefined); setImportPassphrase('') }}>Cancel</button>
+          </div>
+        </section>
+      )}
       {backupMessage && <p className="notice">{backupMessage}</p>}
       {backupPreview && (
         <section className="panel">
@@ -3274,23 +3376,37 @@ function App() {
     await loadAppMetadata()
   }
 
-  async function handleExportFullBackup() {
-    const now = new Date().toISOString()
+  async function buildExportBackup(now: string) {
     const appMetadataForBackup = [
       ...(await getAllAppMetadata()).filter((item) => item.key !== 'lastBackupAt'),
       { key: 'lastBackupAt', value: now, updatedAt: now },
     ]
-    const backup = createFullBackup({
+    return createFullBackup({
       flights: await getAllFlights(),
       tripMetadata: await getAllTripMetadata(),
       providerAirports: await getProviderAirports(),
       appMetadata: appMetadataForBackup,
       exportedAt: now,
     })
+  }
+
+  async function handleExportFullBackup() {
+    const now = new Date().toISOString()
+    const backup = await buildExportBackup(now)
     downloadFile(`flightlog-backup-${now.slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json')
     await setAppMetadata('lastBackupAt', now)
     await loadAppMetadata()
     setToast('Full backup exported.')
+  }
+
+  async function handleExportEncryptedBackup(passphrase: string, hint?: string) {
+    const now = new Date().toISOString()
+    const backup = await buildExportBackup(now)
+    const envelope = await encryptBackupJson(JSON.stringify(backup), passphrase, { hint, now })
+    downloadFile(`flightlog-encrypted-backup-${now.slice(0, 10)}.json`, JSON.stringify(envelope, null, 2), 'application/json')
+    await setAppMetadata('lastBackupAt', now)
+    await loadAppMetadata()
+    setToast('Encrypted backup exported. Keep the passphrase safe; it cannot be recovered.')
   }
 
   async function handleMergeBackup(preview: BackupImportPreview) {
@@ -3378,7 +3494,7 @@ function App() {
     setAuthMessage(error ? friendlyAuthError(error) : 'Signed out. Local data was not deleted.')
   }
 
-  async function handleCloudUpload(label: string) {
+  async function handleCloudUpload(label: string, encryptPassphrase?: string) {
     if (!isOnline) {
       setCloudMessage(offlineActionMessage('cloud backup'))
       return
@@ -3396,8 +3512,9 @@ function App() {
         label,
         deviceId,
         appVersion: 'v2.1',
+        encryptPassphrase,
       })
-      const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum })
+      const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
       await bulkSetAppMetadata([
         { key: 'lastCloudBackupAt', value: uploaded.createdAt, updatedAt: now },
         { key: 'lastCloudBackupChecksum', value: verification.fetchedChecksum ?? uploaded.checksum ?? expectedChecksum, updatedAt: now },
@@ -3417,6 +3534,18 @@ function App() {
     }
   }
 
+  async function resolveSnapshotBackupWithPrompt(snapshot: CloudBackupSnapshot) {
+    try {
+      return await resolveSnapshotBackup(snapshot)
+    } catch (error) {
+      if (!(error instanceof EncryptedCloudBackupError)) throw error
+      const hint = snapshot.encryptedEnvelope?.hint
+      const passphrase = window.prompt(`This cloud backup is encrypted end-to-end.${hint ? ` Hint: ${hint}.` : ''} Enter its passphrase:`)
+      if (!passphrase) throw new Error('Passphrase required: this cloud backup is encrypted end-to-end.', { cause: error })
+      return await resolveSnapshotBackup(snapshot, passphrase)
+    }
+  }
+
   async function handleCloudPreview(id: string) {
     if (!isOnline) {
       setCloudMessage(offlineActionMessage('cloud backup preview'))
@@ -3426,7 +3555,8 @@ function App() {
     setCloudMessage('')
     try {
       const snapshot = await getCloudBackup(supabase, id)
-      setCloudPreview({ snapshot, preview: previewBackupImport(snapshot.backup, flights) })
+      const backup = await resolveSnapshotBackupWithPrompt(snapshot)
+      setCloudPreview({ snapshot, preview: previewBackupImport(backup, flights) })
     } catch (error) {
       setCloudMessage(cloudBackupErrorMessage(error, 'Unable to preview cloud backup.'))
     } finally {
@@ -3444,15 +3574,17 @@ function App() {
     setCloudBusy(true)
     setCloudMessage('')
     try {
-      const restore = await restoreCloudBackup({ client: supabase, id, existingFlights: flights, mode })
-      if (restore.mode === 'merge') await handleMergeBackup(restore.preview)
-      else await handleReplaceBackup(restore.preview)
+      const snapshot = await getCloudBackup(supabase, id)
+      const backup = await resolveSnapshotBackupWithPrompt(snapshot)
+      const preview = previewBackupImport(backup, flights)
+      if (mode === 'merge') await handleMergeBackup(preview)
+      else await handleReplaceBackup(preview)
       const now = new Date().toISOString()
       await setAppMetadata('lastCloudRestoreAt', now)
       await updateSyncMetadata({ lastCloudRestoreAt: now }, now)
       await reloadLocalData()
       setCloudPreview(undefined)
-      setCloudMessage(restore.mode === 'merge' ? 'Cloud backup merged into local data.' : 'Local data replaced from cloud backup.')
+      setCloudMessage(mode === 'merge' ? 'Cloud backup merged into local data.' : 'Local data replaced from cloud backup.')
     } catch (error) {
       setCloudMessage(cloudBackupErrorMessage(error, 'Unable to restore cloud backup.'))
     } finally {
@@ -3469,7 +3601,11 @@ function App() {
     setCloudMessage('')
     try {
       const snapshot = await getCloudBackup(supabase, id)
-      downloadFile(`flightlog-cloud-backup-${snapshot.createdAt.slice(0, 10)}.json`, JSON.stringify(snapshot.backup, null, 2), 'application/json')
+      if (snapshot.encryptedEnvelope) {
+        downloadFile(`flightlog-encrypted-cloud-backup-${snapshot.createdAt.slice(0, 10)}.json`, JSON.stringify(snapshot.encryptedEnvelope, null, 2), 'application/json')
+      } else {
+        downloadFile(`flightlog-cloud-backup-${snapshot.createdAt.slice(0, 10)}.json`, JSON.stringify(snapshot.backup, null, 2), 'application/json')
+      }
     } catch (error) {
       setCloudMessage(cloudBackupErrorMessage(error, 'Unable to download cloud backup.'))
     } finally {
@@ -4044,7 +4180,7 @@ function App() {
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
-      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}

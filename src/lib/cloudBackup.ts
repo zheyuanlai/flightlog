@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { FlightLogEntry } from '../types'
-import { previewBackupImport, type BackupImportPreview, type FlightLogBackup } from '../utils/backup'
+import { parseFullBackupJson, previewBackupImport, type BackupImportPreview, type FlightLogBackup } from '../utils/backup'
+import { decryptBackupEnvelope, encryptBackupJson, isEncryptedBackupEnvelope, type EncryptedBackupEnvelope } from '../utils/encryptedBackup'
 
 const CLOUD_BACKUP_SUMMARY_COLUMNS = 'id,label,schema_version,backup_checksum,flight_count,trip_metadata_count,provider_airport_count,exported_at,created_at,updated_at,device_id,app_version,is_auto'
 const VOLATILE_METADATA_KEYS = new Set([
@@ -21,7 +22,7 @@ interface CloudBackupDatabaseRow {
   user_id?: string
   label?: string | null
   schema_version: number
-  backup_json?: FlightLogBackup
+  backup_json?: FlightLogBackup | EncryptedBackupEnvelope
   backup_checksum?: string | null
   flight_count?: number | null
   trip_metadata_count?: number | null
@@ -51,7 +52,15 @@ export interface CloudBackupSummary {
 }
 
 export interface CloudBackupSnapshot extends CloudBackupSummary {
-  backup: FlightLogBackup
+  backup?: FlightLogBackup
+  encryptedEnvelope?: EncryptedBackupEnvelope
+}
+
+export class EncryptedCloudBackupError extends Error {
+  constructor() {
+    super('This cloud backup is encrypted end-to-end. Enter its passphrase to continue.')
+    this.name = 'EncryptedCloudBackupError'
+  }
 }
 
 export interface CloudRestorePreview {
@@ -104,10 +113,18 @@ function rowToSummary(row: CloudBackupDatabaseRow): CloudBackupSummary {
 
 function rowToSnapshot(row: CloudBackupDatabaseRow): CloudBackupSnapshot {
   if (!row.backup_json) throw new Error('Cloud backup row does not include backup JSON.')
-  return {
-    ...rowToSummary(row),
-    backup: row.backup_json,
+  if (isEncryptedBackupEnvelope(row.backup_json)) {
+    return { ...rowToSummary(row), encryptedEnvelope: row.backup_json }
   }
+  return { ...rowToSummary(row), backup: row.backup_json }
+}
+
+export async function resolveSnapshotBackup(snapshot: CloudBackupSnapshot, passphrase?: string): Promise<FlightLogBackup> {
+  if (snapshot.backup) return snapshot.backup
+  if (!snapshot.encryptedEnvelope) throw new Error('Cloud backup row does not include backup JSON.')
+  if (!passphrase) throw new EncryptedCloudBackupError()
+  const decrypted = await decryptBackupEnvelope(snapshot.encryptedEnvelope, passphrase)
+  return parseFullBackupJson(decrypted)
 }
 
 export function summarizeBackup(backup: FlightLogBackup) {
@@ -163,18 +180,22 @@ export async function createCloudBackupSnapshot(options: {
   deviceId?: string
   appVersion?: string
   isAuto?: boolean
+  encryptPassphrase?: string
 }): Promise<CloudBackupSummary> {
   const client = assertClient(options.client)
   const userId = assertSignedIn(options.userId)
   const summary = summarizeBackup(options.backup)
   const checksum = await computeBackupChecksum(options.backup)
+  const payload: FlightLogBackup | EncryptedBackupEnvelope = options.encryptPassphrase
+    ? await encryptBackupJson(JSON.stringify(options.backup), options.encryptPassphrase)
+    : options.backup
   const { data, error } = await client
     .from('cloud_backups')
     .insert({
       user_id: userId,
       label: options.label?.trim() || null,
       schema_version: summary.schemaVersion,
-      backup_json: options.backup,
+      backup_json: payload,
       backup_checksum: checksum,
       flight_count: summary.flightCount,
       trip_metadata_count: summary.tripMetadataCount,
@@ -194,15 +215,24 @@ export async function verifyCloudBackupSnapshot(options: {
   client: SupabaseLike | null | undefined
   id: string
   expectedChecksum: string
+  passphrase?: string
 }): Promise<CloudBackupVerification> {
   const snapshot = await getCloudBackup(options.client, options.id)
-  const fetchedChecksum = snapshot.checksum ?? await computeBackupChecksum(snapshot.backup)
+  const fetchedChecksum = snapshot.encryptedEnvelope
+    ? (options.passphrase ? await computeBackupChecksum(await resolveSnapshotBackup(snapshot, options.passphrase)) : undefined)
+    : snapshot.backup
+      ? await computeBackupChecksum(snapshot.backup)
+      : snapshot.checksum
   const verified = fetchedChecksum === options.expectedChecksum
   return {
     verified,
     expectedChecksum: options.expectedChecksum,
     fetchedChecksum,
-    warning: verified ? undefined : 'Uploaded backup was saved, but verification checksum did not match.',
+    warning: verified
+      ? undefined
+      : snapshot.encryptedEnvelope && !options.passphrase
+        ? 'Encrypted backup stored; content verification was skipped without the passphrase.'
+        : 'Uploaded backup was saved, but verification checksum did not match.',
   }
 }
 
@@ -261,11 +291,13 @@ export async function restoreCloudBackup(options: {
   id: string
   existingFlights: FlightLogEntry[]
   mode: 'merge' | 'replace'
+  passphrase?: string
 }): Promise<CloudRestorePreview> {
   const snapshot = await getCloudBackup(options.client, options.id)
+  const backup = await resolveSnapshotBackup(snapshot, options.passphrase)
   return {
     snapshot,
-    preview: previewBackupImport(snapshot.backup, options.existingFlights),
+    preview: previewBackupImport(backup, options.existingFlights),
     mode: options.mode,
   }
 }

@@ -11,17 +11,20 @@ import {
   getCloudBackup,
   hasLocalDataChangedSinceCloudBackup,
   listCloudBackups,
+  resolveSnapshotBackup,
   restoreCloudBackup,
   summarizeBackup,
   verifyCloudBackupSnapshot,
+  EncryptedCloudBackupError,
 } from '../lib/cloudBackup'
+import { isEncryptedBackupEnvelope, type EncryptedBackupEnvelope } from '../utils/encryptedBackup'
 import { createFlightLogSupabaseClient, hasSupabaseConfig } from '../lib/supabase'
 
 interface MockCloudRow {
   id: string
   label?: string | null
   schema_version: number
-  backup_json?: FlightLogBackup
+  backup_json?: FlightLogBackup | EncryptedBackupEnvelope
   backup_checksum?: string | null
   flight_count?: number | null
   trip_metadata_count?: number | null
@@ -73,8 +76,10 @@ function backup(metadata: AppMetadata[] = []): FlightLogBackup {
   })
 }
 
-function rowFromBackup(id: string, item: FlightLogBackup, label = 'Cloud backup'): MockCloudRow {
-  const summary = summarizeBackup(item)
+function rowFromBackup(id: string, item: FlightLogBackup | EncryptedBackupEnvelope, label = 'Cloud backup'): MockCloudRow {
+  const summary = isEncryptedBackupEnvelope(item)
+    ? { schemaVersion: 4, flightCount: 1, tripMetadataCount: 1, providerAirportCount: 1, exportedAt: '2026-06-03T12:00:00.000Z' }
+    : summarizeBackup(item)
   return {
     id,
     label,
@@ -101,7 +106,7 @@ function mockClient(rows: MockCloudRow[]) {
       return {
         insert(payload: Record<string, unknown>) {
           store.inserted = payload
-          const insertedBackup = payload.backup_json as FlightLogBackup
+          const insertedBackup = payload.backup_json as FlightLogBackup | EncryptedBackupEnvelope
           return {
             select() {
               return {
@@ -177,15 +182,46 @@ describe('cloud backup utilities', () => {
     const sourceBackup = backup()
     const { client, store } = mockClient([rowFromBackup('backup-1', sourceBackup), rowFromBackup('backup-2', sourceBackup)])
     const fetched = await getCloudBackup(client, 'backup-1')
-    expect(fetched.backup.flights[0].flightNumber).toBe('SQ38')
-    const verified = await verifyCloudBackupSnapshot({ client, id: 'backup-1', expectedChecksum: 'checksum-backup-1' })
+    expect(fetched.backup?.flights[0].flightNumber).toBe('SQ38')
+    const verified = await verifyCloudBackupSnapshot({ client, id: 'backup-1', expectedChecksum: await computeBackupChecksum(sourceBackup) })
     expect(verified.verified).toBe(true)
+    const mismatched = await verifyCloudBackupSnapshot({ client, id: 'backup-1', expectedChecksum: 'not-the-checksum' })
+    expect(mismatched.verified).toBe(false)
     const restore = await restoreCloudBackup({ client, id: 'backup-1', existingFlights: [testFlight()], mode: 'merge' })
     expect(restore.preview.duplicateFlights).toBe(1)
     await deleteCloudBackup(client, 'backup-1')
     expect(store.deletedIds).toEqual(['backup-1'])
     await deleteAllCloudBackups(client)
     expect(store.deletedIds).toEqual(['backup-1', 'backup-2'])
+  })
+
+  it('round-trips encrypted cloud snapshots', async () => {
+    const passphrase = 'correct horse battery staple'
+    const sourceBackup = backup()
+    const { client, store } = mockClient([])
+    await createCloudBackupSnapshot({ client, userId: 'user-1', backup: sourceBackup, label: 'Encrypted', encryptPassphrase: passphrase })
+    expect(isEncryptedBackupEnvelope(store.inserted?.backup_json)).toBe(true)
+    expect(store.inserted).toMatchObject({ flight_count: 1, trip_metadata_count: 1 })
+    expect(JSON.stringify(store.inserted?.backup_json)).not.toContain('SQ38')
+
+    const encryptedRow = rowFromBackup('backup-enc', store.inserted?.backup_json as EncryptedBackupEnvelope, 'Encrypted')
+    const { client: readClient } = mockClient([encryptedRow])
+    const snapshot = await getCloudBackup(readClient, 'backup-enc')
+    expect(snapshot.encryptedEnvelope).toBeDefined()
+    expect(snapshot.backup).toBeUndefined()
+    await expect(resolveSnapshotBackup(snapshot)).rejects.toBeInstanceOf(EncryptedCloudBackupError)
+    const resolved = await resolveSnapshotBackup(snapshot, passphrase)
+    expect(resolved.flights[0].flightNumber).toBe('SQ38')
+
+    const expectedChecksum = await computeBackupChecksum(sourceBackup)
+    const verified = await verifyCloudBackupSnapshot({ client: readClient, id: 'backup-enc', expectedChecksum, passphrase })
+    expect(verified.verified).toBe(true)
+    const unverifiable = await verifyCloudBackupSnapshot({ client: readClient, id: 'backup-enc', expectedChecksum })
+    expect(unverifiable.verified).toBe(false)
+    expect(unverifiable.warning).toContain('passphrase')
+
+    const restore = await restoreCloudBackup({ client: readClient, id: 'backup-enc', existingFlights: [], mode: 'merge', passphrase })
+    expect(restore.preview.flightsToAdd).toBe(1)
   })
 
   it('deletes only backups older than the retention limit', async () => {
