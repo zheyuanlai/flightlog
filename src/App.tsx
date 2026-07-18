@@ -140,6 +140,8 @@ import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, parseQuickAddPa
 import { importDelimitedFlights, importFields, type ImportPreset } from './utils/importers'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
 import { downloadShareCardPng } from './utils/shareImage'
+import { buildAchievements, buildPassportSummary, computeGoalProgress, passportScore, type Achievement, type GoalProgress } from './utils/achievements'
+import { buildStampPages, downloadPassportPagePng, type StampPage } from './utils/passportBook'
 import {
   formatAirportLocalTime,
   formatArrivalLocalTime,
@@ -1859,9 +1861,105 @@ function PunctualityPanel({ title, eyebrow, stats }: { title: string; eyebrow: s
   )
 }
 
+function AchievementsBoard({ achievements }: { achievements: Achievement[] }) {
+  const earned = achievements.filter((achievement) => achievement.earned).length
+  return (
+    <section className="panel passport-pro-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Open Passport Pro</p><h2>Achievements</h2></div><span className="achievement-count">{earned}/{achievements.length} unlocked</span></div>
+      <div className="achievement-grid">
+        {achievements.map((achievement) => {
+          const percent = achievement.target > 0 ? Math.min(100, Math.round((achievement.progress / achievement.target) * 100)) : 0
+          return (
+            <article key={achievement.id} className={`achievement-card tier-${achievement.tier} ${achievement.earned ? 'earned' : 'locked'}`}>
+              <span className="achievement-icon" aria-hidden="true">{achievement.icon}</span>
+              <div className="achievement-body">
+                <strong>{achievement.title}</strong>
+                <p>{achievement.description}</p>
+                {achievement.earned ? (
+                  <small className="achievement-status earned">Unlocked{achievement.earnedDate ? ` · ${achievement.earnedDate}` : ''}</small>
+                ) : (
+                  <>
+                    <div className="achievement-bar"><span style={{ width: `${percent}%` }} /></div>
+                    <small className="achievement-status">{achievement.progress.toLocaleString()} / {achievement.target.toLocaleString()}</small>
+                  </>
+                )}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function GoalProgressPanel({ goals, year }: { goals: GoalProgress[]; year: number }) {
+  if (goals.length === 0) return null
+  return (
+    <section className="panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Goals</p><h2>{year} progress</h2></div><Gauge aria-hidden="true" /></div>
+      <div className="goal-grid">
+        {goals.map((goal) => (
+          <article key={goal.id} className={`goal-card ${goal.met ? 'met' : ''}`}>
+            <span>{goal.label}</span>
+            <strong>{goal.current}/{goal.target}</strong>
+            <div className="goal-bar"><span style={{ width: `${goal.percent}%` }} /></div>
+            <small>{goal.met ? 'Goal reached 🎉' : `${goal.target - goal.current} to go`}</small>
+          </article>
+        ))}
+      </div>
+      <p className="muted small">Set yearly targets in Settings → Passport goals. Progress is computed on this device from your own flights.</p>
+    </section>
+  )
+}
+
+function PassportBook({ pages }: { pages: StampPage[] }) {
+  const [pageIndex, setPageIndex] = useState(0)
+  if (pages.length === 0) {
+    return (
+      <section className="panel passport-book-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Passport book</p><h2>Country stamps</h2></div><Globe2 aria-hidden="true" /></div>
+        <p className="muted">Log a flight with a known airport to start collecting country stamps.</p>
+      </section>
+    )
+  }
+  const safeIndex = Math.max(0, Math.min(pageIndex, pages.length - 1))
+  const current = pages[safeIndex]
+  return (
+    <section className="panel passport-book-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Passport book</p><h2>{current.title} stamps</h2></div><Globe2 aria-hidden="true" /></div>
+      <div className="stamp-page-grid">
+        {current.stamps.map((stamp) => (
+          <article key={stamp.key} className="ink-stamp" style={{ transform: `rotate(${stamp.angleDeg}deg)`, color: stamp.color, borderColor: stamp.color }}>
+            <strong>{stamp.code}</strong>
+            <span>{stamp.country}</span>
+          </article>
+        ))}
+      </div>
+      <div className="passport-book-controls">
+        <button type="button" className="secondary" onClick={() => setPageIndex(Math.max(0, safeIndex - 1))} disabled={safeIndex <= 0}>Previous</button>
+        <span className="muted">Page {current.index + 1} of {pages.length}</span>
+        <button type="button" className="secondary" onClick={() => setPageIndex(Math.min(pages.length - 1, safeIndex + 1))} disabled={safeIndex >= pages.length - 1}>Next</button>
+        <button type="button" onClick={() => void downloadPassportPagePng(current, { totalPages: pages.length })}><Download aria-hidden="true" /> Save page</button>
+      </div>
+    </section>
+  )
+}
+
 function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: TripGroup[] }) {
   const settings = useAppSettings()
   const stats = aggregateStats(flights)
+  const summary = useMemo(() => buildPassportSummary(flights), [flights])
+  const achievements = useMemo(() => buildAchievements(flights), [flights])
+  const stampPages = useMemo(() => buildStampPages(summary.countryList), [summary])
+  const currentYear = new Date().getFullYear()
+  const goalProgress = useMemo(
+    () => computeGoalProgress(flights, {
+      flightsPerYear: settings.goalFlightsPerYear,
+      countriesPerYear: settings.goalCountriesPerYear,
+      airportsPerYear: settings.goalAirportsPerYear,
+    }, currentYear),
+    [flights, settings.goalFlightsPerYear, settings.goalCountriesPerYear, settings.goalAirportsPerYear, currentYear],
+  )
   const overall = overallPunctuality(flights)
   const airlineOnTime = airlinePunctuality(flights)
   const routeOnTime = routePunctuality(flights)
@@ -1873,39 +1971,36 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   const latestTrip = trips[0]
   const longestTrip = trips.slice().sort((a, b) => b.distanceKm - a.distanceKm)[0]
   const mostFlightsTrip = trips.slice().sort((a, b) => b.flights.length - a.flights.length)[0]
-  const shareYear = stats.bestTravelYear ?? new Date().getFullYear().toString()
+  const shareYear = stats.bestTravelYear ?? currentYear.toString()
   const yearlyShareData = flights.length > 0 ? yearlyPassportShareCardData(flights, shareYear, { distanceUnit: settings.distanceUnit }) : undefined
-  const cabinCounts = computedFlights.reduce((counts, flight) => {
-    const cabin = flight.cabin?.trim() || 'Unspecified'
-    counts.set(cabin, (counts.get(cabin) ?? 0) + 1)
-    return counts
-  }, new globalThis.Map<string, number>())
-  const topCabin = [...cabinCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
-  const passportScore = Math.min(100, Math.round(
-    stats.totalFlights * 1.5 +
-    stats.airportsVisited.length * 2 +
-    stats.countriesVisited.length * 3 +
-    stats.airlines.length * 1.5 +
-    trips.length * 2,
-  ))
-  const milestoneCards = [
-    { label: 'Explorer score', value: `${passportScore}/100`, detail: 'A free, local-only progress score from flights, airports, countries, airlines, and trips.' },
-    { label: 'Next country goal', value: `${stats.countriesVisited.length}/25`, detail: `${Math.max(25 - stats.countriesVisited.length, 0)} more ${stats.countriesVisited.length >= 25 ? 'needed to keep the badge' : 'to unlock the 25-country badge'}.` },
-    { label: 'Airport collector', value: `${stats.airportsVisited.length}/50`, detail: `${Math.max(50 - stats.airportsVisited.length, 0)} more unique airports to reach the 50-airport badge.` },
-    { label: 'Cabin profile', value: topCabin ? topCabin[0] : 'Not set', detail: topCabin ? `${topCabin[1]} logged flight${topCabin[1] === 1 ? '' : 's'} in this cabin.` : 'Add cabin details to see your travel style.' },
-  ]
+  const score = passportScore({
+    flights: stats.totalFlights,
+    airports: stats.airportsVisited.length,
+    countries: summary.countryCount,
+    airlines: stats.airlines.length,
+    trips: trips.length,
+  })
   const proInsights = [
+    `Explorer score: ${score}/100 — a free, local-only measure of how broadly you've travelled.`,
     favoriteRoute ? `Signature route: ${favoriteRoute.route} (${favoriteRoute.count} flights).` : 'Log repeat routes to reveal your signature route.',
     stats.shortestFlight ? `Shortest hop: ${routeKey(stats.shortestFlight)} at ${formatDistance(stats.shortestFlight.distanceKm, settings.distanceUnit)}.` : 'Add route coordinates to rank your shortest hop.',
-    stats.bestTravelYear ? `Best travel year: ${stats.bestTravelYear} with ${stats.yearly.find((row) => row.year === stats.bestTravelYear)?.flights ?? 0} flights.` : 'Your best travel year appears after your first flight.',
+    summary.earthLaps >= 0.1 ? `Distance flown wraps the Earth ${summary.earthLaps.toFixed(1)}× (${formatDistance(summary.totalDistanceKm, settings.distanceUnit)}).` : 'Your distance-around-the-world counter grows with every logged leg.',
     longestTrip ? `Biggest trip: ${longestTrip.name} covered ${formatDistance(longestTrip.distanceKm, settings.distanceUnit)}.` : 'Group flights into trips to unlock trip superlatives.',
   ]
   return (
     <main className="page passport">
-      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p><button type="button" className="secondary" disabled={!yearlyShareData}>Share summary</button></div>
+      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p></div>
+      <section className="stats-grid passport-headline">
+        <StatCard icon={Globe2} label="Countries" value={String(summary.countryCount)} />
+        <StatCard icon={Map} label="Continents" value={`${summary.continents.length}/7`} />
+        <StatCard icon={ArrowRight} label="Around the world" value={`${summary.earthLaps.toFixed(1)}×`} />
+        <StatCard icon={CheckCircle2} label="Achievements" value={`${achievements.filter((a) => a.earned).length}/${achievements.length}`} />
+      </section>
+      <GoalProgressPanel goals={goalProgress} year={currentYear} />
+      <AchievementsBoard achievements={achievements} />
+      <PassportBook pages={stampPages} />
       <section className="panel passport-pro-panel">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Open Passport Pro</p><h2>Free achievement board</h2></div><CheckCircle2 aria-hidden="true" /></div>
-        <div className="passport-pro-grid">{milestoneCards.map((card) => <article className="passport-pro-card" key={card.label}><span>{card.label}</span><strong>{card.value}</strong><p>{card.detail}</p></article>)}</div>
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Superlatives</p><h2>Your travel signature</h2></div><CheckCircle2 aria-hidden="true" /></div>
         <ul className="passport-insight-list">{proInsights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
       </section>
       <section className="panel insights-panel">
@@ -2170,6 +2265,13 @@ function SettingsPage({
           <label className="checkbox-row"><input type="checkbox" checked={settings.syncReminderEnabled} onChange={(event) => void onSettingsChange({ syncReminderEnabled: event.target.checked })} /> Sync reminder</label>
           <label className="checkbox-row"><input type="checkbox" checked={settings.upcomingFlightRefreshReminderEnabled} onChange={(event) => void onSettingsChange({ upcomingFlightRefreshReminderEnabled: event.target.checked })} /> Upcoming flight refresh reminder</label>
           <DayOfNotificationsToggle enabled={settings.dayOfNotificationsEnabled} onChange={onSettingsChange} />
+        </article>
+        <article className="panel" id="passport-goals">
+          <p className="eyebrow">Passport goals</p>
+          <p className="muted small">Yearly targets shown on your passport. Set to 0 to hide a goal.</p>
+          <label>Flights per year<input type="number" min={0} max={10000} value={settings.goalFlightsPerYear} onChange={(event) => void onSettingsChange({ goalFlightsPerYear: Number(event.target.value) })} /></label>
+          <label>Countries per year<input type="number" min={0} max={500} value={settings.goalCountriesPerYear} onChange={(event) => void onSettingsChange({ goalCountriesPerYear: Number(event.target.value) })} /></label>
+          <label>Airports per year<input type="number" min={0} max={10000} value={settings.goalAirportsPerYear} onChange={(event) => void onSettingsChange({ goalAirportsPerYear: Number(event.target.value) })} /></label>
         </article>
       </section>
 
@@ -3928,7 +4030,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.7',
+        appVersion: 'v3.0',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })

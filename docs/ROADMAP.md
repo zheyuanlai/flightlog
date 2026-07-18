@@ -116,12 +116,12 @@ Where Flighty/Variflight parity needs richer upstream data; the Worker grows.
 
 Goal: deepen the passport identity and turn FlightLog from an app into a small, forkable platform. Mostly autonomous, with a few decision/credential gates.
 
-### v3.0 — "Passport Pro": identity & achievements (autonomous)
+### v3.0 — "Passport Pro": identity & achievements (autonomous) — ✅ shipped
 
-- **Achievements v2**: continents, red-eyes, longest streaks, hemisphere crossings, equator/date-line crossings — a milestone engine with Canvas-drawn stamp artwork.
-- **Passport book view**: a paginated, page-turn passport reusing the share renderer; each visited country a stamped page.
-- **Streaks & goals**: user-set targets (countries/year, airports) with progress on the dashboard.
-- Tests: milestone engine as pure functions over flight history.
+- **Achievements v2 (shipped)**: a pure milestone engine (`src/utils/achievements.ts`) over flight history — 22 achievements across reach/distance/frequency/special, including continents (derived from an ISO-2 country→continent map), red-eyes, longest consecutive-year streaks, both-hemisphere, and equator/date-line crossings. Each milestone reports tier, progress, earned state, and the date it was first earned.
+- **Passport book view (shipped)**: `src/utils/passportBook.ts` — deterministic stamp visuals (stable rotation + continent ink colour, no randomness) drive both a paginated, page-turn DOM book (one continent block per page) and a Canvas passport-page PNG export.
+- **Streaks & goals (shipped)**: user-set yearly targets (flights / countries / airports) in `AppSettings`, with current-year progress on the passport page.
+- **Tests (shipped)**: 33 pure-function tests (`achievements.test.ts`, `passportBook.test.ts`) over synthetic flight histories with an injected airport resolver.
 
 ### v3.1 — "Sealed sync": end-to-end encrypted Sync Lite records (autonomous build, one design gate)
 
