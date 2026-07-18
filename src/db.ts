@@ -219,7 +219,26 @@ export async function getAllTripMetadata(): Promise<TripMetadata[]> {
 
 export async function saveTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>): Promise<void> {
   const existing = await db.tripMetadata.get(metadata.id)
-  await db.tripMetadata.put(cleanTripMetadata({ ...existing, ...metadata, createdAt: existing?.createdAt ?? metadata.createdAt }))
+  const merged: Partial<TripMetadata> & Pick<TripMetadata, 'id'> = { ...existing, ...metadata, createdAt: existing?.createdAt ?? metadata.createdAt }
+  if (existing?.deletedAt && !('deletedAt' in metadata)) {
+    // A content edit on a tombstoned id (e.g. an auto trip re-formed after its
+    // metadata was converted or deleted) resurrects the record; otherwise the
+    // edit would be written into a tombstone and silently ignored by grouping.
+    merged.deletedAt = undefined
+    merged.deletedByDeviceId = undefined
+    merged.deleteReason = undefined
+    merged.restoredAt = new Date().toISOString()
+    merged.lastOperation = 'restore'
+  }
+  await db.tripMetadata.put(cleanTripMetadata(merged))
+}
+
+export async function mutateTripFlightIds(id: string, mutate: (flightIds: string[]) => string[]): Promise<void> {
+  await db.transaction('rw', db.tripMetadata, async () => {
+    const existing = await db.tripMetadata.get(id)
+    if (!existing?.isManual || existing.deletedAt) return
+    await db.tripMetadata.put(cleanTripMetadata({ ...existing, flightIds: mutate(existing.flightIds ?? []) }))
+  })
 }
 
 export async function bulkSaveTripMetadata(metadata: TripMetadata[]): Promise<void> {

@@ -39,6 +39,18 @@ describe('share card image helpers', () => {
     expect(lines[1].endsWith('…')).toBe(true)
   })
 
+  it('keeps the truncated line within the width after adding the ellipsis', () => {
+    const lines = wrapTextLines('abcdefghi xyz', 9, byLength, 1)
+    expect(lines).toEqual(['abcdefgh…'])
+    expect(byLength(lines[0])).toBeLessThanOrEqual(9)
+  })
+
+  it('never splits a surrogate pair when truncating', () => {
+    const lines = wrapTextLines('😀😀😀😀😀', 8, byLength, 1)
+    expect(lines).toEqual(['😀😀😀…'])
+    expect(lines[0]).not.toContain('�')
+  })
+
   it('handles empty text', () => {
     expect(wrapTextLines('', 10, byLength)).toEqual([])
   })

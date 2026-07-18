@@ -97,6 +97,44 @@ describe('flight lifecycle', () => {
     expect(flightLifecycle(bare, DateTime.fromISO('2026-06-10T12:00:00Z')).phase).toBe('completed')
   })
 
+  it('completes departure-only flights instead of leaving them landed forever', () => {
+    const departureOnly = flight({ scheduledArrivalUtc: undefined })
+    const info = flightLifecycle(departureOnly, DateTime.fromISO('2026-07-10T00:00:00Z'))
+    expect(info.phase).toBe('completed')
+  })
+
+  it('keeps trusting a fresh provider active status past the estimated arrival', () => {
+    const departureOnly = flight({ scheduledArrivalUtc: undefined, liveStatus: { status: 'active' } })
+    const info = flightLifecycle(departureOnly, DateTime.fromISO('2026-06-02T20:00:00Z'))
+    expect(info.phase).toBe('en-route')
+    const muchLater = flightLifecycle(departureOnly, DateTime.fromISO('2026-06-05T20:00:00Z'))
+    expect(muchLater.phase).toBe('completed')
+  })
+
+  it('uses the origin timezone for the date-only fallback', () => {
+    const dateOnly = flight({
+      origin: 'LAX',
+      destination: 'SIN',
+      date: '2026-07-18',
+      scheduledDepartureUtc: undefined,
+      scheduledArrivalUtc: undefined,
+      originTimeZone: undefined,
+      destinationTimeZone: undefined,
+    })
+    const info = flightLifecycle(dateOnly, DateTime.fromISO('2026-07-19T00:30:00Z'))
+    expect(info.phase).toBe('departing-soon')
+  })
+
+  it('does not let an unreliable actual time mask a reliable scheduled instant', () => {
+    const masked = flight({
+      origin: 'ZZZ',
+      originTimeZone: undefined,
+      actualDeparture: '2026-06-02 18:31',
+    })
+    const info = flightLifecycle(masked, DateTime.fromISO('2026-06-02T13:00:00Z'))
+    expect(info.phase).toBe('en-route')
+  })
+
   it('identifies day-of-travel phases', () => {
     expect(isDayOfTravelPhase('en-route')).toBe(true)
     expect(isDayOfTravelPhase('check-in')).toBe(true)
@@ -120,6 +158,27 @@ describe('flight lifecycle', () => {
   it('ignores deleted flights when picking day-of travel', () => {
     const deleted = flight({ id: 'gone', deletedAt: '2026-06-01T00:00:00Z' })
     expect(pickDayOfTravelFlight([deleted], DateTime.fromISO('2026-06-02T14:00:00Z'))).toBeUndefined()
+  })
+
+  it('does not let a months-old diverted flight occupy the day-of card', () => {
+    const oldDiverted = flight({
+      id: 'old-diverted',
+      flightNumber: 'ZZ99',
+      scheduledDepartureUtc: '2026-03-01T12:00:00Z',
+      scheduledArrivalUtc: '2026-03-01T20:00:00Z',
+      liveStatus: { status: 'diverted' },
+    })
+    const currentCheckIn = flight({
+      id: 'current',
+      flightNumber: 'UA60',
+      scheduledDepartureUtc: '2026-07-19T06:00:00Z',
+      scheduledArrivalUtc: '2026-07-19T12:00:00Z',
+    })
+    const picked = pickDayOfTravelFlight([oldDiverted, currentCheckIn], DateTime.fromISO('2026-07-18T14:00:00Z'))
+    expect(picked?.flight.id).toBe('current')
+    expect(picked?.lifecycle.phase).toBe('check-in')
+    const recentDiverted = flight({ id: 'recent-diverted', flightNumber: 'DL5', liveStatus: { status: 'diverted' } })
+    expect(pickDayOfTravelFlight([recentDiverted, currentCheckIn], DateTime.fromISO('2026-06-03T00:00:00Z'))?.flight.id).toBe('recent-diverted')
   })
 
   it('formats short durations and time-ago labels', () => {
@@ -161,6 +220,18 @@ describe('post-flight completion', () => {
     const state = flightCompletionState(flight(), DateTime.fromISO('2026-07-04T02:30:00Z'))
     expect(state.needsCompletion).toBe(false)
     expect(flightCompletionState(flight(), DateTime.fromISO('2026-06-10T02:30:00Z'), { withinDays: 30 }).needsCompletion).toBe(true)
+  })
+
+  it('does not prompt while the provider still reports the flight in the air', () => {
+    const active = flight({ scheduledArrivalUtc: undefined, liveStatus: { status: 'active' } })
+    expect(flightCompletionState(active, DateTime.fromISO('2026-06-02T20:00:00Z')).needsCompletion).toBe(false)
+    expect(flightCompletionState(active, DateTime.fromISO('2026-06-04T02:30:00Z')).needsCompletion).toBe(true)
+  })
+
+  it('waits a full day after departure before prompting when arrival is unknown', () => {
+    const departureOnly = flight({ scheduledArrivalUtc: undefined })
+    expect(flightCompletionState(departureOnly, DateTime.fromISO('2026-06-02T16:00:00Z')).needsCompletion).toBe(false)
+    expect(flightCompletionState(departureOnly, DateTime.fromISO('2026-06-03T13:00:00Z')).needsCompletion).toBe(true)
   })
 
   it('skips flights that never had reliable instants', () => {

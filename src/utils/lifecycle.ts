@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon'
 import type { FlightLogEntry } from '../types'
-import { getBestArrivalTime, getBestDepartureTime, resolveFlightTime, getFlightDepartureLocalDate, type FormattedAirportTime } from './flightTime'
+import { getFlightDepartureLocalDate, getFlightTimeZone, resolveFlightTime } from './flightTime'
 import { formatCountdown } from './upcomingFlights'
 
 export type FlightLifecyclePhase =
@@ -40,6 +40,7 @@ const CHECK_IN_WINDOW_MS = 24 * HOUR_MS
 const DEPARTING_SOON_WINDOW_MS = 3 * HOUR_MS
 const LANDED_RECENT_WINDOW_MS = 24 * HOUR_MS
 const DEFAULT_FLIGHT_DURATION_MS = 2 * HOUR_MS
+const DAY_OF_RECENCY_WINDOW_MS = 48 * HOUR_MS
 
 const PHASE_LABELS: Record<FlightLifecyclePhase, string> = {
   scheduled: 'Scheduled',
@@ -56,10 +57,20 @@ const PHASE_LABELS: Record<FlightLifecyclePhase, string> = {
 const CHECK_IN_HINT = 'Most airlines open online check-in 24 to 48 hours before departure.'
 const DEPARTING_SOON_HINT = 'Leave time for the trip to the airport and security.'
 
-function timeInstantMs(time?: FormattedAirportTime): number | undefined {
-  if (!time?.instantIso) return undefined
-  const instant = DateTime.fromISO(time.instantIso, { setZone: true })
-  return instant.isValid ? instant.toUTC().toMillis() : undefined
+function bestInstantMs(flight: FlightLogEntry, direction: 'departure' | 'arrival'): number | undefined {
+  for (const kind of ['actual', 'estimated', 'scheduled'] as const) {
+    const time = resolveFlightTime(flight, kind, direction)
+    if (!time?.instantIso) continue
+    const instant = DateTime.fromISO(time.instantIso, { setZone: true })
+    if (instant.isValid) return instant.toUTC().toMillis()
+  }
+  return undefined
+}
+
+function originLocalToday(flight: FlightLogEntry, now: DateTime): string {
+  const zone = getFlightTimeZone(flight, 'departure')
+  const localNow = zone ? now.setZone(zone) : now
+  return localNow.toISODate() ?? now.toISODate() ?? ''
 }
 
 export function formatDurationShort(minutes: number): string {
@@ -83,12 +94,12 @@ export function formatTimeAgo(ms: number): string {
   return `${Math.round(minutes / (24 * 60))} days ago`
 }
 
-function landedInfo(arrivalMs: number | undefined, nowMs: number): FlightLifecycleInfo {
+function landedInfo(arrivalMs: number | undefined, nowMs: number, estimated = false): FlightLifecycleInfo {
   if (arrivalMs === undefined) return { phase: 'landed', label: PHASE_LABELS.landed }
   if (nowMs - arrivalMs > LANDED_RECENT_WINDOW_MS) {
-    return { phase: 'completed', label: PHASE_LABELS.completed, detail: `Arrived ${formatTimeAgo(nowMs - arrivalMs)}` }
+    return { phase: 'completed', label: PHASE_LABELS.completed, detail: estimated ? undefined : `Arrived ${formatTimeAgo(nowMs - arrivalMs)}` }
   }
-  return { phase: 'landed', label: PHASE_LABELS.landed, detail: `Landed ${formatTimeAgo(Math.max(0, nowMs - arrivalMs))}` }
+  return { phase: 'landed', label: PHASE_LABELS.landed, detail: estimated ? undefined : `Landed ${formatTimeAgo(Math.max(0, nowMs - arrivalMs))}` }
 }
 
 export function flightLifecycle(flight: FlightLogEntry, now: DateTime = DateTime.utc()): FlightLifecycleInfo {
@@ -102,16 +113,25 @@ export function flightLifecycle(flight: FlightLogEntry, now: DateTime = DateTime
     return { phase: 'diverted', label: PHASE_LABELS.diverted, detail: 'The provider reports this flight as diverted. Check with the airline for the new arrival airport.' }
   }
 
-  const departureMs = timeInstantMs(getBestDepartureTime(flight))
-  const arrivalMs = timeInstantMs(getBestArrivalTime(flight))
+  const departureMs = bestInstantMs(flight, 'departure')
+  const arrivalMs = bestInstantMs(flight, 'arrival')
 
   if (providerStatus === 'landed') {
-    return landedInfo(arrivalMs, nowMs)
+    const fallbackArrivalMs = arrivalMs ?? (departureMs !== undefined ? departureMs + DEFAULT_FLIGHT_DURATION_MS : undefined)
+    if (fallbackArrivalMs === undefined) {
+      const localDate = getFlightDepartureLocalDate(flight)
+      const cutoff = now.minus({ days: 2 }).toISODate() ?? ''
+      if (localDate && cutoff && localDate < cutoff) {
+        return { phase: 'completed', label: PHASE_LABELS.completed, detail: `Flew ${localDate}` }
+      }
+      return { phase: 'landed', label: PHASE_LABELS.landed }
+    }
+    return landedInfo(fallbackArrivalMs, nowMs, arrivalMs === undefined)
   }
 
   if (departureMs === undefined) {
     const localDate = getFlightDepartureLocalDate(flight)
-    const today = now.toISODate() ?? ''
+    const today = originLocalToday(flight, now)
     if (!localDate) return { phase: 'unknown', label: PHASE_LABELS.unknown }
     if (localDate > today) return { phase: 'scheduled', label: PHASE_LABELS.scheduled, detail: `Departs ${localDate}` }
     if (localDate === today) {
@@ -148,11 +168,25 @@ export function flightLifecycle(flight: FlightLogEntry, now: DateTime = DateTime
     }
   }
 
-  return landedInfo(arrivalEstimated ? undefined : effectiveArrivalMs, nowMs)
+  if (providerStatus === 'active' && nowMs - departureMs < LANDED_RECENT_WINDOW_MS) {
+    return { phase: 'en-route', label: PHASE_LABELS['en-route'], detail: 'The provider reports this flight in the air.' }
+  }
+
+  return landedInfo(effectiveArrivalMs, nowMs, arrivalEstimated)
 }
 
 export function isDayOfTravelPhase(phase: FlightLifecyclePhase): boolean {
   return phase === 'check-in' || phase === 'departing-soon' || phase === 'en-route' || phase === 'diverted'
+}
+
+function isFlightTemporallyRecent(flight: FlightLogEntry, now: DateTime, windowMs = DAY_OF_RECENCY_WINDOW_MS): boolean {
+  const nowMs = now.toUTC().toMillis()
+  const referenceMs = bestInstantMs(flight, 'arrival') ?? bestInstantMs(flight, 'departure')
+  if (referenceMs !== undefined) return Math.abs(nowMs - referenceMs) <= windowMs
+  const localDate = getFlightDepartureLocalDate(flight)
+  const earliest = now.minus({ days: 2 }).toISODate() ?? ''
+  const latest = now.plus({ days: 2 }).toISODate() ?? ''
+  return Boolean(localDate && earliest && latest && localDate >= earliest && localDate <= latest)
 }
 
 const DAY_OF_PHASE_RANK: Partial<Record<FlightLifecyclePhase, number>> = {
@@ -172,8 +206,9 @@ export function pickDayOfTravelFlight(flights: FlightLogEntry[], now: DateTime =
     .filter((flight) => !flight.deletedAt)
     .map((flight) => ({ flight, lifecycle: flightLifecycle(flight, now) }))
     .filter((item) => isDayOfTravelPhase(item.lifecycle.phase))
+    .filter((item) => item.lifecycle.phase !== 'diverted' || isFlightTemporallyRecent(item.flight, now))
   if (candidates.length === 0) return undefined
-  const departureSortMs = (flight: FlightLogEntry) => timeInstantMs(getBestDepartureTime(flight)) ?? Number.MAX_SAFE_INTEGER
+  const departureSortMs = (flight: FlightLogEntry) => bestInstantMs(flight, 'departure') ?? Number.MAX_SAFE_INTEGER
   candidates.sort((a, b) =>
     (DAY_OF_PHASE_RANK[a.lifecycle.phase] ?? 9) - (DAY_OF_PHASE_RANK[b.lifecycle.phase] ?? 9)
     || departureSortMs(a.flight) - departureSortMs(b.flight)
@@ -193,12 +228,16 @@ export function flightCompletionState(
   if (providerStatus === 'cancelled') return empty
 
   const nowMs = now.toUTC().toMillis()
-  const departureMs = timeInstantMs(getBestDepartureTime(flight))
-  const bestArrivalMs = timeInstantMs(getBestArrivalTime(flight))
+  const departureMs = bestInstantMs(flight, 'departure')
+  const bestArrivalMs = bestInstantMs(flight, 'arrival')
   const arrivalMs = bestArrivalMs ?? (departureMs !== undefined ? departureMs + DEFAULT_FLIGHT_DURATION_MS : undefined)
   if (arrivalMs === undefined) return empty
 
-  const hasLanded = providerStatus === 'landed' || arrivalMs <= nowMs
+  if (providerStatus === 'active' && departureMs !== undefined && nowMs - departureMs < LANDED_RECENT_WINDOW_MS) return empty
+
+  const hasLanded = providerStatus === 'landed'
+    || (bestArrivalMs !== undefined && bestArrivalMs <= nowMs)
+    || (bestArrivalMs === undefined && departureMs !== undefined && nowMs - departureMs >= LANDED_RECENT_WINDOW_MS)
   if (!hasLanded) return empty
   if (nowMs - arrivalMs > withinDays * 24 * HOUR_MS) return empty
 

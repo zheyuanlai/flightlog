@@ -39,8 +39,11 @@ export function wrapTextLines(text: string, maxWidth: number, measure: MeasureTe
   push(current)
   if (maxLines > 0 && lines.length > maxLines) {
     const kept = lines.slice(0, maxLines)
-    const last = kept[maxLines - 1]
-    kept[maxLines - 1] = measure(`${last}…`) <= maxWidth || last.length === 0 ? `${last}…` : `${last.slice(0, -1)}…`
+    let chars = [...kept[maxLines - 1]]
+    while (chars.length > 0 && measure(`${chars.join('')}…`) > maxWidth) {
+      chars = chars.slice(0, -1)
+    }
+    kept[maxLines - 1] = `${chars.join('')}…`
     return kept
   }
   return lines
@@ -89,9 +92,13 @@ function drawLines(cursor: DrawCursor, lines: string[], size: number, lineHeight
   }
 }
 
-function wrapWithFont(ctx: CanvasRenderingContext2D, text: string, weight: number, size: number, maxWidth: number, maxLines: number, italic = false): string[] {
-  ctx.font = font(weight, size, italic)
-  return wrapTextLines(text, maxWidth, (value) => ctx.measureText(value).width, maxLines)
+function wrapWithFont(ctx: CanvasRenderingContext2D, text: string, weight: number, size: number, maxWidth: number, maxLines: number, options: { italic?: boolean; letterSpacing?: number } = {}): string[] {
+  ctx.font = font(weight, size, options.italic)
+  const spacing = options.letterSpacing ?? 0
+  const measure = spacing > 0
+    ? (value: string) => ctx.measureText(value).width + spacing * [...value].length
+    : (value: string) => ctx.measureText(value).width
+  return wrapTextLines(text, maxWidth, measure, maxLines)
 }
 
 function drawDivider(cursor: DrawCursor): void {
@@ -157,30 +164,36 @@ export function drawShareCard(ctx: CanvasRenderingContext2D, data: ShareCardData
   cursor.y += 8
   drawLines(cursor, subtitleLines, 36, 48, '#cbd5e1', 400)
 
-  const routeLines = wrapWithFont(ctx, data.route || 'Route unavailable', 700, 54, width, 2)
+  const routeLines = wrapWithFont(ctx, data.route || 'Route unavailable', 700, 54, width, 2, { letterSpacing: 2 })
   cursor.y += 24
   drawLines(cursor, routeLines, 54, 68, '#5eead4', 700, { letterSpacing: 2 })
 
   drawDivider(cursor)
 
+  const contentBottom = SHARE_CARD_HEIGHT - 170
   const stats: Array<[string, string]> = [
     ['DATE', data.date || 'Not set'],
     ['DISTANCE', data.distance || 'Not set'],
     ['AIRPORTS', data.airports.slice(0, 6).join(' · ') || 'Not set'],
     ['COUNTRIES', data.countries.slice(0, 5).join(' · ') || 'Not set'],
   ]
-  for (const [label, value] of stats) {
+  const wrapStats = (maxLines: number) => stats.map(([label, value]) => ({ label, lines: wrapWithFont(ctx, value, 600, 40, width, maxLines) }))
+  const statsHeight = (entries: Array<{ lines: string[] }>) => entries.reduce((sum, entry) => sum + 62 + 50 * entry.lines.length, 0)
+  let statEntries = wrapStats(2)
+  if (cursor.y + statsHeight(statEntries) > contentBottom) statEntries = wrapStats(1)
+  for (const entry of statEntries) {
     cursor.y += 26
-    drawLines(cursor, [label], 26, 32, '#94a3b8', 600, { letterSpacing: 4 })
-    const valueLines = wrapWithFont(ctx, value, 600, 40, width, 2)
+    drawLines(cursor, [entry.label], 26, 32, '#94a3b8', 600, { letterSpacing: 4 })
     cursor.y += 4
-    drawLines(cursor, valueLines, 40, 50, '#f8fafc', 600)
+    drawLines(cursor, entry.lines, 40, 50, '#f8fafc', 600)
   }
 
-  if (data.highlights.length > 0) {
+  const highlights = data.highlights.slice(0, 4)
+  if (highlights.length > 0 && cursor.y + 44 + 12 + 40 <= contentBottom) {
     drawDivider(cursor)
-    cursor.y += 18
-    for (const highlight of data.highlights.slice(0, 4)) {
+    cursor.y += 6
+    for (const highlight of highlights) {
+      if (cursor.y + 12 + 40 > contentBottom) break
       const highlightLines = wrapWithFont(ctx, `•  ${highlight}`, 400, 32, width, 1)
       cursor.y += 12
       drawLines(cursor, highlightLines, 32, 40, '#ccfbf1', 400)
@@ -188,10 +201,13 @@ export function drawShareCard(ctx: CanvasRenderingContext2D, data: ShareCardData
   }
 
   if (data.notes) {
-    drawDivider(cursor)
-    const noteLines = wrapWithFont(ctx, `“${data.notes}”`, 400, 30, width, 4, true)
-    cursor.y += 18
-    drawLines(cursor, noteLines, 30, 42, '#cbd5e1', 400, { italic: true })
+    const availableNoteLines = Math.floor((contentBottom - cursor.y - 44 - 18) / 42)
+    if (availableNoteLines >= 1) {
+      drawDivider(cursor)
+      const noteLines = wrapWithFont(ctx, `“${data.notes}”`, 400, 30, width, Math.min(4, availableNoteLines), { italic: true })
+      cursor.y += 18
+      drawLines(cursor, noteLines, 30, 42, '#cbd5e1', 400, { italic: true })
+    }
   }
 
   ctx.font = font(600, 30)
@@ -223,6 +239,10 @@ export async function downloadShareCardPng(data: ShareCardData): Promise<void> {
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = shareCardFileName(data)
+  document.body.appendChild(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.remove()
+  // WebKit resolves blob: navigations asynchronously; revoking on the same
+  // tick can abort the download, so defer cleanup.
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }

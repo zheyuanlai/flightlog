@@ -385,6 +385,11 @@ export function getFlightDepartureLocalDate(flight: FlightLogEntry): string {
   return flight.date
 }
 
+export function getFlightTimeZone(flight: FlightLogEntry, direction: FlightDirection): string | undefined {
+  const zone = flightTimeZone(flight, direction)
+  return isValidTimeZone(zone) ? zone : undefined
+}
+
 export function isFutureOrSameDayFlight(flight: FlightLogEntry, now: DateTime = DateTime.utc()): boolean {
   const departure = getBestDepartureTime(flight)
   if (departure?.instantIso) {

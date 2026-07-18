@@ -49,6 +49,7 @@ import {
   getFlights,
   getProviderAirports,
   getTripMetadata,
+  mutateTripFlightIds,
   LOCAL_SCHEMA_VERSION,
   listLocalSyncEvents,
   migrateLegacyTripNames,
@@ -3196,9 +3197,12 @@ function App() {
   async function handleConvertTripToManual(trip: TripGroup) {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
+    const descriptiveName = trip.flights.length > 0
+      ? `${trip.flights[0].origin} -> ${trip.flights.at(-1)?.destination} · ${trip.startDate}`
+      : undefined
     await saveTripMetadata({
       id,
-      name: trip.metadata?.name ?? trip.name,
+      name: trip.metadata?.name ?? descriptiveName,
       notes: trip.notes,
       type: trip.type,
       isFavorite: trip.isFavorite,
@@ -3223,15 +3227,16 @@ function App() {
 
   async function handleAddFlightToTrip(trip: TripGroup, flightId: string) {
     if (!trip.isManual) return
-    const roster = trip.metadata?.flightIds ?? trip.flights.map((flight) => flight.id)
-    if (roster.includes(flightId)) return
-    await handleTripMetadataUpdate(trip.id, { flightIds: [...roster, flightId] })
+    await mutateTripFlightIds(trip.id, (roster) => (roster.includes(flightId) ? roster : [...roster, flightId]))
+    await loadTripMetadata()
+    await markLocalChange()
   }
 
   async function handleRemoveFlightFromTrip(trip: TripGroup, flightId: string) {
     if (!trip.isManual) return
-    const roster = trip.metadata?.flightIds ?? trip.flights.map((flight) => flight.id)
-    await handleTripMetadataUpdate(trip.id, { flightIds: roster.filter((id) => id !== flightId) })
+    await mutateTripFlightIds(trip.id, (roster) => roster.filter((id) => id !== flightId))
+    await loadTripMetadata()
+    await markLocalChange()
   }
 
   async function handleDeleteTrip(trip: TripGroup) {
@@ -3292,7 +3297,14 @@ function App() {
     const now = new Date().toISOString()
     if (preview.mergeFlights.length > 0) await bulkSaveFlights(preview.mergeFlights)
     await saveProviderAirports(preview.backup.providerAirports)
-    await bulkSaveTripMetadata(preview.backup.tripMetadata)
+    const localTripMetadata = await getAllTripMetadata()
+    const tripMetadataToMerge = preview.backup.tripMetadata.filter((item) => {
+      const local = localTripMetadata.find((row) => row.id === item.id)
+      if (!local) return true
+      if (local.deletedAt && !item.deletedAt) return false
+      return (item.updatedAt ?? '') > (local.updatedAt ?? '')
+    })
+    if (tripMetadataToMerge.length > 0) await bulkSaveTripMetadata(tripMetadataToMerge)
     await bulkSetAppMetadata([
       ...importableAppMetadata(preview.backup.appMetadata),
       { key: 'lastImportAt', value: now, updatedAt: now },
@@ -3665,10 +3677,17 @@ function App() {
     await recordSyncEvent('backup_before_sync', { backups: cloudBackups.length + 1 })
   }
 
+  function rehydrateSyncRecord<T extends { updatedAt?: string }>(record: SyncRecord): T {
+    // record_json is stored without the volatile updatedAt key; restore it from
+    // the row-level timestamp so local writes (and their filters) keep working.
+    const value = record.record as T
+    return { ...value, updatedAt: value.updatedAt ?? record.recordUpdatedAt ?? new Date().toISOString() }
+  }
+
   async function applyRemoteSyncRecords(records: SyncRecord[]) {
-    const remoteFlights = records.filter((record) => record.entityType === 'flight').map((record) => record.record as FlightLogEntry)
-    const remoteTripMetadata = records.filter((record) => record.entityType === 'tripMetadata').map((record) => record.record as TripMetadata)
-    const remoteProviderAirports = records.filter((record) => record.entityType === 'providerAirport').map((record) => record.record as ProviderAirportSnapshot)
+    const remoteFlights = records.filter((record) => record.entityType === 'flight').map((record) => rehydrateSyncRecord<FlightLogEntry>(record))
+    const remoteTripMetadata = records.filter((record) => record.entityType === 'tripMetadata').map((record) => rehydrateSyncRecord<TripMetadata>(record))
+    const remoteProviderAirports = records.filter((record) => record.entityType === 'providerAirport').map((record) => rehydrateSyncRecord<ProviderAirportSnapshot>(record))
     const remoteSettings = records.find((record) => record.entityType === 'appSettings')?.record
     if (remoteFlights.length > 0) await bulkSaveFlights(remoteFlights)
     if (remoteTripMetadata.length > 0) await bulkPutTripMetadataRaw(remoteTripMetadata)
