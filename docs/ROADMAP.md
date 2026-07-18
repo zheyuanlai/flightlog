@@ -82,7 +82,7 @@ Variflight's superpower is data depth; much of it is computable on device from t
 - **Yearly "wrapped"**: a stepped, story-style summary reusing the PNG share-card renderer per slide.
 - Tests: `src/utils/insights.ts` pure functions; arc math pure and covered.
 
-### v2.5 — "Doors open": import/export ecosystem (mostly autonomous)
+### v2.5 — "Doors open": import/export ecosystem (mostly autonomous) — ✅ shipped (share-card themes deferred)
 
 Lower switching cost from other trackers.
 
