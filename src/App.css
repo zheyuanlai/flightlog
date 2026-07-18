@@ -43,10 +43,38 @@
 :root[data-theme="dark"] .conflict-diff-grid div,
 :root[data-theme="dark"] .compact-device,
 :root[data-theme="dark"] .mobile-more-sheet,
-:root[data-theme="dark"] .share-card {
+:root[data-theme="dark"] .share-card,
+:root[data-theme="dark"] .day-of-panel,
+:root[data-theme="dark"] .completion-item,
+:root[data-theme="dark"] .passport-pro-panel,
+:root[data-theme="dark"] .passport-pro-card {
   border-color: rgba(148, 163, 184, 0.22);
   background: rgba(15, 23, 42, 0.9);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .day-of-panel {
+  border-color: rgba(20, 184, 166, 0.4);
+  background:
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.18), transparent 40%),
+    rgba(15, 23, 42, 0.92);
+}
+
+:root[data-theme="dark"] .day-of-detail {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .lifecycle-progress {
+  background: rgba(148, 163, 184, 0.25);
+}
+
+:root[data-theme="dark"] .passport-pro-card strong {
+  color: #f8fafc;
+}
+
+:root[data-theme="dark"] .passport-pro-card p,
+:root[data-theme="dark"] .passport-insight-list {
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] input,
@@ -1350,4 +1378,97 @@ a {
   margin: 16px 0 0;
   padding-left: 18px;
   color: #334155;
+}
+
+.lifecycle-chip {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: #475569;
+  background: #e2e8f0;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.lifecycle-chip.phase-check-in {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.lifecycle-chip.phase-departing-soon {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.lifecycle-chip.phase-en-route,
+.lifecycle-chip.phase-landed {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.lifecycle-chip.phase-cancelled,
+.lifecycle-chip.phase-diverted {
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.day-of-panel {
+  border-color: rgba(20, 184, 166, 0.4);
+  background:
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.16), transparent 40%),
+    #f0fdfa;
+}
+
+.day-of-detail {
+  margin: 10px 0 4px;
+  color: #0f766e;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.lifecycle-progress {
+  height: 10px;
+  margin: 10px 0 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.lifecycle-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f766e, #14b8a6);
+}
+
+.completion-item {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.completion-item h3 {
+  margin: 2px 0;
+}
+
+.completion-item .actions {
+  margin-top: 0;
+}
+
+.completion-notice .actions {
+  margin-top: 10px;
+}
+
+.lifecycle-panel .day-of-detail {
+  font-size: 17px;
 }

@@ -137,6 +137,15 @@ import {
 } from './utils/flightTime'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
+import {
+  flightCompletionState,
+  flightLifecycle,
+  listFlightsNeedingCompletion,
+  pickDayOfTravelFlight,
+  type DayOfTravelFlight,
+  type FlightCompletionPrompt,
+  type FlightLifecycleInfo,
+} from './utils/lifecycle'
 import './App.css'
 
 type FlightFormState = Record<(typeof csvColumns)[number], string>
@@ -860,11 +869,15 @@ function UpcomingFlightCard({ info, isOnline, onOpen, onRefresh }: { info: Upcom
   const detailsUrl = `${window.location.href.split('#')[0]}#/flights/${encodeURIComponent(flight.id)}`
   const calendar = buildCalendarEventDetails(flight, detailsUrl)
   const links = externalFlightLinks(flight)
+  const lifecycle = flightLifecycle(flight)
   return (
     <article className={`flight-card upcoming-card ${info.isSameDay ? 'same-day' : ''}`}>
       <div className="flight-main">
         <div><p className="eyebrow">{info.countdownLabel}</p><h3>{flight.flightNumber} - {airline?.name ?? flight.airline}</h3></div>
-        <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
+        <div className="status-stack">
+          <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
+          <LifecycleChip lifecycle={lifecycle} />
+        </div>
       </div>
       <div className="route-line"><strong>{flight.origin}</strong><span>{flight.originAirport?.city || flight.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{flight.destinationAirport?.city || flight.destinationAirport?.name}</span></div>
       <dl className="meta-grid">
@@ -886,6 +899,110 @@ function UpcomingFlightCard({ info, isOnline, onOpen, onRefresh }: { info: Upcom
   )
 }
 
+function LifecycleChip({ lifecycle }: { lifecycle: FlightLifecycleInfo }) {
+  return <span className={`lifecycle-chip phase-${lifecycle.phase}`}>{lifecycle.label}</span>
+}
+
+function LifecycleProgress({ percent }: { percent: number }) {
+  return (
+    <div className="lifecycle-progress" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} aria-label="Flight progress">
+      <div className="lifecycle-progress-bar" style={{ width: `${percent}%` }} />
+    </div>
+  )
+}
+
+function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTravelFlight; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
+  const settings = useAppSettings()
+  const displayOptions = flightTimeDisplayOptions(settings)
+  const { flight, lifecycle } = item
+  const checkInLink = externalFlightLinks(flight).find((link) => link.label.toLowerCase().includes('check-in'))
+  return (
+    <section className="panel day-of-panel">
+      <div className="flight-main">
+        <div>
+          <p className="eyebrow">Day of travel</p>
+          <h2>{flight.flightNumber} · {flight.origin} {'->'} {flight.destination}</h2>
+        </div>
+        <LifecycleChip lifecycle={lifecycle} />
+      </div>
+      {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
+      {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      <dl className="meta-grid">
+        <div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div>
+        <div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div>
+        <div><dt>Terminal / gate</dt><dd>{[flight.liveStatus?.departureTerminal, flight.liveStatus?.departureGate].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+        <div><dt>Cabin / seat</dt><dd>{[flight.cabin, flight.seat].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+      </dl>
+      {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      <div className="actions">
+        <button type="button" onClick={() => onOpen(flight)}>View flight</button>
+        <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => void onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
+        {(lifecycle.phase === 'check-in' || lifecycle.phase === 'departing-soon') && checkInLink && <a className="button-link secondary-link" href={checkInLink.url} target="_blank" rel="noopener noreferrer">{checkInLink.label}</a>}
+      </div>
+    </section>
+  )
+}
+
+function CompletionPromptsPanel({ prompts, isOnline, onEdit, onDismiss, onRefresh }: {
+  prompts: FlightCompletionPrompt[]
+  isOnline: boolean
+  onEdit: (flight: FlightLogEntry) => void
+  onDismiss: (flight: FlightLogEntry) => Promise<void>
+  onRefresh: (flight: FlightLogEntry) => Promise<void>
+}) {
+  return (
+    <section className="panel completion-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Just landed</p><h2>Complete your flight log</h2></div></div>
+      <p className="muted">Confirm details for recently landed flights so your passport stats stay accurate.</p>
+      <div className="stack compact-stack">
+        {prompts.map((prompt) => (
+          <article className="completion-item" key={prompt.flight.id}>
+            <div>
+              <p className="eyebrow">Landed {prompt.arrivedAgoLabel}</p>
+              <h3>{prompt.flight.flightNumber} · {prompt.flight.origin} {'->'} {prompt.flight.destination}</h3>
+              <p className="muted">Missing {prompt.missing.join(', ')}.</p>
+            </div>
+            <div className="actions">
+              <button type="button" onClick={() => onEdit(prompt.flight)}>Confirm details</button>
+              <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(prompt.flight.lastFetchedAt)} onClick={() => void onRefresh(prompt.flight)}><RefreshCw aria-hidden="true" /> Refresh from provider</button>
+              <button type="button" className="ghost" onClick={() => void onDismiss(prompt.flight)}>Dismiss</button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function FlightLifecycleSection({ flight, onEdit, onDismissCompletion }: {
+  flight: FlightLogEntry
+  onEdit: (flight: FlightLogEntry) => void
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
+}) {
+  const lifecycle = flightLifecycle(flight)
+  const completion = flightCompletionState(flight)
+  return (
+    <section className="panel lifecycle-panel">
+      <div className="section-heading compact-heading">
+        <div><p className="eyebrow">Lifecycle</p><h3>Flight assistant</h3></div>
+        <LifecycleChip lifecycle={lifecycle} />
+      </div>
+      {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
+      {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      {completion.needsCompletion && (
+        <div className="notice completion-notice">
+          <p><strong>Complete this flight:</strong> missing {completion.missing.join(', ')}.</p>
+          <div className="actions">
+            <button type="button" onClick={() => onEdit(flight)}>Confirm details</button>
+            <button type="button" className="ghost" onClick={() => void onDismissCompletion(flight)}>Dismiss</button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function Dashboard({
   flights,
   loading,
@@ -897,6 +1014,8 @@ function Dashboard({
   onAddDemo,
   onQuickAdd,
   onOpenFlight,
+  onEditFlight,
+  onDismissCompletion,
   onRefresh,
   onCompareSync,
 }: {
@@ -916,13 +1035,22 @@ function Dashboard({
   onAddDemo: () => Promise<void>
   onQuickAdd: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
+  onEditFlight: (flight: FlightLogEntry) => void
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
   onCompareSync?: () => Promise<void>
 }) {
   const settings = useAppSettings()
+  const [, setLifecycleTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setLifecycleTick((tick) => tick + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
   const stats = aggregateStats(flights)
   const warning = settings.backupReminderEnabled ? backupAgeWarning(flights, appMetadata, undefined, settings.backupAgeThresholdDays) : undefined
   const upcoming = listUpcomingFlights(flights).slice(0, 6)
+  const dayOfTravel = pickDayOfTravelFlight(flights)
+  const completionPrompts = listFlightsNeedingCompletion(flights).slice(0, 3)
   const recentFlights = flights.slice(0, 3).map(computeFlight)
   const syncNeedsAttention = ['conflicts', 'deletions', 'error', 'local-changes', 'cloud-changes'].includes(syncStatus.kind)
   const passportHighlights = [
@@ -966,6 +1094,8 @@ function Dashboard({
           <div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div>
         </EmptyState>
       ) : null}
+      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} />}
+      {completionPrompts.length > 0 && <CompletionPromptsPanel prompts={completionPrompts} isOnline={isOnline} onEdit={onEditFlight} onDismiss={onDismissCompletion} onRefresh={onRefresh} />}
       <section className="panel upcoming-panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
         <div className="stack">
@@ -1283,6 +1413,7 @@ function FlightDetailPage({
   onEdit,
   onDelete,
   onRefresh,
+  onDismissCompletion,
 }: {
   flight?: FlightLogEntry
   airportVersion: number
@@ -1291,6 +1422,7 @@ function FlightDetailPage({
   onEdit: (flight: FlightLogEntry) => void
   onDelete: (id: string) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
@@ -1355,6 +1487,7 @@ function FlightDetailPage({
           <button type="button" className="secondary" onClick={() => downloadFile(`${flight.flightNumber}-${flight.id}.json`, JSON.stringify({ flight }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export this flight as JSON</button>
         </div>
       </section>
+      <FlightLifecycleSection flight={flight} onEdit={onEdit} onDismissCompletion={onDismissCompletion} />
       <div className="two-columns detail-columns">
         <FlightTimeline flight={flight} />
         <RouteMapPreview flight={computed} />
@@ -2970,6 +3103,13 @@ function App() {
     if (savedFlightId) navigateToFlight(savedFlightId)
   }
 
+  async function handleDismissCompletion(flight: FlightLogEntry) {
+    await saveFlight({ ...flight, completionDismissedAt: new Date().toISOString() })
+    await loadFlights()
+    await markLocalChange()
+    setToast(`Completion reminder dismissed for ${flight.flightNumber}.`)
+  }
+
   async function handleTripMetadataUpdate(tripId: string, patch: Partial<TripMetadata>) {
     await saveTripMetadata({ id: tripId, ...patch })
     await loadTripMetadata()
@@ -3743,9 +3883,9 @@ function App() {
       {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       {showForm && <FlightForm editing={editing} isOnline={isOnline} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
-      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
+      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
