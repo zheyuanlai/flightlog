@@ -162,6 +162,8 @@ export interface TripMetadata extends TombstoneMetadata {
   notes?: string
   type: TripType
   isFavorite: boolean
+  isManual?: boolean
+  flightIds?: string[]
   createdAt: string
   updatedAt: string
 }
@@ -270,6 +272,7 @@ export interface FlightLogEntry extends TombstoneMetadata {
   destinationAirportSnapshot?: ProviderAirportSnapshot
   providerWarnings?: string[]
   lookupDateRole?: LookupDateRole
+  completionDismissedAt?: string
   createdAt: string
   updatedAt: string
 }

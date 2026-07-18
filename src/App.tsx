@@ -49,6 +49,7 @@ import {
   getFlights,
   getProviderAirports,
   getTripMetadata,
+  mutateTripFlightIds,
   LOCAL_SCHEMA_VERSION,
   listLocalSyncEvents,
   migrateLegacyTripNames,
@@ -126,6 +127,7 @@ import { initialOnlineStatus, offlineActionMessage } from './utils/offline'
 import { installGuidance, isStandaloneDisplay } from './utils/pwa'
 import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, routeFromHashValue, type AppRoute, type Page } from './utils/navigation'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
+import { downloadShareCardPng } from './utils/shareImage'
 import {
   formatAirportLocalTime,
   formatArrivalLocalTime,
@@ -136,6 +138,15 @@ import {
 } from './utils/flightTime'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
+import {
+  flightCompletionState,
+  flightLifecycle,
+  listFlightsNeedingCompletion,
+  pickDayOfTravelFlight,
+  type DayOfTravelFlight,
+  type FlightCompletionPrompt,
+  type FlightLifecycleInfo,
+} from './utils/lifecycle'
 import './App.css'
 
 type FlightFormState = Record<(typeof csvColumns)[number], string>
@@ -484,11 +495,25 @@ function ShareCardPreview({
   includeNotes?: boolean
   onIncludeNotesChange?: (includeNotes: boolean) => void
 }) {
+  const [exporting, setExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState('')
+  async function handleExport() {
+    setExporting(true)
+    setExportMessage('')
+    try {
+      await downloadShareCardPng(data)
+      setExportMessage('PNG downloaded.')
+    } catch (error) {
+      setExportMessage(error instanceof Error ? error.message : 'PNG export failed in this browser.')
+    } finally {
+      setExporting(false)
+    }
+  }
   return (
     <section className="panel share-panel">
       <div className="section-heading compact-heading">
-        <div><p className="eyebrow">Share card</p><h3>HTML preview</h3></div>
-        <span className="status scheduled">v2.0</span>
+        <div><p className="eyebrow">Share card</p><h3>Preview</h3></div>
+        <span className="status scheduled">v2.1</span>
       </div>
       <article className={`share-card share-card-${data.kind}`} aria-label={`${data.title} share card`}>
         <div className="share-card-brand"><Plane aria-hidden="true" /><span>{data.brand}</span></div>
@@ -508,9 +533,10 @@ function ShareCardPreview({
         {onIncludeNotesChange && (
           <label className="checkbox-row inline-checkbox"><input type="checkbox" checked={Boolean(includeNotes)} onChange={(event) => onIncludeNotesChange(event.target.checked)} /> Include notes</label>
         )}
-        <button type="button" className="secondary" disabled title="PNG export is planned for v2.1"><ImageIcon aria-hidden="true" /> Export image</button>
+        <button type="button" className="secondary" disabled={exporting} onClick={() => void handleExport()}><ImageIcon aria-hidden="true" /> {exporting ? 'Exporting…' : 'Export PNG'}</button>
       </div>
-      <p className="muted">PNG export is deferred to v2.1 to avoid adding a heavy image dependency to the initial bundle.</p>
+      {exportMessage && <p className="muted" role="status">{exportMessage}</p>}
+      <p className="muted">PNG export renders the card locally in your browser; nothing is uploaded.</p>
     </section>
   )
 }
@@ -844,11 +870,15 @@ function UpcomingFlightCard({ info, isOnline, onOpen, onRefresh }: { info: Upcom
   const detailsUrl = `${window.location.href.split('#')[0]}#/flights/${encodeURIComponent(flight.id)}`
   const calendar = buildCalendarEventDetails(flight, detailsUrl)
   const links = externalFlightLinks(flight)
+  const lifecycle = flightLifecycle(flight)
   return (
     <article className={`flight-card upcoming-card ${info.isSameDay ? 'same-day' : ''}`}>
       <div className="flight-main">
         <div><p className="eyebrow">{info.countdownLabel}</p><h3>{flight.flightNumber} - {airline?.name ?? flight.airline}</h3></div>
-        <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
+        <div className="status-stack">
+          <span className={`status ${flight.liveStatus?.status ?? 'unknown'}`}>{flight.liveStatus?.status ?? 'manual'}</span>
+          <LifecycleChip lifecycle={lifecycle} />
+        </div>
       </div>
       <div className="route-line"><strong>{flight.origin}</strong><span>{flight.originAirport?.city || flight.originAirport?.name}</span><ArrowRight aria-hidden="true" /><strong>{flight.destination}</strong><span>{flight.destinationAirport?.city || flight.destinationAirport?.name}</span></div>
       <dl className="meta-grid">
@@ -870,6 +900,110 @@ function UpcomingFlightCard({ info, isOnline, onOpen, onRefresh }: { info: Upcom
   )
 }
 
+function LifecycleChip({ lifecycle }: { lifecycle: FlightLifecycleInfo }) {
+  return <span className={`lifecycle-chip phase-${lifecycle.phase}`}>{lifecycle.label}</span>
+}
+
+function LifecycleProgress({ percent }: { percent: number }) {
+  return (
+    <div className="lifecycle-progress" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} aria-label="Flight progress">
+      <div className="lifecycle-progress-bar" style={{ width: `${percent}%` }} />
+    </div>
+  )
+}
+
+function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTravelFlight; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
+  const settings = useAppSettings()
+  const displayOptions = flightTimeDisplayOptions(settings)
+  const { flight, lifecycle } = item
+  const checkInLink = externalFlightLinks(flight).find((link) => link.label.toLowerCase().includes('check-in'))
+  return (
+    <section className="panel day-of-panel">
+      <div className="flight-main">
+        <div>
+          <p className="eyebrow">Day of travel</p>
+          <h2>{flight.flightNumber} · {flight.origin} {'->'} {flight.destination}</h2>
+        </div>
+        <LifecycleChip lifecycle={lifecycle} />
+      </div>
+      {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
+      {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      <dl className="meta-grid">
+        <div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div>
+        <div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div>
+        <div><dt>Terminal / gate</dt><dd>{[flight.liveStatus?.departureTerminal, flight.liveStatus?.departureGate].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+        <div><dt>Cabin / seat</dt><dd>{[flight.cabin, flight.seat].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
+      </dl>
+      {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      <div className="actions">
+        <button type="button" onClick={() => onOpen(flight)}>View flight</button>
+        <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => void onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
+        {(lifecycle.phase === 'check-in' || lifecycle.phase === 'departing-soon') && checkInLink && <a className="button-link secondary-link" href={checkInLink.url} target="_blank" rel="noopener noreferrer">{checkInLink.label}</a>}
+      </div>
+    </section>
+  )
+}
+
+function CompletionPromptsPanel({ prompts, isOnline, onEdit, onDismiss, onRefresh }: {
+  prompts: FlightCompletionPrompt[]
+  isOnline: boolean
+  onEdit: (flight: FlightLogEntry) => void
+  onDismiss: (flight: FlightLogEntry) => Promise<void>
+  onRefresh: (flight: FlightLogEntry) => Promise<void>
+}) {
+  return (
+    <section className="panel completion-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Just landed</p><h2>Complete your flight log</h2></div></div>
+      <p className="muted">Confirm details for recently landed flights so your passport stats stay accurate.</p>
+      <div className="stack compact-stack">
+        {prompts.map((prompt) => (
+          <article className="completion-item" key={prompt.flight.id}>
+            <div>
+              <p className="eyebrow">Landed {prompt.arrivedAgoLabel}</p>
+              <h3>{prompt.flight.flightNumber} · {prompt.flight.origin} {'->'} {prompt.flight.destination}</h3>
+              <p className="muted">Missing {prompt.missing.join(', ')}.</p>
+            </div>
+            <div className="actions">
+              <button type="button" onClick={() => onEdit(prompt.flight)}>Confirm details</button>
+              <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(prompt.flight.lastFetchedAt)} onClick={() => void onRefresh(prompt.flight)}><RefreshCw aria-hidden="true" /> Refresh from provider</button>
+              <button type="button" className="ghost" onClick={() => void onDismiss(prompt.flight)}>Dismiss</button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function FlightLifecycleSection({ flight, onEdit, onDismissCompletion }: {
+  flight: FlightLogEntry
+  onEdit: (flight: FlightLogEntry) => void
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
+}) {
+  const lifecycle = flightLifecycle(flight)
+  const completion = flightCompletionState(flight)
+  return (
+    <section className="panel lifecycle-panel">
+      <div className="section-heading compact-heading">
+        <div><p className="eyebrow">Lifecycle</p><h3>Flight assistant</h3></div>
+        <LifecycleChip lifecycle={lifecycle} />
+      </div>
+      {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
+      {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      {completion.needsCompletion && (
+        <div className="notice completion-notice">
+          <p><strong>Complete this flight:</strong> missing {completion.missing.join(', ')}.</p>
+          <div className="actions">
+            <button type="button" onClick={() => onEdit(flight)}>Confirm details</button>
+            <button type="button" className="ghost" onClick={() => void onDismissCompletion(flight)}>Dismiss</button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function Dashboard({
   flights,
   loading,
@@ -881,6 +1015,8 @@ function Dashboard({
   onAddDemo,
   onQuickAdd,
   onOpenFlight,
+  onEditFlight,
+  onDismissCompletion,
   onRefresh,
   onCompareSync,
 }: {
@@ -900,13 +1036,22 @@ function Dashboard({
   onAddDemo: () => Promise<void>
   onQuickAdd: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
+  onEditFlight: (flight: FlightLogEntry) => void
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
   onCompareSync?: () => Promise<void>
 }) {
   const settings = useAppSettings()
+  const [, setLifecycleTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setLifecycleTick((tick) => tick + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
   const stats = aggregateStats(flights)
   const warning = settings.backupReminderEnabled ? backupAgeWarning(flights, appMetadata, undefined, settings.backupAgeThresholdDays) : undefined
   const upcoming = listUpcomingFlights(flights).slice(0, 6)
+  const dayOfTravel = pickDayOfTravelFlight(flights)
+  const completionPrompts = listFlightsNeedingCompletion(flights).slice(0, 3)
   const recentFlights = flights.slice(0, 3).map(computeFlight)
   const syncNeedsAttention = ['conflicts', 'deletions', 'error', 'local-changes', 'cloud-changes'].includes(syncStatus.kind)
   const passportHighlights = [
@@ -950,6 +1095,8 @@ function Dashboard({
           <div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div>
         </EmptyState>
       ) : null}
+      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} />}
+      {completionPrompts.length > 0 && <CompletionPromptsPanel prompts={completionPrompts} isOnline={isOnline} onEdit={onEditFlight} onDismiss={onDismissCompletion} onRefresh={onRefresh} />}
       <section className="panel upcoming-panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
         <div className="stack">
@@ -1167,13 +1314,19 @@ function TripCard({ trip, onOpen, onUpdate }: { trip: TripGroup; onOpen: (trip: 
           <p className="eyebrow">{trip.startDate} to {trip.endDate}</p>
           <input className="inline-name-input" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
         </div>
-        <span className="status scheduled">{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
+        <span className="status scheduled">{trip.isManual ? 'Editable · ' : ''}{trip.isFavorite ? 'Pinned · ' : ''}{trip.flights.length} flight{trip.flights.length === 1 ? '' : 's'}</span>
       </div>
-      <p className="trip-route-chain">{trip.routeSummary}</p>
-      <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
+      {trip.flights.length > 0 ? (
+        <>
+          <p className="trip-route-chain">{trip.routeSummary}</p>
+          <div className="route-line"><strong>{trip.routeSummary.split(' -> ')[0]}</strong><span>{trip.routeSummary}</span><ArrowRight aria-hidden="true" /><strong>{trip.routeSummary.split(' -> ').at(-1)}</strong><span>{trip.countries.join(', ') || 'Countries unavailable'}</span></div>
+        </>
+      ) : (
+        <p className="empty-inline">No flights in this trip yet. Open it to add flights.</p>
+      )}
       <dl className="meta-grid">
         <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
-        <div><dt>Airports</dt><dd>{trip.airports.join(', ')}</dd></div>
+        <div><dt>Airports</dt><dd>{trip.airports.join(', ') || 'Not set'}</dd></div>
         <div><dt>Countries</dt><dd>{trip.countries.join(', ') || 'Not set'}</dd></div>
         <div><dt>Trip type</dt><dd>{trip.type}</dd></div>
       </dl>
@@ -1188,17 +1341,23 @@ function TripsPage({
   trips,
   onOpen,
   onUpdate,
+  onCreateTrip,
 }: {
   trips: TripGroup[]
   onOpen: (trip: TripGroup) => void
   onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
+  onCreateTrip: () => Promise<void>
 }) {
   return (
     <main className="page">
-      <div className="section-heading"><div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div></div>
+      <div className="section-heading">
+        <div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div>
+        <button type="button" onClick={() => void onCreateTrip()}><Plus aria-hidden="true" /> New trip</button>
+      </div>
+      <p className="muted">Flights within three days group automatically. Editable trips let you choose exactly which flights belong together.</p>
       <div className="stack">
         {trips.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={onOpen} onUpdate={onUpdate} />)}
-        {trips.length === 0 && <p className="empty-inline">Log flights to build your first trip.</p>}
+        {trips.length === 0 && <p className="empty-inline">Log flights to build your first trip, or create one manually.</p>}
       </div>
     </main>
   )
@@ -1206,22 +1365,44 @@ function TripsPage({
 
 function TripDetailPage({
   trip,
+  trips,
+  flights,
   onBack,
   onOpenFlight,
   onUpdate,
+  onAddFlight,
+  onRemoveFlight,
+  onConvertToManual,
+  onDeleteTrip,
 }: {
   trip?: TripGroup
+  trips: TripGroup[]
+  flights: FlightLogEntry[]
   onBack: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
   onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
+  onAddFlight: (trip: TripGroup, flightId: string) => Promise<void>
+  onRemoveFlight: (trip: TripGroup, flightId: string) => Promise<void>
+  onConvertToManual: (trip: TripGroup) => Promise<void>
+  onDeleteTrip: (trip: TripGroup) => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const [includeShareNotes, setIncludeShareNotes] = useState(false)
+  const [flightQuery, setFlightQuery] = useState('')
   if (!trip) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Trip not found</h2><button type="button" onClick={onBack}>Back to trips</button></section></main>
   }
   const shareData = tripShareCardData(trip, { distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
+  const memberIds = new Set(trip.flights.map((flight) => flight.id))
+  const claimedElsewhere = new Set(trips.filter((other) => other.isManual && other.id !== trip.id).flatMap((other) => other.metadata?.flightIds ?? []))
+  const query = flightQuery.trim().toLowerCase()
+  const candidateFlights = trip.isManual
+    ? flights
+        .filter((flight) => !memberIds.has(flight.id) && !claimedElsewhere.has(flight.id))
+        .filter((flight) => !query || `${flight.flightNumber} ${flight.airline} ${flight.origin} ${flight.destination} ${getFlightDepartureLocalDate(flight)}`.toLowerCase().includes(query))
+        .slice(0, 8)
+    : []
   return (
     <main className="page detail-page">
       <div className="section-heading">
@@ -1233,7 +1414,7 @@ function TripDetailPage({
       </div>
       <section className="panel">
         <input className="inline-name-input large" value={trip.name} onChange={(event) => onUpdate(trip.id, { name: event.target.value })} aria-label="Trip name" />
-        <div className="route-mini-map trip-route"><span>{trip.routeSummary}</span></div>
+        <div className="route-mini-map trip-route"><span>{trip.routeSummary || 'No flights yet'}</span></div>
         <dl className="meta-grid">
           <div><dt>Flights</dt><dd>{trip.flights.length}</dd></div>
           <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
@@ -1250,10 +1431,44 @@ function TripDetailPage({
           <article className="flight-card" key={flight.id}>
             <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className="status scheduled">{flight.origin}{' -> '}{flight.destination}</span></div>
             <dl className="meta-grid"><div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div><div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div><div><dt>Distance</dt><dd>{formatDistance(flight.distanceKm, settings.distanceUnit)}</dd></div></dl>
-            <div className="actions"><button type="button" onClick={() => onOpenFlight(flight)}>View flight</button></div>
+            <div className="actions">
+              <button type="button" onClick={() => onOpenFlight(flight)}>View flight</button>
+              {trip.isManual && <button type="button" className="ghost" onClick={() => void onRemoveFlight(trip, flight.id)}><X aria-hidden="true" /> Remove from trip</button>}
+            </div>
           </article>
         ))}
+        {trip.isManual && trip.flights.length === 0 && <p className="empty-inline">No flights in this trip yet. Add flights below.</p>}
       </div>
+      {trip.isManual ? (
+        <section className="panel trip-editor-panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Trip editor</p><h3>Add flights to this trip</h3></div></div>
+          <p className="muted">This trip is editable: it keeps exactly the flights you add. Removed flights return to automatic grouping.</p>
+          <label className="wide">Search your flights<input className="search" value={flightQuery} onChange={(event) => setFlightQuery(event.target.value)} placeholder="Flight number, airline, route, or date" /></label>
+          <div className="stack compact-stack">
+            {candidateFlights.map((flight) => (
+              <article className="trip-candidate" key={flight.id}>
+                <div>
+                  <p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p>
+                  <h4>{flight.flightNumber} · {flight.origin} {'->'} {flight.destination}</h4>
+                  <p className="muted">{flight.airline}</p>
+                </div>
+                <button type="button" className="secondary" onClick={() => void onAddFlight(trip, flight.id)}><Plus aria-hidden="true" /> Add</button>
+              </article>
+            ))}
+            {candidateFlights.length === 0 && <p className="empty-inline">{query ? 'No available flights match this search.' : 'All of your flights are already in this or another editable trip.'}</p>}
+          </div>
+          <div className="actions trip-editor-danger">
+            <button type="button" className="ghost danger" onClick={() => void onDeleteTrip(trip)}><Trash2 aria-hidden="true" /> Delete this trip</button>
+          </div>
+          <p className="muted">Deleting a trip never deletes flights; they simply regroup automatically.</p>
+        </section>
+      ) : (
+        <section className="panel trip-editor-panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Trip editor</p><h3>Make this trip editable</h3></div></div>
+          <p className="muted">This trip was grouped automatically from flights within three days of each other. Convert it to an editable trip to add or remove flights manually; its name, notes, and pin carry over.</p>
+          <div className="actions"><button type="button" className="secondary" onClick={() => void onConvertToManual(trip)}><SlidersHorizontal aria-hidden="true" /> Convert to editable trip</button></div>
+        </section>
+      )}
       <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
     </main>
   )
@@ -1267,6 +1482,7 @@ function FlightDetailPage({
   onEdit,
   onDelete,
   onRefresh,
+  onDismissCompletion,
 }: {
   flight?: FlightLogEntry
   airportVersion: number
@@ -1275,6 +1491,7 @@ function FlightDetailPage({
   onEdit: (flight: FlightLogEntry) => void
   onDelete: (id: string) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
+  onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
@@ -1339,6 +1556,7 @@ function FlightDetailPage({
           <button type="button" className="secondary" onClick={() => downloadFile(`${flight.flightNumber}-${flight.id}.json`, JSON.stringify({ flight }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export this flight as JSON</button>
         </div>
       </section>
+      <FlightLifecycleSection flight={flight} onEdit={onEdit} onDismissCompletion={onDismissCompletion} />
       <div className="two-columns detail-columns">
         <FlightTimeline flight={flight} />
         <RouteMapPreview flight={computed} />
@@ -2954,10 +3172,88 @@ function App() {
     if (savedFlightId) navigateToFlight(savedFlightId)
   }
 
+  async function handleDismissCompletion(flight: FlightLogEntry) {
+    await saveFlight({ ...flight, completionDismissedAt: new Date().toISOString() })
+    await loadFlights()
+    await markLocalChange()
+    setToast(`Completion reminder dismissed for ${flight.flightNumber}.`)
+  }
+
   async function handleTripMetadataUpdate(tripId: string, patch: Partial<TripMetadata>) {
     await saveTripMetadata({ id: tripId, ...patch })
     await loadTripMetadata()
     await markLocalChange()
+  }
+
+  async function handleCreateTrip() {
+    const id = crypto.randomUUID()
+    await saveTripMetadata({ id, name: 'New trip', isManual: true, flightIds: [] })
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip created. Add flights from the trip editor.')
+    navigateToTrip(id)
+  }
+
+  async function handleConvertTripToManual(trip: TripGroup) {
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const descriptiveName = trip.flights.length > 0
+      ? `${trip.flights[0].origin} -> ${trip.flights.at(-1)?.destination} · ${trip.startDate}`
+      : undefined
+    await saveTripMetadata({
+      id,
+      name: trip.metadata?.name ?? descriptiveName,
+      notes: trip.notes,
+      type: trip.type,
+      isFavorite: trip.isFavorite,
+      isManual: true,
+      flightIds: trip.flights.map((flight) => flight.id),
+    })
+    if (trip.metadata && !trip.metadata.isManual) {
+      await saveTripMetadata({
+        id: trip.metadata.id,
+        deletedAt: now,
+        deletedByDeviceId: deviceId,
+        deleteReason: 'Converted to editable trip',
+        tombstoneVersion: trip.metadata.tombstoneVersion ?? 1,
+        lastOperation: 'delete',
+      })
+    }
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip is now editable. Add or remove flights freely.')
+    navigateToTrip(id)
+  }
+
+  async function handleAddFlightToTrip(trip: TripGroup, flightId: string) {
+    if (!trip.isManual) return
+    await mutateTripFlightIds(trip.id, (roster) => (roster.includes(flightId) ? roster : [...roster, flightId]))
+    await loadTripMetadata()
+    await markLocalChange()
+  }
+
+  async function handleRemoveFlightFromTrip(trip: TripGroup, flightId: string) {
+    if (!trip.isManual) return
+    await mutateTripFlightIds(trip.id, (roster) => roster.filter((id) => id !== flightId))
+    await loadTripMetadata()
+    await markLocalChange()
+  }
+
+  async function handleDeleteTrip(trip: TripGroup) {
+    if (!trip.isManual || !trip.metadata) return
+    if (!window.confirm(`Delete trip "${trip.name}"? Flights stay in your log and return to automatic grouping.`)) return
+    await saveTripMetadata({
+      id: trip.id,
+      deletedAt: new Date().toISOString(),
+      deletedByDeviceId: deviceId,
+      deleteReason: 'Trip deleted from trip editor',
+      tombstoneVersion: trip.metadata.tombstoneVersion ?? 1,
+      lastOperation: 'delete',
+    })
+    await loadTripMetadata()
+    await markLocalChange()
+    setToast('Trip deleted. Its flights returned to automatic grouping.')
+    navigate('trips')
   }
 
   async function updateSyncMetadata(patch: Partial<SyncMetadata>, now = new Date().toISOString()) {
@@ -3001,7 +3297,14 @@ function App() {
     const now = new Date().toISOString()
     if (preview.mergeFlights.length > 0) await bulkSaveFlights(preview.mergeFlights)
     await saveProviderAirports(preview.backup.providerAirports)
-    await bulkSaveTripMetadata(preview.backup.tripMetadata)
+    const localTripMetadata = await getAllTripMetadata()
+    const tripMetadataToMerge = preview.backup.tripMetadata.filter((item) => {
+      const local = localTripMetadata.find((row) => row.id === item.id)
+      if (!local) return true
+      if (local.deletedAt && !item.deletedAt) return false
+      return (item.updatedAt ?? '') > (local.updatedAt ?? '')
+    })
+    if (tripMetadataToMerge.length > 0) await bulkSaveTripMetadata(tripMetadataToMerge)
     await bulkSetAppMetadata([
       ...importableAppMetadata(preview.backup.appMetadata),
       { key: 'lastImportAt', value: now, updatedAt: now },
@@ -3092,7 +3395,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.0',
+        appVersion: 'v2.1',
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum })
       await bulkSetAppMetadata([
@@ -3374,10 +3677,17 @@ function App() {
     await recordSyncEvent('backup_before_sync', { backups: cloudBackups.length + 1 })
   }
 
+  function rehydrateSyncRecord<T extends { updatedAt?: string }>(record: SyncRecord): T {
+    // record_json is stored without the volatile updatedAt key; restore it from
+    // the row-level timestamp so local writes (and their filters) keep working.
+    const value = record.record as T
+    return { ...value, updatedAt: value.updatedAt ?? record.recordUpdatedAt ?? new Date().toISOString() }
+  }
+
   async function applyRemoteSyncRecords(records: SyncRecord[]) {
-    const remoteFlights = records.filter((record) => record.entityType === 'flight').map((record) => record.record as FlightLogEntry)
-    const remoteTripMetadata = records.filter((record) => record.entityType === 'tripMetadata').map((record) => record.record as TripMetadata)
-    const remoteProviderAirports = records.filter((record) => record.entityType === 'providerAirport').map((record) => record.record as ProviderAirportSnapshot)
+    const remoteFlights = records.filter((record) => record.entityType === 'flight').map((record) => rehydrateSyncRecord<FlightLogEntry>(record))
+    const remoteTripMetadata = records.filter((record) => record.entityType === 'tripMetadata').map((record) => rehydrateSyncRecord<TripMetadata>(record))
+    const remoteProviderAirports = records.filter((record) => record.entityType === 'providerAirport').map((record) => rehydrateSyncRecord<ProviderAirportSnapshot>(record))
     const remoteSettings = records.find((record) => record.entityType === 'appSettings')?.record
     if (remoteFlights.length > 0) await bulkSaveFlights(remoteFlights)
     if (remoteTripMetadata.length > 0) await bulkPutTripMetadataRaw(remoteTripMetadata)
@@ -3727,11 +4037,11 @@ function App() {
       {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       {showForm && <FlightForm editing={editing} isOnline={isOnline} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
-      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} />}
-      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
-      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} />}
+      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
+      {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
+      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}

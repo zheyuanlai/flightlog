@@ -19,8 +19,11 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Optional Cloud Sync Lite for manual compare, push, pull, tombstone sync, and conflict-safe record sync. It is not realtime sync.
 - Optional live flight status through a serverless proxy. API keys stay in the proxy environment, never in frontend code.
 - Flight detail pages, trip grouping with local trip metadata, external flight-info links, and no-login calendar export.
-- HTML share-card previews for flights, trips, and yearly passport summaries. PNG export is intentionally deferred to v2.1.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v20`.
+- Flight lifecycle assistant with day-of-travel dashboard card, phase chips, and en-route progress.
+- Post-flight completion prompts for recently landed flights that are missing actual times.
+- HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
+- Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v21`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -33,6 +36,15 @@ FlightLog v2.0 focuses on making the web app feel worth adding to an iPhone home
 - Flight Detail emphasizes flight number, airline, status, route, local departure/arrival timeline, calendar actions, external links, and a secondary delete section.
 - Trips and Passport use denser mobile cards and share-preview surfaces without copying any commercial app UI.
 - Settings has section navigation, PWA install guidance, collapsed diagnostics, and redacted diagnostics copy.
+
+## v2.1 Flight Lifecycle and Trips Overview
+
+FlightLog v2.1 focuses on the day of travel and on trip curation, keeping everything local-first.
+
+- Lifecycle assistant: every flight gets a computed phase — scheduled, check-in open (within 24 hours), departing soon (within 3 hours), en route with a progress bar, landed, or completed — with provider cancelled/diverted/active statuses taking priority. The Dashboard shows a day-of-travel card for the most pressing flight with countdown, terminal/gate, an airline check-in link during the check-in window, and live refresh.
+- Post-flight completion: after a flight lands, a "Complete your flight log" prompt lists recently landed flights missing actual times, with confirm-details, refresh-from-provider, and dismiss actions. Dismissals are stored on the flight (`completionDismissedAt`) and sync like any other edit.
+- PNG share cards: the share panel now exports a branded 1080x1350 PNG rendered locally with the Canvas API. Nothing is uploaded, and no image library is added to the bundle.
+- Manual trip editor: create editable trips from the Trips page, add or remove flights with a search picker, and convert an automatically grouped trip into an editable one (name, notes, type, and pin carry over). Editable trips own their flight roster in `TripMetadata.flightIds`, so they survive membership changes; deleting one returns its flights to automatic grouping. Deleted trip metadata becomes a tombstone and shows in Trash.
 
 ## Timezones
 
@@ -150,7 +162,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v20`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v21`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 
@@ -171,13 +183,13 @@ Local manual add/edit, local stats, local Trash restore/permanent delete confirm
 
 ## Share Cards
 
-v2.0 adds HTML share-card previews for:
+FlightLog has share-card previews for:
 
 - Individual flights.
 - Trip summaries.
 - Yearly passport summaries when flight data exists.
 
-Cards include FlightLog branding, route, date, distance, airports, countries, and summary highlights. Notes are excluded by default; flight and trip share previews expose an **Include notes** checkbox. PNG export is not implemented in v2.0 to avoid adding a heavy image-generation dependency to the initial bundle. It is planned for v2.1.
+Cards include FlightLog branding, route, date, distance, airports, countries, and summary highlights. Notes are excluded by default; flight and trip share previews expose an **Include notes** checkbox. v2.1 adds **Export PNG**: the card is rendered locally to a 1080x1350 branded PNG with the browser Canvas API, so no image library is bundled and nothing leaves the device.
 
 ## Performance Notes
 
@@ -378,11 +390,9 @@ Sample files are available at:
 
 ## Roadmap
 
-- v2.1: flight lifecycle assistant.
-- v2.1: post-flight completion prompt.
-- v2.1: richer PNG share cards.
-- v2.1: manual trip editor.
+- Shipped in v2.1: flight lifecycle assistant, post-flight completion prompt, PNG share cards, and the manual trip editor.
 - Future: client-side encrypted backups and richer field-level merge tools.
+- Future: airline check-in deep links per airline and richer day-of-travel notifications within PWA constraints.
 - Future: Apple login after Apple Developer configuration is available.
 - Still intentionally out of scope: payments, native iOS work, Apple login, realtime sync, background polling, and exposing provider API keys in the frontend.
 
