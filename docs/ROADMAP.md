@@ -37,7 +37,7 @@ The vision is fixed. The **non-negotiables are a living contract**: some later-h
 
 Every release follows the engineering loop in §11, including an adversarial multi-agent review of the diff before merge.
 
-> **Known follow-up:** v2.3's review surfaced notification-hardening items (forward-only phase transitions, Android service-worker `showNotification`, per-transition tags, nested gate shape, toast queueing). These are scheduled as **v2.3.1** at the head of the v2.x line below.
+> **v2.3.1 (shipped):** the v2.3 review's notification-hardening items are done — forward-only phase transitions plus a dedicated delay alert, Android service-worker `showNotification`, per-transition tags with `renotify`, nested gate-shape reads, midnight/estimated-arrival softening, watcher reset on wholesale data swaps, aggregated fallback toasts, and a symmetric `appSettings` sync normalization.
 
 ---
 
@@ -59,9 +59,9 @@ Ordering principle: **value-per-unit-risk, autonomy first.** On-device work (ana
 
 Goal: make the existing feature set excellent, portable, and multilingual. Almost entirely autonomous.
 
-### v2.3.1 — Notification hardening (autonomous)
+### v2.3.1 — Notification hardening (autonomous) — ✅ shipped
 
-Close the v2.3 review findings before building more on top of notifications.
+Closed the v2.3 review findings before building more on top of notifications.
 
 - **Forward-only phase transitions**: rank phases (`scheduled < check-in < departing-soon < en-route < landed`) and notify only on forward moves; a provider refresh that regresses the phase (delay pushing estimated departure out) must not re-fire "check-in open." Add a dedicated **"Flight delayed"** notification for the delay case.
 - **Android delivery**: use `navigator.serviceWorker.ready → registration.showNotification(...)` with the page `Notification` constructor as fallback; the page constructor throws on Android Chromium, so the current path silently degrades to a toast while Settings claims success.

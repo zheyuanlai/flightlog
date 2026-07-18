@@ -60,7 +60,8 @@ FlightLog v2.2 focuses on protecting the data you back up and on resolving sync 
 FlightLog v2.3 adds opt-in day-of travel notifications within PWA constraints.
 
 - A new Settings reminder toggle (default off) enables notifications and requests browser Notification permission. When the API is unsupported or blocked, updates fall back to in-app messages, and Settings says so.
-- While FlightLog is open, a one-minute watcher detects lifecycle transitions — check-in window opening, departing soon, departed, landed, cancelled, diverted — and terminal/gate changes, then shows a system notification (or an in-app toast as fallback).
+- While FlightLog is open, a one-minute watcher detects lifecycle transitions — check-in window opening, departing soon, departed, landed, cancelled, diverted — plus meaningful departure delays and departure-gate changes, then shows a system notification (or an in-app toast as fallback). Phase alerts are forward-only, so a delay that pushes a flight back never re-announces an earlier phase.
+- Delivery uses the service worker's `showNotification` where available (required on Android Chromium) and falls back to the page notification API, then to in-app toasts when permission is unavailable. Each transition uses a distinct notification tag so time-critical alerts are never silently coalesced.
 - Constraints are deliberate: FlightLog never polls providers in the background and has no push server, so notifications fire only while the app is open in a tab or installed PWA. Refreshing a flight's live status feeds the same watcher, so gate changes surface right after a refresh.
 
 ## Timezones
