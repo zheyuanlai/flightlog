@@ -64,6 +64,30 @@ export function routeFromHashValue(hashValue: string): AppRoute {
   return { page: 'dashboard' }
 }
 
+export interface QuickAddParams {
+  flightNumber?: string
+  date?: string
+  dateRole?: 'Departure' | 'Arrival'
+}
+
+/**
+ * Parse a deep link like `#/add?flight=SQ38&date=2026-06-02` into Quick Add
+ * prefill values. Returns undefined for any hash that is not an add deep link.
+ */
+export function parseQuickAddParams(hashValue: string): QuickAddParams | undefined {
+  const hash = hashValue.replace(/^#\/?/, '')
+  const [pathPart, queryPart] = hash.split('?')
+  if (pathPart.split('/')[0] !== 'add') return undefined
+  const params = new URLSearchParams(queryPart ?? '')
+  const flightRaw = params.get('flight') ?? params.get('flightNumber') ?? undefined
+  const dateRaw = params.get('date') ?? undefined
+  const flightNumber = flightRaw ? flightRaw.trim().toUpperCase().replace(/\s+/g, '') : undefined
+  const date = dateRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw.trim()) ? dateRaw.trim() : undefined
+  const roleRaw = params.get('dateRole')
+  const dateRole = roleRaw === 'Arrival' ? 'Arrival' : roleRaw === 'Departure' ? 'Departure' : undefined
+  return { flightNumber, date, dateRole }
+}
+
 export function navPage(route: AppRoute): Page {
   if (route.page === 'flight-detail') return 'flights'
   if (route.page === 'trip-detail') return 'trips'

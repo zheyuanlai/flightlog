@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v24`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v25`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -71,6 +71,14 @@ FlightLog v2.4 turns your own logged history into Variflight-style analytics, co
 - On-time performance: from flights that have both scheduled and actual departure times, FlightLog computes on-time rate (15-minute threshold), average/median/worst delay per airline and per route, and an overall summary on the Passport page. Nothing is sent anywhere.
 - Route delay context: Flight Detail shows how the current flight performed and your history on that route ("SIN-LAX: 4 measured flights, 75% on time, avg 12m late").
 - True flight paths: the Map now draws great-circle arcs (the actual shortest path over the globe) instead of straight lines, with longitudes unwrapped so trans-Pacific routes render continuously across the date line.
+
+## v2.5 Doors Open
+
+FlightLog v2.5 lowers the cost of switching from another tracker and getting flights in and out.
+
+- Import from another app: the Backup Center accepts a CSV exported from Flighty, myFlightradar24, App in the Air, or any tracker. Columns are auto-detected via an alias table (with Flighty and myFlightradar24 presets), common date formats are coerced, and likely duplicates are skipped using the same key as backup merge. A preview shows how many flights are ready and flags rows with errors before you import.
+- Quick Add deep links: open `#/add?flight=SQ38&date=2026-06-02` to launch Quick Add prefilled, so a link from anywhere jumps straight into a lookup.
+- Calendar feed export: download a single `.ics` file with all upcoming flights (or all flights that have reliable times) to add them to any calendar app at once, alongside the existing per-flight calendar actions.
 
 ## Timezones
 
@@ -188,7 +196,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v24`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v25`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 

@@ -1644,3 +1644,11 @@ a {
     gap: 12px;
   }
 }
+
+.import-app-panel .file-drop {
+  min-height: var(--tap-target);
+}
+
+.import-app-panel h4 {
+  margin: 0 0 8px;
+}

@@ -115,7 +115,7 @@ import {
 } from './lib/cloudSync'
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
 import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
-import { appMetadataValue, backupAgeWarning, createFullBackup, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview, type FlightLogBackup } from './utils/backup'
+import { appMetadataValue, backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview, type FlightLogBackup } from './utils/backup'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { deletedFlights as sortDeletedFlights, deletedTripMetadata } from './utils/deletedRecords'
@@ -130,12 +130,13 @@ import { localStorageSummary } from './utils/storage'
 import { createSyncEvent, syncHistorySummaryLabel } from './utils/syncHistory'
 import { syncStatusSnapshot, type SyncStatusSnapshot } from './utils/syncStatus'
 import { aggregateStats } from './utils/stats'
-import { buildCalendarEventDetails } from './utils/calendarLinks'
+import { buildCalendarEventDetails, buildFlightsIcsFeed } from './utils/calendarLinks'
 import { externalFlightLinks } from './utils/externalFlightLinks'
 import { lookupErrorCopy } from './utils/lookupErrors'
 import { initialOnlineStatus, offlineActionMessage } from './utils/offline'
 import { installGuidance, isStandaloneDisplay } from './utils/pwa'
-import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, routeFromHashValue, type AppRoute, type Page } from './utils/navigation'
+import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, parseQuickAddParams, routeFromHashValue, type AppRoute, type Page, type QuickAddParams } from './utils/navigation'
+import { importDelimitedFlights, importFields, type ImportPreset } from './utils/importers'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
 import { downloadShareCardPng } from './utils/shareImage'
 import {
@@ -683,19 +684,21 @@ function LiveStatusPreview({ liveStatus, fetchedAt }: { liveStatus: FlightLiveSt
 function FlightForm({
   editing,
   isOnline,
+  initialLookup,
   onCancel,
   onSaved,
   onProviderAirportsSaved,
 }: {
   editing?: FlightLogEntry
   isOnline: boolean
+  initialLookup?: { flightNumber?: string; date?: string; dateRole?: LookupDateRole }
   onCancel: () => void
   onSaved: (savedFlightId?: string) => Promise<void>
   onProviderAirportsSaved: (liveStatus: FlightLiveStatus) => Promise<void>
 }) {
   const settings = useAppSettings()
   const [mode, setMode] = useState<'lookup' | 'manual'>(editing ? 'manual' : 'lookup')
-  const [lookup, setLookup] = useState({ flightNumber: '', date: new Date().toISOString().slice(0, 10), dateRole: 'Departure' as LookupDateRole, useMock: false })
+  const [lookup, setLookup] = useState({ flightNumber: initialLookup?.flightNumber ?? '', date: initialLookup?.date ?? new Date().toISOString().slice(0, 10), dateRole: initialLookup?.dateRole ?? 'Departure' as LookupDateRole, useMock: false })
   const [lookupStatus, setLookupStatus] = useState<FlightLiveStatus | undefined>()
   const [lookupFetchedAt, setLookupFetchedAt] = useState('')
   const [form, setForm] = useState<FlightFormState>(() => formFromFlight(editing, settings))
@@ -2438,6 +2441,8 @@ function BackupCenterPage({
   onImported,
   onExportBackup,
   onExportEncryptedBackup,
+  onExportCalendarFeed,
+  onImportExternal,
   onMergeBackup,
   onReplaceBackup,
   onRepairData,
@@ -2458,6 +2463,8 @@ function BackupCenterPage({
   onImported: () => Promise<void>
   onExportBackup: () => Promise<void>
   onExportEncryptedBackup: (passphrase: string, hint?: string) => Promise<void>
+  onExportCalendarFeed: () => void
+  onImportExternal: (flights: FlightLogEntry[]) => Promise<{ added: number; skipped: number }>
   onMergeBackup: (preview: BackupImportPreview) => Promise<void>
   onReplaceBackup: (preview: BackupImportPreview) => Promise<void>
   onRepairData: () => Promise<void>
@@ -2467,6 +2474,9 @@ function BackupCenterPage({
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const [preview, setPreview] = useState<{ valid: FlightLogEntry[]; errors: string[] }>({ valid: [], errors: [] })
+  const [importPreset, setImportPreset] = useState<ImportPreset>('generic')
+  const [externalImport, setExternalImport] = useState<ReturnType<typeof importDelimitedFlights> | undefined>()
+  const [externalMessage, setExternalMessage] = useState('')
   const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
   const [backupMessage, setBackupMessage] = useState('')
   const [encryptedImport, setEncryptedImport] = useState<EncryptedBackupEnvelope | undefined>()
@@ -2557,6 +2567,23 @@ function BackupCenterPage({
     setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
     setBackupPreview(undefined)
   }
+  async function handleExternalImportFile(file: File) {
+    setExternalMessage('')
+    setExternalImport(undefined)
+    try {
+      const result = importDelimitedFlights(await file.text(), { preset: importPreset })
+      setExternalImport(result)
+      if (result.valid.length === 0 && result.errors.length > 0) setExternalMessage(result.errors[0])
+    } catch (error) {
+      setExternalMessage(error instanceof Error ? error.message : 'Unable to read the import file')
+    }
+  }
+  async function applyExternalImport() {
+    if (!externalImport || externalImport.valid.length === 0) return
+    await onImportExternal(externalImport.valid)
+    setExternalImport(undefined)
+    setExternalMessage('')
+  }
   return (
     <main className="page">
       <div className="section-heading"><div><p className="eyebrow">Data safety</p><h2>Backup Center</h2></div></div>
@@ -2644,6 +2671,37 @@ function BackupCenterPage({
           <div><dt>Remote tombstones</dt><dd>{health.remoteTombstonesCount}</dd></div>
         </dl>
         <div className="actions"><button type="button" className="secondary" disabled={health.repairableAirportSnapshotCount === 0} onClick={() => void onRepairData()}>Re-resolve airport snapshots</button><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button></div>
+      </section>
+      <section className="panel import-app-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Switch to FlightLog</p><h3>Import from another app</h3></div><Import aria-hidden="true" /></div>
+        <p className="muted">Import a CSV exported from Flighty, myFlightradar24, App in the Air, or any tracker. Columns are auto-detected; likely duplicates are skipped on import.</p>
+        <div className="form-grid compact">
+          <label>Source format<select value={importPreset} onChange={(event) => setImportPreset(event.target.value as ImportPreset)}><option value="generic">Auto-detect</option><option value="flighty">Flighty</option><option value="flightradar24">myFlightradar24</option></select></label>
+          <label className="file-drop"><Upload aria-hidden="true" /><span>Choose CSV file</span><input type="file" accept=".csv,text/csv" onChange={(event) => event.target.files?.[0] && void handleExternalImportFile(event.target.files[0])} /></label>
+        </div>
+        {externalMessage && <p className="notice warning">{externalMessage}</p>}
+        {externalImport && (
+          <div className="cloud-preview">
+            <h4>Import preview</h4>
+            <dl className="meta-grid">
+              <div><dt>Flights ready</dt><dd>{externalImport.valid.length}</dd></div>
+              <div><dt>Rows with errors</dt><dd>{externalImport.errors.length}</dd></div>
+              <div><dt>Detected columns</dt><dd>{Object.keys(externalImport.mapping).length}/{importFields.length}</dd></div>
+            </dl>
+            {externalImport.warnings.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
+            {externalImport.errors.slice(0, 5).map((error) => <p className="notice warning" key={error}>{error}</p>)}
+            {externalImport.errors.length > 5 && <p className="muted">…and {externalImport.errors.length - 5} more row issue{externalImport.errors.length - 5 === 1 ? '' : 's'}.</p>}
+            <div className="actions">
+              <button type="button" disabled={externalImport.valid.length === 0} onClick={() => void applyExternalImport()}><Import aria-hidden="true" /> Import {externalImport.valid.length} flight{externalImport.valid.length === 1 ? '' : 's'}</button>
+              <button type="button" className="ghost" onClick={() => { setExternalImport(undefined); setExternalMessage('') }}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </section>
+      <section className="panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Calendar</p><h3>Export flights to calendar</h3></div><CalendarDays aria-hidden="true" /></div>
+        <p className="muted">Download a single .ics file with your upcoming flights (or all flights that have reliable times) to add them to any calendar app at once.</p>
+        <div className="actions"><button type="button" onClick={onExportCalendarFeed}><CalendarDays aria-hidden="true" /> Export calendar (.ics)</button></div>
       </section>
       <section className="two-columns">
         <article className="panel"><h3>Legacy export</h3><p className="muted">Keep old JSON and CSV exports available for portability.</p><div className="actions"><button type="button" onClick={() => downloadFile('flightlog.json', JSON.stringify({ flights }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export JSON</button><button type="button" className="secondary" onClick={() => downloadFile('flightlog.csv', flightsToCsv(flights), 'text/csv')}><Download aria-hidden="true" /> Export CSV</button></div></article>
@@ -3068,6 +3126,7 @@ function App() {
   const [allFlights, setAllFlights] = useState<FlightLogEntry[]>([])
   const [editing, setEditing] = useState<FlightLogEntry | undefined>()
   const [showForm, setShowForm] = useState(false)
+  const [quickAddPrefill, setQuickAddPrefill] = useState<QuickAddParams | undefined>()
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [initialDataLoading, setInitialDataLoading] = useState(true)
@@ -3233,7 +3292,24 @@ function App() {
     }
     const usedIdleCallback = Boolean(idleWindow.requestIdleCallback)
     const idleHandle = usedIdleCallback && idleWindow.requestIdleCallback ? idleWindow.requestIdleCallback(loadAirports) : window.setTimeout(loadAirports, 350)
-    const onHashChange = () => setRoute(routeFromHash())
+    const consumeQuickAddDeepLink = () => {
+      const params = parseQuickAddParams(window.location.hash)
+      if (!params) return false
+      // Consume the deep link so it does not re-open on the next hashchange.
+      // replaceState (not a hash assignment) avoids a Back-button trap and does
+      // not fire hashchange, which is fine since setRoute is called directly.
+      window.history.replaceState(null, '', '#/dashboard')
+      setRoute({ page: 'dashboard' })
+      setEditing(undefined)
+      setQuickAddPrefill(params)
+      setShowForm(true)
+      return true
+    }
+    const onHashChange = () => {
+      if (consumeQuickAddDeepLink()) return
+      setRoute(routeFromHash())
+    }
+    consumeQuickAddDeepLink()
     window.addEventListener('hashchange', onHashChange)
     return () => {
       mounted = false
@@ -3392,6 +3468,7 @@ function App() {
   }
 
   function openQuickAdd() {
+    setQuickAddPrefill(undefined)
     setMobileMoreOpen(false)
     setEditing(undefined)
     setShowForm(true)
@@ -3660,6 +3737,37 @@ function App() {
     setToast(`Restored ${preview.backup.flights.length} flights from backup.`)
   }
 
+  async function handleImportExternalFlights(imported: FlightLogEntry[]): Promise<{ added: number; skipped: number }> {
+    const existingKeys = new Set((await getAllFlights()).map(flightDuplicateKey))
+    const toAdd: FlightLogEntry[] = []
+    for (const candidate of imported) {
+      const key = flightDuplicateKey(candidate)
+      if (existingKeys.has(key)) continue
+      existingKeys.add(key)
+      toAdd.push(candidate)
+    }
+    if (toAdd.length > 0) await bulkSaveFlights(toAdd)
+    await reloadLocalData()
+    await markLocalChange()
+    setToast(`Imported ${toAdd.length} flight${toAdd.length === 1 ? '' : 's'}, skipped ${imported.length - toAdd.length} likely duplicate${imported.length - toAdd.length === 1 ? '' : 's'}.`)
+    return { added: toAdd.length, skipped: imported.length - toAdd.length }
+  }
+
+  function handleExportCalendarFeed() {
+    const upcoming = listUpcomingFlights(flights).map((info) => info.flight)
+    // Prefer upcoming flights, but fall back to all flights when the upcoming
+    // subset has nothing with reliable calendar times (e.g. a timeless same-day
+    // import) so exportable past flights are not hidden.
+    const upcomingFeed = buildFlightsIcsFeed(upcoming, window.location.href)
+    const feed = upcomingFeed.ics ? upcomingFeed : buildFlightsIcsFeed(flights, window.location.href)
+    if (!feed.ics) {
+      setToast('No flights with reliable times are available to export to a calendar.')
+      return
+    }
+    downloadFile(`flightlog-flights-${new Date().toISOString().slice(0, 10)}.ics`, feed.ics, 'text/calendar')
+    setToast(`Exported ${feed.count} flight${feed.count === 1 ? '' : 's'} to a calendar file.`)
+  }
+
   async function handleRepairData() {
     await bulkSaveFlights(repairFlightsFromAirportDataset(flights))
     await loadFlights()
@@ -3727,7 +3835,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v2.4',
+        appVersion: 'v2.5',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4457,7 +4565,7 @@ function App() {
       {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       <PassphraseDialog request={cloudPassphraseRequest} />
-      {showForm && <FlightForm editing={editing} isOnline={isOnline} onCancel={() => { setShowForm(false); setEditing(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
+      {showForm && <FlightForm editing={editing} isOnline={isOnline} initialLookup={quickAddPrefill} onCancel={() => { setShowForm(false); setEditing(undefined); setQuickAddPrefill(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
       {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
@@ -4465,7 +4573,7 @@ function App() {
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
-      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onMergeFields={handleMergeConflictFields} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
