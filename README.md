@@ -23,7 +23,7 @@ FlightLog is a static personal flight passport for logging trips, reviewing trav
 - Post-flight completion prompts for recently landed flights that are missing actual times.
 - HTML share-card previews for flights, trips, and yearly passport summaries, with local PNG export.
 - Manual trip editor: create editable trips, add or remove flights, and convert automatic trips.
-- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v25`.
+- Installable PWA app shell with conservative offline caching, standalone safe-area spacing, and cache version `flightlog-v26`.
 - GitHub Pages deployment through GitHub Actions.
 
 ## v2.0 Mobile/PWA Overview
@@ -79,6 +79,15 @@ FlightLog v2.5 lowers the cost of switching from another tracker and getting fli
 - Import from another app: the Backup Center accepts a CSV exported from Flighty, myFlightradar24, App in the Air, or any tracker. Columns are auto-detected via an alias table (with Flighty and myFlightradar24 presets), common date formats are coerced, and likely duplicates are skipped using the same key as backup merge. A preview shows how many flights are ready and flags rows with errors before you import.
 - Quick Add deep links: open `#/add?flight=SQ38&date=2026-06-02` to launch Quick Add prefilled, so a link from anywhere jumps straight into a lookup.
 - Calendar feed export: download a single `.ics` file with all upcoming flights (or all flights that have reliable times) to add them to any calendar app at once, alongside the existing per-flight calendar actions.
+
+## v2.6 Localization
+
+FlightLog v2.6 adds a dependency-free localization layer and initial languages.
+
+- Language setting: System default, English, 简体中文 (zh-CN), 繁體中文 (zh-TW), and 日本語 (ja), selectable in Settings → Display. "System default" detects the browser language and distinguishes Traditional from Simplified Chinese.
+- Architecture: a small `t(key)` dictionary (`src/utils/i18n.ts`) with English as the source of truth and fallback; a test asserts every key is present in every language and that no locale carries stray keys. `<html lang>` is set from the active language.
+- Coverage today: navigation, the mobile More menu, the Add-flight action, the footer, and the language setting itself are translated in all four languages. The long tail of strings falls back to English and will be keyed progressively.
+- ⚠️ Translations are best-effort and **pending native-speaker review** before any release is announced as fully localized — Japanese in particular should be reviewed by a native speaker. Traditional Chinese uses Taiwan conventions (e.g. 設定, 新增), not a Simplified auto-conversion.
 
 ## Timezones
 
@@ -196,7 +205,7 @@ curl "https://flightlog-flight-status.ryanlai-zheyuan.workers.dev/flight-status?
 
 ## PWA
 
-FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v25`.
+FlightLog includes `manifest.webmanifest`, install icons, and a conservative service worker. The service worker caches the app shell, sample files, and airport JSON, but it does not aggressively cache live API responses, Supabase calls, or Worker API responses. The current cache name is `flightlog-v26`.
 
 On iPhone, open `https://zheyuanlai.github.io/flightlog/` in Safari, use Share, then choose **Add to Home Screen**.
 

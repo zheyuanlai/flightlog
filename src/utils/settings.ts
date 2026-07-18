@@ -1,4 +1,4 @@
-import type { AppMetadata, AppSettings, FlightPurpose, LiveDataMode, SyncMetadata } from '../types'
+import type { AppMetadata, AppSettings, FlightPurpose, LanguageSetting, LiveDataMode, SyncMetadata } from '../types'
 
 export const SETTINGS_METADATA_KEY = 'settings'
 export const SYNC_METADATA_KEY = 'syncMetadata'
@@ -8,6 +8,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   timeFormat: 'system',
   dateFormat: 'medium',
   theme: 'system',
+  language: 'system',
   defaultCabin: '',
   defaultPurpose: 'personal',
   backupReminderEnabled: true,
@@ -22,6 +23,7 @@ const distanceUnits = new Set<AppSettings['distanceUnit']>(['miles', 'kilometers
 const timeFormats = new Set<AppSettings['timeFormat']>(['system', '12h', '24h'])
 const dateFormats = new Set<AppSettings['dateFormat']>(['compact', 'medium', 'iso'])
 const themes = new Set<AppSettings['theme']>(['system', 'light', 'dark'])
+const languages = new Set<LanguageSetting>(['system', 'en', 'zh-CN', 'zh-TW', 'ja'])
 const cabins = new Set<AppSettings['defaultCabin']>(['', 'Economy', 'Premium Economy', 'Business', 'First'])
 const purposes = new Set<'' | FlightPurpose>(['', 'personal', 'work', 'school', 'other'])
 const liveDataModes = new Set<LiveDataMode>(['real', 'mock', 'disabled'])
@@ -53,6 +55,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     timeFormat: timeFormats.has(input.timeFormat as AppSettings['timeFormat']) ? input.timeFormat as AppSettings['timeFormat'] : DEFAULT_APP_SETTINGS.timeFormat,
     dateFormat: dateFormats.has(input.dateFormat as AppSettings['dateFormat']) ? input.dateFormat as AppSettings['dateFormat'] : DEFAULT_APP_SETTINGS.dateFormat,
     theme: themes.has(input.theme as AppSettings['theme']) ? input.theme as AppSettings['theme'] : DEFAULT_APP_SETTINGS.theme,
+    language: languages.has(input.language as LanguageSetting) ? input.language as LanguageSetting : DEFAULT_APP_SETTINGS.language,
     defaultCabin: cabins.has(input.defaultCabin as AppSettings['defaultCabin']) ? input.defaultCabin as AppSettings['defaultCabin'] : DEFAULT_APP_SETTINGS.defaultCabin,
     defaultPurpose: purposes.has(input.defaultPurpose as AppSettings['defaultPurpose']) ? input.defaultPurpose as AppSettings['defaultPurpose'] : DEFAULT_APP_SETTINGS.defaultPurpose,
     backupReminderEnabled: booleanSetting(input.backupReminderEnabled, DEFAULT_APP_SETTINGS.backupReminderEnabled),
