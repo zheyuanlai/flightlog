@@ -98,6 +98,17 @@ FlightLog v2.7 deepens day-of awareness with a live airport delay board and a sm
 
 > Deploying the airport board: the `/airport-status` endpoint ships in the Worker with a deterministic mock mode. For **real** airport data, redeploy the Worker (`cd workers/flight-status-worker && npx wrangler deploy`). The AeroDataBox airport FIDS response mapping is best-effort and isolated in the Worker (`normalizeAirportFids`) — verify it against a live response once after deploying and adjust the field mapping if needed. The frontend degrades gracefully to mock/demo data without it.
 
+## v3.0 Passport Pro
+
+FlightLog v3.0 turns the passport from a stats page into an achievement identity — entirely on-device and free.
+
+- Achievements: a pure milestone engine (`src/utils/achievements.ts`) awards 22 badges across reach, distance, frequency, and special categories — country and airport collectors, 3/5/7 continents, ultra long-haul, laps around the Earth, equator and international-date-line crossings, both-hemisphere, red-eyes, and consecutive-year streaks. Each badge shows its tier, live progress, and the date you first earned it.
+- Continents are derived from an ISO-2 country → continent map, so any airport with a country code contributes to your continent count.
+- Passport book: a page-turn book of country stamps (one continent block per page) on the Passport page. Stamp rotation and ink colour are deterministic (stable per country, no randomness), and each page can be saved as a passport-style PNG via the Canvas renderer (`src/utils/passportBook.ts`).
+- Yearly goals: set targets for flights, countries, and airports per year in Settings → Passport goals; the Passport page shows current-year progress. A target of 0 hides that goal.
+
+All of this is computed locally from your own history — no account, no server. The engine and renderer are covered by 33 pure-function unit tests.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

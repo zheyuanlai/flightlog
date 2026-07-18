@@ -17,6 +17,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   upcomingFlightRefreshReminderEnabled: true,
   dayOfNotificationsEnabled: false,
   liveDataMode: 'real',
+  goalFlightsPerYear: 0,
+  goalCountriesPerYear: 0,
+  goalAirportsPerYear: 0,
 }
 
 const distanceUnits = new Set<AppSettings['distanceUnit']>(['miles', 'kilometers'])
@@ -64,6 +67,9 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     upcomingFlightRefreshReminderEnabled: booleanSetting(input.upcomingFlightRefreshReminderEnabled, DEFAULT_APP_SETTINGS.upcomingFlightRefreshReminderEnabled),
     dayOfNotificationsEnabled: booleanSetting(input.dayOfNotificationsEnabled, DEFAULT_APP_SETTINGS.dayOfNotificationsEnabled),
     liveDataMode: liveDataModes.has(input.liveDataMode as LiveDataMode) ? input.liveDataMode as LiveDataMode : DEFAULT_APP_SETTINGS.liveDataMode,
+    goalFlightsPerYear: numberSetting(input.goalFlightsPerYear, DEFAULT_APP_SETTINGS.goalFlightsPerYear, 0, 10000),
+    goalCountriesPerYear: numberSetting(input.goalCountriesPerYear, DEFAULT_APP_SETTINGS.goalCountriesPerYear, 0, 500),
+    goalAirportsPerYear: numberSetting(input.goalAirportsPerYear, DEFAULT_APP_SETTINGS.goalAirportsPerYear, 0, 10000),
   }
 }
 

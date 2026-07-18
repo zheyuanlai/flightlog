@@ -176,6 +176,12 @@ export interface AppMetadata {
 
 export type LanguageSetting = 'system' | 'en' | 'zh-CN' | 'zh-TW' | 'ja'
 
+export interface PassportGoals {
+  flightsPerYear?: number
+  countriesPerYear?: number
+  airportsPerYear?: number
+}
+
 export interface AppSettings {
   distanceUnit: DistanceUnit
   timeFormat: TimeFormat
@@ -190,6 +196,9 @@ export interface AppSettings {
   upcomingFlightRefreshReminderEnabled: boolean
   dayOfNotificationsEnabled: boolean
   liveDataMode: LiveDataMode
+  goalFlightsPerYear: number
+  goalCountriesPerYear: number
+  goalAirportsPerYear: number
 }
 
 export interface SyncMetadata {

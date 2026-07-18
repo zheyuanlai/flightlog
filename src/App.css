@@ -1710,3 +1710,216 @@ a {
 
 .airport-sample .sample-delayed { color: #92400e; }
 .airport-sample .sample-cancelled { color: #b42318; }
+
+/* v3.0 Passport Pro */
+.passport-headline {
+  margin-top: 4px;
+}
+
+.achievement-count {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f766e;
+}
+
+.achievement-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.achievement-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.achievement-card.locked {
+  opacity: 0.72;
+}
+
+.achievement-card.earned {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: rgba(240, 253, 250, 0.9);
+}
+
+.achievement-card.tier-gold.earned { border-color: rgba(202, 138, 4, 0.5); }
+.achievement-card.tier-platinum.earned { border-color: rgba(109, 40, 217, 0.5); }
+
+.achievement-icon {
+  font-size: 28px;
+  line-height: 1;
+  filter: grayscale(1);
+}
+
+.achievement-card.earned .achievement-icon {
+  filter: none;
+}
+
+.achievement-body {
+  display: grid;
+  gap: 4px;
+}
+
+.achievement-body strong {
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.achievement-body p {
+  margin: 0;
+  font-size: 13px;
+  color: #475569;
+}
+
+.achievement-status {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #64748b;
+}
+
+.achievement-status.earned {
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.achievement-bar,
+.goal-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+
+.achievement-bar span,
+.goal-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+}
+
+.goal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.goal-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.goal-card.met {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: rgba(240, 253, 250, 0.9);
+}
+
+.goal-card span {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #0f766e;
+}
+
+.goal-card strong {
+  font-family: var(--mono);
+  font-size: 22px;
+  color: #0f172a;
+}
+
+.goal-card small {
+  color: #475569;
+  font-size: 12px;
+}
+
+.passport-book-panel .stamp-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+  min-height: 160px;
+}
+
+.ink-stamp {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 3px double currentColor;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.65);
+  text-align: center;
+}
+
+.ink-stamp strong {
+  font-family: var(--mono);
+  font-size: 30px;
+  letter-spacing: 0.04em;
+}
+
+.ink-stamp span {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.passport-book-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.passport-book-controls span {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.muted.small {
+  font-size: 12px;
+}
+
+:root[data-theme="dark"] .achievement-card,
+:root[data-theme="dark"] .goal-card,
+:root[data-theme="dark"] .passport-book-panel {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.9);
+}
+
+:root[data-theme="dark"] .achievement-card.earned,
+:root[data-theme="dark"] .goal-card.met {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(13, 46, 43, 0.7);
+}
+
+:root[data-theme="dark"] .achievement-body strong,
+:root[data-theme="dark"] .goal-card strong {
+  color: #f8fafc;
+}
+
+:root[data-theme="dark"] .achievement-body p,
+:root[data-theme="dark"] .goal-card small {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .ink-stamp {
+  background: rgba(15, 23, 42, 0.55);
+}
