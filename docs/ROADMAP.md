@@ -160,11 +160,11 @@ Goal: move from recording to assisting. This is where FlightLog earns the "smart
 - **Confidence + explanation (shipped)**: every prediction lists which signals fed it and their own stats (e.g. "Your SIN-LAX history: delayed 1 time out of 2, avg 20m late"), surfaced as a compact one-liner on the Dashboard's day-of-travel card and a full breakdown (probability, band, confidence, every signal) on the Flight Detail page's Flight assistant panel — both gated to flights that haven't departed yet.
 - ⚠️ **Soft gate (as designed):** the richest signal (inbound aircraft, airport board) needs the v2.7 Worker endpoints plus a new inbound-aircraft-status data source that doesn't exist yet in any provider adapter — `predictDelay()`'s `inboundDelayMinutes` option is already wired to accept it once built, but no live inbound-aircraft fetch ships in this stage. The heuristic works fully history-only today, exactly as the soft-gate design intended.
 
-### v4.1 — "Trip planner": forward-looking assistant (autonomous)
+### v4.1 — "Trip planner": forward-looking assistant (autonomous) — ✅ shipped
 
-- **Connection risk**: for multi-leg trips, flag tight connections using logged/scheduled times and the delay model.
-- **What-if & rebooking hints**: surface the user's own alternative routes from history when a flight is cancelled/diverted (no booking — informational only).
-- **Packing/prep checklist** per trip type, local and user-editable.
+- **Connection risk (shipped)**: `src/utils/connectionRisk.ts` — for consecutive same-airport legs of a trip, weighs the scheduled layover against the incoming leg's own delay history via `predictDelay` (v4.0) and flags it low/medium/high with a plain-language explanation. Skips pairs that aren't a real same-airport connection or whose gap is too long to be one (the next leg of a multi-day trip, not a layover).
+- **What-if & rebooking hints (shipped)**: `src/utils/rebookingHints.ts` — surfaces the user's own alternative airline/flight-number combinations from history when a flight is cancelled/diverted (no booking — informational only, purely a reflection of the user's own log).
+- **Packing/prep checklist (shipped)**: `src/utils/packingChecklist.ts` — a per-trip-type template (personal/work/school/other), fully user-editable (check/add/remove), persisted on `TripMetadata` and synced like any other trip edit.
 
 ### v4.2 — "Shared journeys": careful, serverless collaboration (build autonomous; one product gate)
 

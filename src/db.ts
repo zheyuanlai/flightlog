@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { AppMetadata, FlightLiveStatus, FlightLogEntry, ProviderAirportSnapshot, SyncEventLog, TripMetadata, TripType } from './types'
+import type { AppMetadata, ChecklistItem, FlightLiveStatus, FlightLogEntry, ProviderAirportSnapshot, SyncEventLog, TripMetadata, TripType } from './types'
 
 export const LOCAL_SCHEMA_VERSION = 4
 
@@ -186,6 +186,21 @@ function cleanTripFlightIds(flightIds: unknown): string[] | undefined {
   return cleaned
 }
 
+function cleanChecklistItems(items: unknown): ChecklistItem[] | undefined {
+  if (!Array.isArray(items)) return undefined
+  // An explicit [] (the user removed every item) is preserved as [], distinct
+  // from "no checklist saved yet" (undefined) -- collapsing it to undefined
+  // would resurrect the trip-type default template on the next load.
+  return items
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => ({
+      id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : crypto.randomUUID(),
+      text: typeof item.text === 'string' ? item.text.trim() : '',
+      done: item.done === true,
+    }))
+    .filter((item) => item.text.length > 0)
+}
+
 function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 'id'>, touch = true): TripMetadata {
   const now = new Date().toISOString()
   const type: TripType = metadata.type === 'work' || metadata.type === 'school' || metadata.type === 'other' ? metadata.type : 'personal'
@@ -197,6 +212,7 @@ function cleanTripMetadata(metadata: Partial<TripMetadata> & Pick<TripMetadata, 
     isFavorite: Boolean(metadata.isFavorite),
     isManual: metadata.isManual === true ? true : undefined,
     flightIds: metadata.isManual === true ? cleanTripFlightIds(metadata.flightIds) ?? [] : undefined,
+    packingChecklist: cleanChecklistItems(metadata.packingChecklist),
     createdAt: metadata.createdAt ?? now,
     updatedAt: touch ? now : metadata.updatedAt ?? now,
     deletedAt: metadata.deletedAt,
@@ -241,6 +257,23 @@ export async function mutateTripFlightIds(id: string, mutate: (flightIds: string
   })
 }
 
+/**
+ * Applies a functional update to a trip's packing checklist against whatever
+ * is CURRENTLY persisted (read inside the same transaction, immediately
+ * before writing) rather than a value snapshotted at render time -- so two
+ * rapid edits (e.g. checking two different items back-to-back) each apply on
+ * top of the other instead of one silently overwriting the other. Falls back
+ * to `fallbackTemplate` only when nothing has been saved for this trip yet.
+ */
+export async function mutateTripPackingChecklist(id: string, fallbackTemplate: ChecklistItem[], mutate: (items: ChecklistItem[]) => ChecklistItem[]): Promise<void> {
+  await db.transaction('rw', db.tripMetadata, async () => {
+    const existing = await db.tripMetadata.get(id)
+    if (existing?.deletedAt) return
+    const current = existing?.packingChecklist ?? fallbackTemplate
+    await db.tripMetadata.put(cleanTripMetadata({ ...(existing ?? { id }), packingChecklist: mutate(current) }))
+  })
+}
+
 export async function bulkSaveTripMetadata(metadata: TripMetadata[]): Promise<void> {
   const cleaned = metadata.map((item) => cleanTripMetadata(item, false))
   if (cleaned.length > 0) await db.tripMetadata.bulkPut(cleaned)
@@ -253,6 +286,7 @@ export async function bulkPutTripMetadataRaw(metadata: TripMetadata[]): Promise<
       ...item,
       type: (item.type === 'work' || item.type === 'school' || item.type === 'other' ? item.type : 'personal') as TripType,
       isFavorite: Boolean(item.isFavorite),
+      packingChecklist: cleanChecklistItems(item.packingChecklist),
     }))
   if (cleaned.length > 0) await db.tripMetadata.bulkPut(cleaned)
 }

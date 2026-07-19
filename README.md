@@ -150,6 +150,14 @@ FlightLog v4.0 adds an on-device, fully explainable delay prediction for upcomin
 - **Surfaced in two places**: a compact one-line "Delay sense" summary on the Dashboard's day-of-travel card, and a full breakdown (probability, band, confidence, and every contributing signal) on the Flight Detail page's Flight assistant panel — both only for flights that haven't departed yet.
 - **Route preview is now a real map**: the Flight Detail page's route preview renders an actual Leaflet map (great-circle arc, airport markers, OpenStreetMap tiles) instead of a stylized placeholder, reusing the same map engine as the full Map page. Flights whose airports lack coordinates still fall back to the simple placeholder.
 
+## v4.1 Trip Planner
+
+FlightLog v4.1 turns a trip page from a flight list into a forward-looking assistant, still entirely on-device.
+
+- **Connection risk** (`src/utils/connectionRisk.ts`): for consecutive same-airport legs of a trip, weighs the scheduled layover against the incoming leg's own delay history (via the v4.0 delay model) and flags it low/medium/high risk with a plain-language explanation, shown between the two flight cards on the Trip page. Skips pairs that aren't a real connection (different airport, or a multi-day gap that's just the next leg of a longer trip).
+- **What-if / rebooking hints** (`src/utils/rebookingHints.ts`): when a flight in a trip is cancelled or diverted, surfaces the airline/flight-number combinations you've personally flown on that same route before, most-flown first — purely a reflection of your own log, no booking or live availability involved.
+- **Packing checklist** (`src/utils/packingChecklist.ts`): every trip gets a checklist seeded from a template for its trip type (personal/work/school/other), fully editable — check items off, add your own, remove any — stored on the trip and synced like any other trip edit.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

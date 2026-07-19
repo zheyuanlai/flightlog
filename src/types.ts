@@ -156,6 +156,12 @@ export interface ProviderAirportSnapshot extends TombstoneMetadata {
   updatedAt?: string
 }
 
+export interface ChecklistItem {
+  id: string
+  text: string
+  done: boolean
+}
+
 export interface TripMetadata extends TombstoneMetadata {
   id: string
   name?: string
@@ -164,6 +170,7 @@ export interface TripMetadata extends TombstoneMetadata {
   isFavorite: boolean
   isManual?: boolean
   flightIds?: string[]
+  packingChecklist?: ChecklistItem[]
   createdAt: string
   updatedAt: string
 }
