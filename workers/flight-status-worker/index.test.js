@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import worker, { validateAirportStatusRequest, validateFlightStatusRequest } from './index.js'
+import { normalizeFlightNumber } from './providers/util.js'
 import {
   buildAeroDataBoxFidsUrl,
   buildAeroDataBoxUrl,
@@ -7,12 +9,10 @@ import {
   mockAirportStatus,
   normalizeAeroDataBoxFlight,
   normalizeAirportFids,
-  normalizeFlightNumber,
   selectBestFlight,
   summarizeMovements,
-  validateAirportStatusRequest,
-  validateFlightStatusRequest,
-} from './index.js'
+} from './providers/aerodatabox.js'
+import { DEFAULT_PROVIDER, listProviders, resolveProvider } from './providers/index.js'
 
 describe('flight status worker utilities', () => {
   it('normalizes flight numbers and validates query params', () => {
@@ -153,5 +153,46 @@ describe('airport status endpoint', () => {
     } finally {
       globalThis.fetch = original
     }
+  })
+})
+
+describe('provider registry', () => {
+  it('resolves the default adapter when FLIGHTLOG_PROVIDER is unset or unrecognized', () => {
+    expect(resolveProvider({}).name).toBe(DEFAULT_PROVIDER)
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'not-a-real-provider' }).name).toBe(DEFAULT_PROVIDER)
+  })
+
+  it('does not resolve an inherited Object.prototype member for a colliding provider name', () => {
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'constructor' }).name).toBe(DEFAULT_PROVIDER)
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: '__proto__' }).name).toBe(DEFAULT_PROVIDER)
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'toString' }).name).toBe(DEFAULT_PROVIDER)
+  })
+
+  it('resolves a named adapter case-insensitively', () => {
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'AeroDataBox' }).name).toBe('aerodatabox')
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: '  aerodatabox  ' }).name).toBe('aerodatabox')
+  })
+
+  it('lists every registered provider', () => {
+    expect(listProviders()).toContain('aerodatabox')
+  })
+})
+
+describe('GET /capabilities', () => {
+  const ctx = { waitUntil: () => {} }
+
+  it('reports the active provider, mode, and capability flags', async () => {
+    const request = new Request('https://worker.test/capabilities', { headers: { Origin: 'https://zheyuanlai.github.io' } })
+    const response = await worker.fetch(request, { FLIGHTLOG_PROVIDER_MODE: 'mock' }, ctx)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ provider: 'aerodatabox', mode: 'mock', supportsFlightStatus: true, supportsAirportStatus: true })
+  })
+
+  it('reflects an unrecognized FLIGHTLOG_PROVIDER by falling back to the default rather than erroring', async () => {
+    const request = new Request('https://worker.test/capabilities', { headers: { Origin: 'https://zheyuanlai.github.io' } })
+    const response = await worker.fetch(request, { FLIGHTLOG_PROVIDER: 'flightaware', FLIGHTLOG_PROVIDER_MODE: 'real' }, ctx)
+    const body = await response.json()
+    expect(body.provider).toBe('aerodatabox')
+    expect(body.mode).toBe('real')
   })
 })

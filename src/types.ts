@@ -199,6 +199,8 @@ export interface AppSettings {
   goalFlightsPerYear: number
   goalCountriesPerYear: number
   goalAirportsPerYear: number
+  /** Sealed Sync (v3.1): end-to-end encrypt synced record content with a passphrase re-entered per device. The passphrase itself is never stored here or anywhere else. */
+  syncEncryptionEnabled: boolean
 }
 
 export interface SyncMetadata {

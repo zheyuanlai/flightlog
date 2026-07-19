@@ -107,11 +107,14 @@ import {
   pushLocalChanges,
   pushTombstones,
   registerSyncDevice,
+  sealRecordsForUpload,
+  SealedSyncPassphraseError,
   syncRecordLabel,
   type SyncComparison,
   type SyncComparisonItem,
   type SyncConflictAction,
   type SyncRecord,
+  type SyncState,
 } from './lib/cloudSync'
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
 import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
@@ -152,6 +155,7 @@ import {
 } from './utils/flightTime'
 import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleArc, overallPunctuality, routeDelayHistory, routePunctuality, type PunctualityStat } from './utils/insights'
 import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } from './utils/airportStatus'
+import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
@@ -940,7 +944,7 @@ export interface PassphraseRequest {
   resolve: (value: string | undefined) => void
 }
 
-function PassphraseDialog({ request }: { request?: PassphraseRequest }) {
+function PassphraseDialog({ request, title = 'Enter backup passphrase', description = 'This cloud backup is encrypted end-to-end. The passphrase is used only on this device and never uploaded.', label = 'Encrypted cloud backup passphrase' }: { request?: PassphraseRequest; title?: string; description?: string; label?: string }) {
   const [value, setValue] = useState('')
   const [lastRequest, setLastRequest] = useState(request)
   if (request !== lastRequest) {
@@ -949,11 +953,11 @@ function PassphraseDialog({ request }: { request?: PassphraseRequest }) {
   }
   if (!request) return null
   return (
-    <div className="passphrase-overlay" role="dialog" aria-modal="true" aria-label="Encrypted cloud backup passphrase">
+    <div className="passphrase-overlay" role="dialog" aria-modal="true" aria-label={label}>
       <div className="panel passphrase-dialog">
         <p className="eyebrow">End-to-end encrypted</p>
-        <h3>Enter backup passphrase</h3>
-        <p className="muted">This cloud backup is encrypted end-to-end. The passphrase is used only on this device and never uploaded.</p>
+        <h3>{title}</h3>
+        <p className="muted">{description}</p>
         {request.hint && <p className="notice">Passphrase hint: {request.hint}</p>}
         {request.error && <p className="notice warning">{request.error}</p>}
         <form onSubmit={(event) => { event.preventDefault(); if (value) request.resolve(value) }}>
@@ -1711,12 +1715,20 @@ function AirportBoardRow({ label, summary }: { label: string; summary: AirportMo
   )
 }
 
-function AirportStatusPanel({ isOnline }: { isOnline: boolean }) {
+function AirportStatusPanel({ isOnline, supportsAirportStatus }: { isOnline: boolean; supportsAirportStatus: boolean }) {
   const settings = useAppSettings()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<AirportStatus | undefined>()
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  if (!supportsAirportStatus) {
+    return (
+      <section className="panel airport-status-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Airport status</p><h3>Live delay board</h3></div><Gauge aria-hidden="true" /></div>
+        <p className="muted">This deployment&apos;s live data connection doesn&apos;t offer airport delay boards yet. Individual flight status is unaffected.</p>
+      </section>
+    )
+  }
   async function lookup(event: FormEvent) {
     event.preventDefault()
     if (!isOnline && settings.liveDataMode !== 'mock') {
@@ -1766,7 +1778,7 @@ function AirportStatusPanel({ isOnline }: { isOnline: boolean }) {
   )
 }
 
-function MapPage({ flights, airportVersion, isOnline }: { flights: FlightLogEntry[]; airportVersion: number; isOnline: boolean }) {
+function MapPage({ flights, airportVersion, isOnline, supportsAirportStatus }: { flights: FlightLogEntry[]; airportVersion: number; isOnline: boolean; supportsAirportStatus: boolean }) {
   const mapRef = useRef<HTMLDivElement | null>(null)
   const leafletRef = useRef<import('leaflet').Map | null>(null)
   const leafletModuleRef = useRef<typeof import('leaflet') | null>(null)
@@ -1831,7 +1843,7 @@ function MapPage({ flights, airportVersion, isOnline }: { flights: FlightLogEntr
   }, [computed, leafletReady])
 
   const mappedFlights = computed.filter((flight) => flight.hasRouteCoordinates).length
-  return <main className="page"><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}<AirportStatusPanel isOnline={isOnline} /></main>
+  return <main className="page"><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}<AirportStatusPanel isOnline={isOnline} supportsAirportStatus={supportsAirportStatus} /></main>
 }
 
 function ListPanel({ title, rows }: { title: string; rows: string[] }) {
@@ -2156,7 +2168,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v30',
+    serviceWorkerCacheVersion: 'flightlog-v31',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -2236,6 +2248,8 @@ function SettingsPage({
           <div><dt>Last download</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Needs review</dt><dd>{syncComparison?.conflicts.length ?? '—'}</dd></div>
         </dl>
+        <label className="checkbox-row"><input type="checkbox" checked={settings.syncEncryptionEnabled} onChange={(event) => void onSettingsChange({ syncEncryptionEnabled: event.target.checked })} /> Encrypt sync end-to-end</label>
+        <p className="muted small">When on, your flights are encrypted on this device before they&apos;re sent — with a passphrase you enter here (never uploaded, never recoverable if lost). You&apos;ll enter the same passphrase on each device you sync to.</p>
       </section>
 
       <section className="two-columns settings-columns">
@@ -3015,6 +3029,7 @@ function SyncPage({
   onRenameDevice,
   onNavigateSettings,
   onNavigateBackup,
+  onUnlockSealed,
 }: {
   configured: boolean
   session: Session | null
@@ -3040,6 +3055,7 @@ function SyncPage({
   onRenameDevice: (name: string) => Promise<void>
   onNavigateSettings: () => void
   onNavigateBackup: () => void
+  onUnlockSealed: () => Promise<void>
 }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
@@ -3114,7 +3130,17 @@ function SyncPage({
         <StatCard icon={Trash2} label="Tombstones" value={String(tombstonesToPush + tombstonesToPull)} />
         <StatCard icon={CheckCircle2} label="In sync" value={String(comparison?.same.length ?? 0)} />
         <StatCard icon={AlertTriangle} label="Conflicts" value={String(comparison?.conflicts.length ?? 0)} />
+        {(comparison?.locked.length ?? 0) > 0 && <StatCard icon={Shield} label="Sealed & locked" value={String(comparison?.locked.length ?? 0)} />}
       </section>
+
+      {comparison && comparison.locked.length > 0 && (
+        <section className="panel">
+          <div className="section-heading compact-heading"><div><p className="eyebrow">Sealed sync</p><h3>{comparison.locked.length} record{comparison.locked.length === 1 ? '' : 's'} need your passphrase</h3></div><Shield aria-hidden="true" /></div>
+          <p className="muted">These records were encrypted end-to-end from another device. Enter the sync passphrase to read, compare, and pull them — until then they stay unreadable and untouched.</p>
+          <ul>{comparison.locked.slice(0, 12).map((item) => <li key={item.key}>{item.entityType}: {syncRecordLabel(item)}</li>)}</ul>
+          <div className="actions"><button type="button" disabled={busy} onClick={() => void onUnlockSealed()}><Shield aria-hidden="true" /> Unlock sealed records</button></div>
+        </section>
+      )}
 
       {!comparison && <section className="empty-state"><Cloud aria-hidden="true" /><h2>No comparison yet</h2><p>Run Compare to preview local-only records, cloud-only records, tombstones, and conflicts before applying any sync action.</p></section>}
       {comparison && comparison.items.length === 0 && <section className="empty-state"><CheckCircle2 aria-hidden="true" /><h2>No sync records yet</h2><p>Push local changes to create record-level cloud sync data, or keep using cloud backup snapshots.</p></section>}
@@ -3322,6 +3348,10 @@ function App() {
   const watchSnapshotsRef = useRef<Map<string, FlightWatchSnapshot>>(new globalThis.Map())
   const [currentBackupChecksum, setCurrentBackupChecksum] = useState<string | undefined>()
   const [syncComparison, setSyncComparison] = useState<SyncComparison | undefined>()
+  // Sealed Sync (v3.1): held only in memory for this tab session, never persisted —
+  // zero-knowledge, same model as the encrypted-backup passphrase.
+  const [syncPassphrase, setSyncPassphrase] = useState<string | undefined>()
+  const [syncPassphraseRequest, setSyncPassphraseRequest] = useState<PassphraseRequest | undefined>()
   const [syncBusy, setSyncBusy] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
   const [syncConflictActions, setSyncConflictActions] = useState<Record<string, SyncConflictAction>>({})
@@ -3329,6 +3359,7 @@ function App() {
   const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([])
   const [deviceName, setDeviceNameState] = useState(() => getDeviceName())
   const [liveApiStatus, setLiveApiStatus] = useState<{ status: 'unchecked' | 'checking' | 'reachable' | 'error'; checkedAt?: string; message?: string }>(() => ({ status: 'unchecked' }))
+  const [providerCapabilities, setProviderCapabilities] = useState<ProviderCapabilities>(DEFAULT_PROVIDER_CAPABILITIES)
   const isOnline = useOnlineStatus()
   const isStandalone = useStandaloneMode()
   const installPrompt = usePwaInstallPrompt()
@@ -3450,6 +3481,9 @@ function App() {
     void listLocalSyncEvents(20).then((events) => {
       if (mounted) setSyncEvents(events)
     })
+    void fetchProviderCapabilities().then((capabilities) => {
+      if (mounted) setProviderCapabilities(capabilities)
+    })
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void) => number
       cancelIdleCallback?: (handle: number) => void
@@ -3522,6 +3556,13 @@ function App() {
         setAuthMessage('Signed out. Local data was not deleted.')
         setCloudBackups([])
         setSyncDevices([])
+        // Covers sign-out paths other than the Settings button (session expiry, a
+        // failed token refresh, or a sign-out in another tab of the same origin) —
+        // a leftover sync passphrase must never carry over to a different signed-in
+        // user in this tab.
+        setSyncPassphrase(undefined)
+        setSyncComparison(undefined)
+        setSyncPassphraseRequest(undefined)
       }
     })
     return () => {
@@ -3994,6 +4035,7 @@ function App() {
   async function handleSignOut() {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
+    setSyncPassphrase(undefined)
     setAuthMessage(error ? friendlyAuthError(error) : 'Signed out. Local data was not deleted.')
   }
 
@@ -4014,7 +4056,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v3.0',
+        appVersion: 'v3.2',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4066,6 +4108,114 @@ function App() {
         }
         throw error
       }
+    }
+  }
+
+  function requestSyncPassphrase(errorMessage?: string): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      setSyncPassphraseRequest({
+        error: errorMessage,
+        resolve: (value) => {
+          setSyncPassphraseRequest(undefined)
+          resolve(value)
+        },
+      })
+    })
+  }
+
+  // Prompts only if no passphrase is already held for this session (used before
+  // sealing a push — encryption itself can't be "wrong", so no retry loop here).
+  async function ensureSyncPassphrase(): Promise<string | undefined> {
+    if (syncPassphrase) return syncPassphrase
+    const passphrase = await requestSyncPassphrase()
+    if (passphrase) setSyncPassphrase(passphrase)
+    return passphrase
+  }
+
+  // Seals records before upload when Sealed Sync is on, prompting for the
+  // passphrase if it isn't already cached this session. Returns undefined (and
+  // sets a message) if the user needs a passphrase and cancels — callers must
+  // treat that as "stop here", not push the unsealed records as a fallback.
+  async function sealForPushIfEnabled(records: SyncRecord[]): Promise<SyncRecord[] | undefined> {
+    if (!settings.syncEncryptionEnabled || records.length === 0) return records
+    const passphrase = await ensureSyncPassphrase()
+    if (!passphrase) {
+      setSyncMessage('Enter your sync passphrase to push encrypted records.')
+      return undefined
+    }
+    return sealRecordsForUpload(records, passphrase)
+  }
+
+  // The single choke point every sync push goes through, so no call site can
+  // accidentally upload plaintext when Sealed Sync is enabled. Returns undefined
+  // (not a thrown error) on a cancelled passphrase prompt, so callers can bail
+  // out cleanly without it being logged/reported as a sync failure.
+  async function pushSyncRecords(records: SyncRecord[]): Promise<number | undefined> {
+    if (records.length === 0) return 0
+    const sealed = await sealForPushIfEnabled(records)
+    if (!sealed) return undefined
+    return pushLocalChanges({ client: supabase, userId: authSession?.user.id, records: sealed, deviceId })
+  }
+
+  async function pushSyncTombstoneRecords(records: SyncRecord[]): Promise<number | undefined> {
+    if (records.length === 0) return 0
+    const sealed = await sealForPushIfEnabled(records)
+    if (!sealed) return undefined
+    return pushTombstones({ client: supabase, userId: authSession?.user.id, records: sealed, deviceId })
+  }
+
+  // Fetches remote sync state using whatever passphrase is already cached this
+  // session (possibly none) without ever prompting, so a plain "Compare" click
+  // never surprises the user with a modal. A stale/wrong cached passphrase falls
+  // back to a locked view rather than failing the whole compare.
+  async function fetchRemoteSyncState(): Promise<SyncState> {
+    try {
+      return await getRemoteSyncState(supabase, { passphrase: syncPassphrase })
+    } catch (error) {
+      if (error instanceof SealedSyncPassphraseError) {
+        setSyncPassphrase(undefined)
+        return getRemoteSyncState(supabase)
+      }
+      throw error
+    }
+  }
+
+  // Explicit user action (SyncPage "Unlock sealed records") that prompts for the
+  // sync passphrase, retrying on a wrong entry, then refreshes the comparison.
+  async function handleUnlockSealedRecords() {
+    if (!isOnline) {
+      setSyncMessage(offlineActionMessage('unlock sealed records'))
+      return
+    }
+    if (!supabase || !authSession) return
+    setSyncBusy(true)
+    setSyncMessage('')
+    try {
+      let lastError: string | undefined
+      for (;;) {
+        const passphrase = await requestSyncPassphrase(lastError)
+        if (!passphrase) return
+        try {
+          const remote = await getRemoteSyncState(supabase, { passphrase })
+          setSyncPassphrase(passphrase)
+          const local = await buildLocalSyncState()
+          const comparison = compareLocalAndRemote(local, remote)
+          setSyncComparison(comparison)
+          setSyncConflictActions(Object.fromEntries(comparison.conflicts.map((item) => [item.key, syncConflictActions[item.key] ?? 'skip'])))
+          setSyncMessage(`Unlocked ${comparison.locked.length === 0 ? 'sealed records' : `${comparison.locked.length} sealed record${comparison.locked.length === 1 ? '' : 's'}`}.`)
+          return
+        } catch (error) {
+          if (error instanceof SealedSyncPassphraseError) {
+            lastError = 'Wrong sync passphrase. Try again.'
+            continue
+          }
+          throw error
+        }
+      }
+    } catch (error) {
+      setSyncMessage(cloudSyncErrorMessage(error, 'Unable to unlock sealed records.'))
+    } finally {
+      setSyncBusy(false)
     }
   }
 
@@ -4296,7 +4446,7 @@ function App() {
     setSyncBusy(true)
     setSyncMessage('')
     try {
-      const [local, remote] = await Promise.all([buildLocalSyncState(), getRemoteSyncState(supabase)])
+      const [local, remote] = await Promise.all([buildLocalSyncState(), fetchRemoteSyncState()])
       const comparison = compareLocalAndRemote(local, remote)
       setSyncComparison(comparison)
       setSyncConflictActions(Object.fromEntries(comparison.conflicts.map((item) => [item.key, 'skip'])))
@@ -4360,7 +4510,7 @@ function App() {
 
   async function refreshSyncComparison(message?: string) {
     if (!supabase || !authSession) return
-    const [local, remote] = await Promise.all([buildLocalSyncState(), getRemoteSyncState(supabase)])
+    const [local, remote] = await Promise.all([buildLocalSyncState(), fetchRemoteSyncState()])
     const comparison = compareLocalAndRemote(local, remote)
     setSyncComparison(comparison)
     setSyncConflictActions(Object.fromEntries(comparison.conflicts.map((item) => [item.key, syncConflictActions[item.key] ?? 'skip'])))
@@ -4381,7 +4531,8 @@ function App() {
     try {
       if (!confirmSyncWithoutRecentBackup('Push local changes')) return
       const records = syncComparison.localOnly.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
-      const count = await pushLocalChanges({ client: supabase, userId: authSession.user.id, records, deviceId })
+      const count = await pushSyncRecords(records)
+      if (count === undefined) return
       const now = new Date().toISOString()
       await recordSyncEvent('push', { pushed: count, tombstones: 0 })
       await updateSyncMetadata({ lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} pushed`, lastSyncError: undefined }, now)
@@ -4439,7 +4590,8 @@ function App() {
     setSyncMessage('')
     try {
       const records = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
-      const count = await pushTombstones({ client: supabase, userId: authSession.user.id, records, deviceId })
+      const count = await pushSyncTombstoneRecords(records)
+      if (count === undefined) return
       const now = new Date().toISOString()
       await recordSyncEvent('tombstone_push', { tombstones: count })
       await updateSyncMetadata({ lastTombstonePushAt: now, lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} tombstones pushed`, lastSyncError: undefined }, now)
@@ -4499,8 +4651,8 @@ function App() {
       const pullRecords = pullRemoteChanges(syncComparison)
       const tombstoneRecords = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
       const pulledTombstones = pullTombstones(syncComparison)
-      if (pushRecords.length > 0) await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records: pushRecords, deviceId })
-      if (tombstoneRecords.length > 0) await pushTombstones({ client: supabase, userId: authSession?.user.id, records: tombstoneRecords, deviceId })
+      if (pushRecords.length > 0 && (await pushSyncRecords(pushRecords)) === undefined) return
+      if (tombstoneRecords.length > 0 && (await pushSyncTombstoneRecords(tombstoneRecords)) === undefined) return
       if (pullRecords.length > 0 || pulledTombstones.length > 0) await applyRemoteSyncRecords([...pullRecords, ...pulledTombstones])
       const now = new Date().toISOString()
       await recordSyncEvent('push', { pushed: pushRecords.length, pulled: pullRecords.length, tombstones: tombstoneRecords.length + pulledTombstones.length })
@@ -4532,18 +4684,18 @@ function App() {
       const activeLocal = item.local && !item.local.deletedAt ? item.local : undefined
       const activeRemote = item.remote && !item.remote.deletedAt ? item.remote : undefined
       if (action === 'keep-local' && item.local) {
-        await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [item.local], deviceId })
+        if ((await pushSyncRecords([item.local])) === undefined) return
       }
       if (action === 'use-cloud' && item.remote) {
         if (!requireTypedConfirmation(`Use the cloud version of ${syncRecordLabel(item)} and overwrite this local record?`, 'USE CLOUD')) return
         await applyRemoteSyncRecords([item.remote])
       }
       if (action === 'keep-deleted' && deletedSide) {
-        if (deletedSide === item.local) await pushTombstones({ client: supabase, userId: authSession.user.id, records: [deletedSide], deviceId })
+        if (deletedSide === item.local) { if ((await pushSyncTombstoneRecords([deletedSide])) === undefined) return }
         else await applyRemoteSyncRecords([deletedSide])
       }
       if (action === 'restore-local' && activeLocal) {
-        await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [activeLocal], deviceId })
+        if ((await pushSyncRecords([activeLocal])) === undefined) return
       }
       if (action === 'restore-cloud' && activeRemote) {
         if (!requireTypedConfirmation(`Restore the active cloud version of ${syncRecordLabel(item)} into this browser?`, 'RESTORE CLOUD')) return
@@ -4586,7 +4738,11 @@ function App() {
       const saved = (await getAllFlights()).find((flight) => flight.id === savedId)
       if (!saved) throw new Error('Merged flight was not found after saving.')
       const record = await buildSyncRecord('flight', saved.id, saved, deviceId)
-      await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [record], deviceId })
+      if ((await pushSyncRecords([record])) === undefined) {
+        await loadFlights()
+        setSyncMessage(`Merged fields for ${syncRecordLabel(item)} and saved locally. Enter your sync passphrase to push it to the cloud.`)
+        return
+      }
       await loadFlights()
       const now = new Date().toISOString()
       await recordSyncEvent('conflict_resolve', { action: 'merge-fields', conflicts: 1 })
@@ -4633,10 +4789,10 @@ function App() {
       const conflicts = syncComparison.conflicts
       if (action === 'keep-local') {
         const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
-        await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
+        if ((await pushSyncRecords(records)) === undefined) return
       } else if (action === 'restore-local') {
         const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt))
-        await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
+        if ((await pushSyncRecords(records)) === undefined) return
       } else if (action === 'use-cloud') {
         const records = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record))
         await applyRemoteSyncRecords(records)
@@ -4646,7 +4802,7 @@ function App() {
       } else if (action === 'keep-deleted') {
         const localDeleted = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
         const remoteDeleted = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
-        await pushTombstones({ client: supabase, userId: authSession?.user.id, records: localDeleted, deviceId })
+        if ((await pushSyncTombstoneRecords(localDeleted)) === undefined) return
         await applyRemoteSyncRecords(remoteDeleted)
       }
       const now = new Date().toISOString()
@@ -4746,18 +4902,19 @@ function App() {
       {!isOnline && <OfflineBanner />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       <PassphraseDialog request={cloudPassphraseRequest} />
+      <PassphraseDialog request={syncPassphraseRequest} title="Enter sync passphrase" description="Sync is encrypted end-to-end. Enter the same passphrase on every device — it is used only on this device and never uploaded." label="Encrypted sync passphrase" />
       {showForm && <FlightForm editing={editing} isOnline={isOnline} initialLookup={quickAddPrefill} onCancel={() => { setShowForm(false); setEditing(undefined); setQuickAddPrefill(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
       {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
       {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
-      {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} />}
+      {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} supportsAirportStatus={providerCapabilities.supportsAirportStatus} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
-      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onMergeFields={handleMergeConflictFields} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} />}
+      {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onMergeFields={handleMergeConflictFields} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} onUnlockSealed={handleUnlockSealedRecords} />}
       {route.page === 'trash' && <TrashPage flights={deletedFlightList} tripMetadata={deletedTripMetadataList} busy={cloudBusy} signedIn={Boolean(authSession)} onRestore={handleRestoreDeletedFlight} onPermanentDelete={handlePermanentDeleteFlight} onRestoreSelected={handleRestoreDeletedFlights} onPermanentDeleteSelected={handlePermanentDeleteFlights} onEmptyTrash={handleEmptyTrash} onExport={handleExportDeletedRecord} onCreateSafetyBackup={handleCreateSafetyBackup} onNavigateSettings={() => navigate('settings')} />}
       <MobileMoreMenu open={mobileMoreOpen} route={route} onNavigate={navigate} onClose={() => setMobileMoreOpen(false)} />
       <nav className="bottom-nav" aria-label="Mobile navigation">

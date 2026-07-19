@@ -1,12 +1,13 @@
 # FlightLog Flight Status Worker
 
-Cloudflare Worker proxy for FlightLog live status. The static app calls this Worker; the Worker calls AeroDataBox RapidAPI with secrets stored in the Worker environment.
+Cloudflare Worker proxy for FlightLog live status. The static app calls this Worker; the Worker calls an aviation data provider (AeroDataBox RapidAPI by default) with secrets stored in the Worker environment.
 
 ## Endpoints
 
 ```txt
 GET /flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Departure
 GET /airport-status?iata=SIN&hours=6
+GET /capabilities
 ```
 
 The Worker validates and normalizes the query, calls AeroDataBox `GET /flights/number/{flightNumber}/{dateLocal}?dateLocalRole=Departure`, and returns the normalized `FlightLiveStatus` JSON shape used by the frontend. `dateRole` may be `Departure` or `Arrival`; `Departure` is the default. It does not request `withFlightPlan=true`.
@@ -56,6 +57,7 @@ Local curl:
 ```sh
 curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02"
 curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Arrival"
+curl "http://localhost:8787/capabilities"
 ```
 
 ## Deployment
@@ -104,10 +106,53 @@ Two separate real-mode caveats to check during that post-deploy verification:
 
 A provider `204` (no movements in the window) degrades to an empty board rather than an error.
 
+## Capabilities (v3.2)
+
+`GET /capabilities` reports what this deployment can do, so the frontend (or any client) can degrade gracefully per deployment instead of hardcoding assumptions:
+
+```json
+{ "provider": "aerodatabox", "mode": "real", "supportsFlightStatus": true, "supportsAirportStatus": true }
+```
+
+- `provider` — the active adapter's `name` (see "Provider adapters" below).
+- `mode` — `real` or `mock`, from `FLIGHTLOG_PROVIDER_MODE`.
+- `supportsFlightStatus` / `supportsAirportStatus` — capability flags from the adapter. If `false`, `GET /flight-status` or `GET /airport-status` returns `501` for that feature instead of erroring unpredictably, and the frontend hides the corresponding UI (e.g. the airport delay board) rather than showing a broken one.
+
+## Provider adapters (v3.2)
+
+Flight data comes from a **provider adapter** — a small module implementing a fixed interface — resolved at request time by `providers/index.js`. This Worker ships one adapter, `providers/aerodatabox.js`, wired up as the default. A fork can add its own by implementing the same interface and registering it, without touching `index.js`'s routing, validation, or caching.
+
+**The adapter contract** (see the JSDoc block at the bottom of `providers/aerodatabox.js` for the authoritative version):
+
+```js
+{
+  name: 'aerodatabox',                 // lowercase id, also the FLIGHTLOG_PROVIDER value
+  supportsFlightStatus: true,          // capability flags surfaced by GET /capabilities
+  supportsAirportStatus: true,
+  fetchFlightStatus(flightNumber, date, dateRole, env) { /* -> FlightLiveStatus shape, real mode */ },
+  fetchAirportStatus(iata, hours, env) { /* -> AirportStatus shape, real mode */ },
+  mockFlightStatus(flightNumber, date) { /* -> FlightLiveStatus shape, deterministic */ },
+  mockAirportStatus(iata) { /* -> AirportStatus shape, deterministic */ },
+}
+```
+
+`index.js` never talks to a provider directly — `handleFlightStatus`/`handleAirportStatus` call `resolveProvider(env)` and then the adapter's methods, gated by its capability flags. Query validation, CORS, response caching, and the mock/real switch (`FLIGHTLOG_PROVIDER_MODE`) all live in `index.js` and are shared by every adapter for free.
+
+**To add a new provider** (e.g. FlightAware, OpenSky, AviationStack):
+
+1. Create `providers/<name>.js`. Use `providers/aerodatabox.js` as the template — reuse `providers/util.js` (`cleanString`, `cleanNumber`, `stripUndefined`, `normalizeFlightNumber`, `providerErrorFromResponse`) and `providers/error.js` (`ProviderError`) rather than reinventing them.
+2. Normalize real responses to the same `FlightLiveStatus` / `AirportStatus` shapes AeroDataBox produces (see the endpoint examples above) — the frontend does not know which provider answered.
+3. If a capability genuinely isn't available from your provider (e.g. no airport-board equivalent), set that flag to `false` rather than implementing a fake `fetchAirportStatus` — the Worker returns a clean `501` and the frontend hides the corresponding panel instead of erroring.
+4. Export the adapter object and register it in `providers/index.js`'s `PROVIDER_ADAPTERS` map.
+5. Set `FLIGHTLOG_PROVIDER=<name>` (via `.dev.vars` locally or `wrangler secret put` / a `[vars]` entry in production) to select it. An unset or unrecognized value falls back to `aerodatabox`.
+6. Add tests mirroring `index.test.js`'s AeroDataBox coverage: request validation is already shared and tested; focus new tests on your adapter's response normalization and the real/mock code paths.
+
+See `docs/SELF_HOSTING.md` at the repo root for the full fork checklist (deploying this Worker, Pages, and wiring them together).
+
 ## Notes
 
-- `AERODATABOX_API_KEY` is never logged, returned, or sent to the frontend.
+- Provider secrets (e.g. `AERODATABOX_API_KEY`) are never logged, returned, or sent to the frontend.
 - `AERODATABOX_API_HOST` should be `aerodatabox.p.rapidapi.com`.
-- `FLIGHTLOG_PROVIDER_MODE=mock` returns deterministic mock data.
-- If real mode has no API key, the Worker returns `503` with `{ "error": "AeroDataBox API key is not configured" }`.
+- `FLIGHTLOG_PROVIDER_MODE=mock` returns deterministic mock data for any adapter.
+- If real mode has no API key, the Worker returns `503` with `{ "error": "AeroDataBox API key is not configured" }` (or the equivalent message from your adapter).
 - CORS allows local Vite dev/preview origins and `https://zheyuanlai.github.io`; `/flightlog/` is covered because browser CORS origins do not include paths.

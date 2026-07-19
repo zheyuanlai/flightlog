@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AppSettings, FlightLogEntry, ProviderAirportSnapshot, SyncDevice, SyncEntityType, SyncEventLog, SyncEventType, SyncOperation, TripMetadata } from '../types'
+import { isEncryptedBackupEnvelope } from '../utils/encryptedBackup'
+import { sealSyncRecord, SealedSyncPassphraseError, unsealSyncRecord } from '../utils/sealedSync'
 import { normalizeAppSettings } from '../utils/settings'
 import { redactedSummary } from '../utils/syncHistory'
 
@@ -18,6 +20,10 @@ export interface SyncRecord {
   tombstoneVersion?: number
   lastOperation?: SyncOperation
   deviceId?: string
+  /** True when this remote record is end-to-end encrypted (Sealed Sync). */
+  sealed?: boolean
+  /** True when a sealed record could not be decrypted (no or wrong passphrase). `record` is undefined; the record cannot be pushed, pulled, or diffed until unlocked. */
+  locked?: boolean
 }
 
 export interface SyncState {
@@ -36,6 +42,7 @@ export type SyncComparisonStatus =
   | 'tombstone-to-push'
   | 'tombstone-to-pull'
   | 'delete-conflict'
+  | 'locked'
 
 export type SyncConflictAction = 'keep-local' | 'use-cloud' | 'keep-deleted' | 'restore-local' | 'restore-cloud' | 'skip'
 
@@ -63,6 +70,8 @@ export interface SyncComparison {
   deleteConflicts: SyncComparisonItem[]
   tombstonesToPush: SyncComparisonItem[]
   tombstonesToPull: SyncComparisonItem[]
+  /** Sealed remote records that could not be decrypted (no or wrong passphrase). */
+  locked: SyncComparisonItem[]
 }
 
 interface SyncedRecordRow {
@@ -223,17 +232,52 @@ function assertSignedIn(userId?: string): string {
   return userId
 }
 
-export async function getRemoteSyncState(client: SupabaseLike | null | undefined): Promise<SyncState> {
+/**
+ * Fetches and decodes remote sync records. When a row's `record_json` is a Sealed
+ * Sync envelope (see src/utils/sealedSync.ts), a `passphrase` is required to read
+ * its content: with the right passphrase the record decrypts transparently and
+ * behaves exactly like a plaintext record for comparison and merge; without one
+ * (or with a wrong one further down) it comes back `locked` — visible (its
+ * cleartext routing columns: entity type, id, timestamps, deletion state) but
+ * with `record: undefined`, so it can never be pulled, pushed over, or diffed
+ * without first being unlocked. A wrong passphrase throws SealedSyncPassphraseError
+ * so the caller can re-prompt, rather than silently treating every sealed record
+ * on this fetch as locked.
+ */
+export async function getRemoteSyncState(client: SupabaseLike | null | undefined, options: { passphrase?: string } = {}): Promise<SyncState> {
   const { data, error } = await assertClient(client)
     .from('synced_records')
     .select('entity_type,local_id,record_json,record_checksum,record_updated_at,deleted_at,device_id')
     .order('updated_at', { ascending: false })
   if (error) throw new Error(cloudSyncErrorMessage(error, 'Unable to load cloud sync records. Run migration 002 and 003 if Sync Lite is not set up yet.'))
   const records = await Promise.all(((data ?? []) as SyncedRecordRow[]).map(async (row) => {
-    const deletedAt = row.deleted_at ?? recordString(row.record_json, 'deletedAt')
-    const rawRecord = row.record_json && typeof row.record_json === 'object' && deletedAt
-      ? { ...row.record_json as Record<string, unknown>, deletedAt }
-      : row.record_json
+    const envelope = row.record_json
+    const sealed = isEncryptedBackupEnvelope(envelope)
+    let payload: unknown = row.record_json
+    if (isEncryptedBackupEnvelope(envelope)) {
+      if (!options.passphrase) {
+        return {
+          entityType: row.entity_type,
+          localId: row.local_id,
+          record: undefined,
+          checksum: `locked:${row.record_checksum ?? row.local_id}`,
+          contentChecksum: `locked:${row.record_checksum ?? row.local_id}`,
+          recordUpdatedAt: row.record_updated_at ?? undefined,
+          deletedAt: row.deleted_at ?? undefined,
+          deviceId: row.device_id ?? undefined,
+          sealed: true,
+          locked: true,
+        } satisfies SyncRecord
+      }
+      // A wrong passphrase throws SealedSyncPassphraseError, which propagates out of
+      // this Promise.all so the caller can catch it and re-prompt rather than every
+      // sealed row on this fetch silently coming back locked with a stale passphrase.
+      payload = await unsealSyncRecord(envelope, options.passphrase)
+    }
+    const deletedAt = row.deleted_at ?? recordString(payload, 'deletedAt')
+    const rawRecord = payload && typeof payload === 'object' && deletedAt
+      ? { ...payload as Record<string, unknown>, deletedAt }
+      : payload
     // Normalize the remote appSettings record to the same canonical shape the
     // local side uses (line ~204), so a device that predates a newly added
     // setting field does not produce a phantom, sticky conflict after upgrade.
@@ -251,9 +295,37 @@ export async function getRemoteSyncState(client: SupabaseLike | null | undefined
       tombstoneVersion: recordNumber(record, 'tombstoneVersion') ?? (deletedAt ? 1 : undefined),
       lastOperation: (recordString(record, 'lastOperation') as SyncOperation | undefined) ?? (deletedAt ? 'delete' : undefined),
       deviceId: row.device_id ?? undefined,
+      sealed,
     } satisfies SyncRecord
   }))
   return stateFromRecords(records)
+}
+
+export { SealedSyncPassphraseError }
+
+/**
+ * Encrypts each record's content for upload (Sealed Sync). The uploaded checksum
+ * is derived from the CIPHERTEXT, not the plaintext: FlightLog's record shapes
+ * (a handful of enum/boolean settings, a small set of plausible flight fields)
+ * have low enough entropy that a plaintext-derived hash would let a database
+ * reader recover content via offline dictionary/enumeration, without ever
+ * needing the passphrase — an ordinary one-way hash is not confidentiality
+ * -preserving against a guessable input space. getRemoteSyncState never reads
+ * the server-stored checksum back for comparison (it always recomputes from the
+ * decrypted payload after unlocking), so a ciphertext-derived value here is free.
+ */
+export async function sealRecordsForUpload(records: SyncRecord[], passphrase: string, options: { iterations?: number } = {}): Promise<SyncRecord[]> {
+  return Promise.all(records.map(async (record) => {
+    const envelope = await sealSyncRecord(record.record, passphrase, options)
+    const ciphertextChecksum = await sha256(envelope.payload)
+    return {
+      ...record,
+      record: envelope,
+      checksum: ciphertextChecksum,
+      contentChecksum: ciphertextChecksum,
+      sealed: true,
+    }
+  }))
 }
 
 function newerSide(local?: SyncRecord, remote?: SyncRecord): 'local' | 'remote' | 'unknown' {
@@ -283,13 +355,15 @@ export function compareLocalAndRemote(local: SyncState, remote: SyncState): Sync
     const [entityType, ...idParts] = key.split(':')
     const localId = idParts.join(':')
     const deletionStatus = compareDeletionState(localRecord, remoteRecord)
-    const status: SyncComparisonStatus = deletionStatus ?? (!localRecord
-      ? 'remote-only'
-      : !remoteRecord
-        ? 'local-only'
-        : localRecord.checksum === remoteRecord.checksum
-          ? 'same'
-          : 'conflict')
+    const status: SyncComparisonStatus = remoteRecord?.locked
+      ? 'locked'
+      : deletionStatus ?? (!localRecord
+        ? 'remote-only'
+        : !remoteRecord
+          ? 'local-only'
+          : localRecord.checksum === remoteRecord.checksum
+            ? 'same'
+            : 'conflict')
     const localDeleted = isSyncRecordDeleted(localRecord)
     const remoteDeleted = isSyncRecordDeleted(remoteRecord)
     return {
@@ -319,6 +393,7 @@ export function compareLocalAndRemote(local: SyncState, remote: SyncState): Sync
     deleteConflicts,
     tombstonesToPush: items.filter((item) => item.status === 'tombstone-to-push'),
     tombstonesToPull: items.filter((item) => item.status === 'tombstone-to-pull'),
+    locked: items.filter((item) => item.status === 'locked'),
   }
 }
 
@@ -390,11 +465,11 @@ export async function pushTombstones(options: {
 }
 
 export function pullRemoteChanges(comparison: SyncComparison): SyncRecord[] {
-  return comparison.remoteOnly.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt))
+  return comparison.remoteOnly.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt && !record.locked))
 }
 
 export function pullTombstones(comparison: SyncComparison): SyncRecord[] {
-  return comparison.tombstonesToPull.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
+  return comparison.tombstonesToPull.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record?.deletedAt && !record.locked))
 }
 
 export function restoreRecordFromTombstone<T extends Record<string, unknown>>(record: T, now = new Date().toISOString()): T {
@@ -426,6 +501,8 @@ export function listRecentlyDeleted(state: SyncState): SyncRecord[] {
 export function syncRecordLabel(record: SyncRecord | SyncComparisonItem): string {
   const entityType = record.entityType
   const localId = record.localId
+  const locked = 'record' in record ? record.locked : record.remote?.locked
+  if (locked) return `${localId} (locked)`
   const source = 'record' in record ? record.record : record.local?.record ?? record.remote?.record
   if (entityType === 'flight' && source && typeof source === 'object') {
     const flight = source as Partial<FlightLogEntry>
