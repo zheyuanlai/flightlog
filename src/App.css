@@ -27,6 +27,19 @@
   top: 8px;
 }
 
+/* Off-screen (not 1x1-visually-hidden) so the browser lays out and paginates
+   the print document at a realistic width before window.print() is called
+   on it -- a 1px iframe would compute print pages against a near-zero
+   viewport. */
+.print-frame {
+  position: fixed;
+  top: -10000px;
+  left: -10000px;
+  width: 900px;
+  height: 1px;
+  border: 0;
+}
+
 .app-shell {
   --color-primary: #0f766e;
   --color-primary-strong: #0b5c55;

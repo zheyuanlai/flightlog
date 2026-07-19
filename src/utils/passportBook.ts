@@ -199,12 +199,14 @@ export function drawPassportPage(ctx: CanvasRenderingContext2D, page: StampPage,
   ctx.fillText(pageLabel, PASSPORT_PAGE_WIDTH / 2, PASSPORT_PAGE_HEIGHT - 70)
 }
 
-export async function renderPassportPagePng(page: StampPage, options: DrawPassportPageOptions = {}): Promise<Blob> {
+export async function renderPassportPagePng(page: StampPage, options: DrawPassportPageOptions & { scale?: 1 | 2 } = {}): Promise<Blob> {
+  const scale = options.scale ?? 1
   const canvas = document.createElement('canvas')
-  canvas.width = PASSPORT_PAGE_WIDTH
-  canvas.height = PASSPORT_PAGE_HEIGHT
+  canvas.width = PASSPORT_PAGE_WIDTH * scale
+  canvas.height = PASSPORT_PAGE_HEIGHT * scale
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Passport export is unavailable because Canvas 2D is not supported in this browser.')
+  if (scale !== 1) ctx.scale(scale, scale)
   drawPassportPage(ctx, page, options)
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {

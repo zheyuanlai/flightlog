@@ -191,6 +191,14 @@ v5.1 is community & governance infrastructure. Only the license-agnostic half is
 - **Shipped**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (setup, checks, PR process), issue templates (bug report, feature request, plus a `config.yml` pointing at the roadmap and data-format docs), a PR template with a checklist matched to this repo's actual CI checks, and [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) walking through the exact files to touch to add a new language (see [v2.6 Localization](#v26-localization) for the language layer itself).
 - ⚠️ **Not shipped, and deliberately not guessed at**: this repository has no LICENSE file yet, no formal governance model, and no code of conduct. `CONTRIBUTING.md` says so plainly rather than assuming an answer. See `docs/ROADMAP.md` §9 for the open decisions.
 
+## v5.3 Archive
+
+FlightLog v5.3 is about lifetime data stewardship: your travel history should outlive any one device, app version, or even FlightLog itself.
+
+- **Lifetime archive**: Backup Center → "Export lifetime archive" produces a single, self-contained `.html` file — your lifetime stats, achievements, and passport stamp pages rendered as a readable page, with your full flight data embedded in it for a round-trip restore. No external stylesheet, script, or network request; it opens correctly in any browser decades from now with no app installed. The same renderer, reused rather than duplicated, powers the "Print passport" button on the Passport page (an offscreen iframe renders the page and calls the browser's native print/Save-as-PDF — no separate print template, no popup window, and the embedded-data step is skipped entirely since a print is ephemeral).
+- **Import from archive**: Backup Center's "Restore backup" file picker now also accepts a lifetime archive `.html` file directly — it's detected automatically, previewed the same way a full backup is (with a checksum-integrity check), and can be merged or replaced, same as any other backup.
+- **Format**: `docs/DATA_FORMAT.md` documents the new `ArchivePayload` shape — a `FlightLogBackup` extended with a frozen point-in-time stats/achievements snapshot and its own independent version number, following the same "extend, don't replace" pattern the v4.2 trip-share format already established.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.
