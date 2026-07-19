@@ -7,6 +7,7 @@ Cloudflare Worker proxy for FlightLog live status. The static app calls this Wor
 ```txt
 GET /flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Departure
 GET /airport-status?iata=SIN&hours=6
+GET /aircraft-history?registration=9V-SGA
 GET /capabilities
 ```
 
@@ -57,6 +58,7 @@ Local curl:
 ```sh
 curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02"
 curl "http://localhost:8787/flight-status?flightNumber=SQ38&date=2026-06-02&dateRole=Arrival"
+curl "http://localhost:8787/aircraft-history?registration=9V-SGA"
 curl "http://localhost:8787/capabilities"
 ```
 
@@ -106,17 +108,35 @@ Two separate real-mode caveats to check during that post-deploy verification:
 
 A provider `204` (no movements in the window) degrades to an empty board rather than an error.
 
+## Aircraft registration history (v4.3)
+
+`GET /aircraft-history?registration=9V-SGA` returns aircraft type/age/delivery metadata for a tail number, normalized from AeroDataBox's aircraft-by-registration endpoint:
+
+```txt
+GET https://aerodatabox.p.rapidapi.com/aircrafts/reg/{registration}
+```
+
+```json
+{ "registration": "9V-SGA", "type": "Airbus A350-900", "typeCode": "A359", "airlineName": "Singapore Airlines", "ageYears": 5.2, "firstFlightDate": "2020-02-01", "deliveryDate": "2020-03-01", "provider": "AeroDataBox", "warnings": [] }
+```
+
+`registration` must be 2-10 letters, numbers, or hyphens. A `404` means AeroDataBox has no record for that registration. Results are cached for a day (aircraft metadata rarely changes, unlike live flight status).
+
+**Field mapping is best-effort and unverified** — this repo has no AeroDataBox credentials to test against a live response. `normalizeAeroDataBoxAircraft` reads every field defensively (a wrong field name just leaves that field blank, not a crash), but verify the mapping against a real response during post-deploy verification and adjust if fields that should be populated aren't. Mock mode is unaffected.
+
+This endpoint deliberately does **not** attempt "historical route analytics" (typical aircraft per route, seasonal punctuality) — see `docs/ROADMAP.md` §10 for why that half of the original v4.3 scope was skipped rather than built against a data source with unclear licensing.
+
 ## Capabilities (v3.2)
 
 `GET /capabilities` reports what this deployment can do, so the frontend (or any client) can degrade gracefully per deployment instead of hardcoding assumptions:
 
 ```json
-{ "provider": "aerodatabox", "mode": "real", "supportsFlightStatus": true, "supportsAirportStatus": true }
+{ "provider": "aerodatabox", "mode": "real", "supportsFlightStatus": true, "supportsAirportStatus": true, "supportsAircraftHistory": true }
 ```
 
 - `provider` — the active adapter's `name` (see "Provider adapters" below).
 - `mode` — `real` or `mock`, from `FLIGHTLOG_PROVIDER_MODE`.
-- `supportsFlightStatus` / `supportsAirportStatus` — capability flags from the adapter. If `false`, `GET /flight-status` or `GET /airport-status` returns `501` for that feature instead of erroring unpredictably, and the frontend hides the corresponding UI (e.g. the airport delay board) rather than showing a broken one.
+- `supportsFlightStatus` / `supportsAirportStatus` / `supportsAircraftHistory` — capability flags from the adapter. If `false`, the corresponding endpoint returns `501` instead of erroring unpredictably, and the frontend hides the corresponding UI (e.g. the airport delay board, or the aircraft lookup panel) rather than showing a broken one. Note that the frontend treats a *missing* `supportsAircraftHistory` field (an older, un-redeployed Worker) as `false` — unlike the other two flags, which predate `/capabilities` itself and so fail open.
 
 ## Provider adapters (v3.2)
 
@@ -129,14 +149,17 @@ Flight data comes from a **provider adapter** — a small module implementing a 
   name: 'aerodatabox',                 // lowercase id, also the FLIGHTLOG_PROVIDER value
   supportsFlightStatus: true,          // capability flags surfaced by GET /capabilities
   supportsAirportStatus: true,
+  supportsAircraftHistory: true,
   fetchFlightStatus(flightNumber, date, dateRole, env) { /* -> FlightLiveStatus shape, real mode */ },
   fetchAirportStatus(iata, hours, env) { /* -> AirportStatus shape, real mode */ },
+  fetchAircraftHistory(registration, env) { /* -> AircraftLookup shape, real mode */ },
   mockFlightStatus(flightNumber, date) { /* -> FlightLiveStatus shape, deterministic */ },
   mockAirportStatus(iata) { /* -> AirportStatus shape, deterministic */ },
+  mockAircraftHistory(registration) { /* -> AircraftLookup shape, deterministic */ },
 }
 ```
 
-`index.js` never talks to a provider directly — `handleFlightStatus`/`handleAirportStatus` call `resolveProvider(env)` and then the adapter's methods, gated by its capability flags. Query validation, CORS, response caching, and the mock/real switch (`FLIGHTLOG_PROVIDER_MODE`) all live in `index.js` and are shared by every adapter for free.
+`index.js` never talks to a provider directly — `handleFlightStatus`/`handleAirportStatus`/`handleAircraftHistory` call `resolveProvider(env)` and then the adapter's methods, gated by its capability flags. Query validation, CORS, response caching, and the mock/real switch (`FLIGHTLOG_PROVIDER_MODE`) all live in `index.js` and are shared by every adapter for free.
 
 **To add a new provider** (e.g. FlightAware, OpenSky, AviationStack):
 

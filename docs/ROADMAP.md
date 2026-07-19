@@ -174,11 +174,12 @@ Collaboration without betraying the non-negotiables.
 - **Merge a shared trip (shipped)** into the recipient's log via the *existing* backup-import pipeline (`parseFullBackupJson`/`previewBackupImport`) unchanged — the Backup Center detects the trip-share marker and shows trip-specific preview copy, hides "Replace all local data", and flags a checksum-mismatch warning if the file was altered after export.
 - ⚠️ **Human gate (product/privacy), still deferred:** anything beyond file/link exchange (a shared live view) would need a server and moderation — explicitly out of scope for this stage, pending an owner decision recorded in §10.
 
-### v4.3 — "Deep parity": Variflight-grade reference data (provider/data gated)
+### v4.3 — "Deep parity": Variflight-grade reference data (provider/data gated) — ◐ partially shipped (licensing-gated slice skipped; see §10)
 
-- **Historical route analytics** (typical aircraft, seasonal punctuality) where a free/permissively-licensed dataset exists.
-- **Aircraft registration history** ("you've flown this exact tail before") from logged registrations + optional provider lookup.
-- ⚠️ **Human gate:** each depends on a data source whose licensing must be confirmed before shipping (see §9/§10). No scraping; permissive/licensed sources only.
+- **Aircraft registration history (shipped)** — two layers, per the licensing decision recorded in §10:
+  - "You've flown this exact tail before" (`src/utils/tailHistory.ts`): from the user's own logged registrations, no external data.
+  - Aircraft lookup (Worker `GET /aircraft-history`, `src/utils/aircraftHistory.ts`): on-demand type/age/delivery-date enrichment via the already-integrated AeroDataBox provider, following the v3.2 provider-adapter pattern, gated by `/capabilities` so forks without it degrade gracefully.
+- **Historical route analytics (skipped)** — researched OpenSky Network, US DOT/BTS, AeroDataBox, and OpenFlights; none clears the bar of free + globally applicable + safe for a public open-source app without a bespoke licensing agreement or a from-scratch ETL pipeline over US-only data. Recorded as a declined decision in §10 rather than left as a silent gap.
 
 ---
 
@@ -240,8 +241,8 @@ Speculative bets to reconsider as the platform and web evolve — each would req
 | Chinese localization | — | ✅ | v2.6 (+ community languages v5.1) |
 | Check-in reminders/links | ✅ | ✅ | ✅ basic; per-airline deep links (v2.5+) |
 | Connection risk / planning | ✅ | ◐ | v4.1 |
-| Aircraft/tail history | — | ✅ | v4.3 (data-license gated) |
-| Historical route analytics | — | ✅ | v4.3 (data-license gated) |
+| Aircraft/tail history | — | ✅ | ✅ shipped v4.3 (own log + AeroDataBox lookup) |
+| Historical route analytics | — | ✅ | Declined — no license-safe global data source (see §10) |
 | Collaboration / sharing | ✅ | — | ✅ shipped v4.2 (file/link only); live sharing is a product gate |
 | Self-host / bring-your-own-provider | — | — | v3.2 (FlightLog-specific strength) |
 | Accessibility AA | ◐ | ◐ | v5.0 (target: exceed both) |
@@ -270,7 +271,7 @@ Owner status is noted inline where a gate has already been resolved or declined.
 **Decisions (recorded in §10)**
 6. **Sync-record key-management model** (v3.1).
 7. **Live collaboration beyond file/link** (v4.2).
-8. **Data-source licensing** for reference data (v4.3).
+8. ~~**Data-source licensing** for reference data (v4.3)~~ — **decided: see §10.** Aircraft tail history ships (own-log + AeroDataBox); historical route analytics is declined for lack of a clean license-safe global source.
 9. **Governance, LICENSE, code of conduct, announcement** (v5.1).
 10. **Sustainability/funding model** (v5.2).
 11. **Any Horizon promotion** — especially push, which tensions "free to run" / "no server."
@@ -286,6 +287,7 @@ The non-negotiables are a contract; this ledger is where the owner records any d
 | 2026-07-18 | — (scope) | Apple login | **Declined** — Apple Developer Program cost not justified; added to the permanent out-of-scope list. | zheyuanlai |
 | 2026-07-18 | — (quality gate) | v2.6 translations (zh-CN / zh-TW / ja) | **Reviewed and approved**; in-app "pending review" disclaimer removed. | zheyuanlai |
 | 2026-07-19 | — (security design) | v3.1 Sealed Sync key management | **Decided: passphrase re-entry per device** over wrapped-key escrow — zero-knowledge, consistent with the already-shipped encrypted-backup model, no server-stored key material even wrapped. | zheyuanlai |
+| 2026-07-19 | — (data licensing) | v4.3 Deep parity data sources | **Researched and decided.** Aircraft tail history: ships two ways — "you've flown this tail before" from the user's own logged flights (no external data, no license question) plus an aircraft-lookup enrichment via AeroDataBox, the provider already integrated and paid for since v2.7 (confirmed to offer a registration-lookup endpoint, works globally, no non-commercial restriction). Historical route analytics: **declined** — OpenSky Network's terms require a separate written license for use in any live product regardless of non-commercial status; US DOT/BTS is public-domain but US-domestic-only with no API (bulk monthly files only, would require building and hosting a full ETL pipeline for a feature that would then only cover a fraction of routes); OpenFlights' routes data is stale since ~2014 and has no aircraft/on-time fields. No source met the bar of free + globally applicable + safe for a public open-source app without a bespoke agreement or major new infrastructure — skipped rather than shipped on a shaky license or with US-only coverage presented as general. | zheyuanlai |
 
 Candidate future entries (pending, not decided): push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
 
