@@ -109,6 +109,28 @@ FlightLog v3.0 turns the passport from a stats page into an achievement identity
 
 All of this is computed locally from your own history — no account, no server. The engine and renderer are covered by 33 pure-function unit tests.
 
+## v3.1 Sealed Sync
+
+FlightLog v3.1 extends end-to-end encryption from full backup snapshots to individual Cloud Sync Lite records, so you can keep the convenience of record-level sync without trusting the server with plaintext.
+
+- **Turn it on**: Settings → Sync → "Encrypt sync end-to-end". Off by default; nothing changes for existing users until you opt in.
+- **How the key works**: the same zero-knowledge model as encrypted backups — you enter a passphrase, and it's used only on this device to derive an AES-GCM key (PBKDF2, 600k iterations). The passphrase and key are **never** uploaded, stored in Supabase, or written to disk; they live only in this browser tab's memory for the session, and you re-enter the same passphrase on every device you sync to. **There is no recovery if you forget it** — encrypted records on the server stay unreadable forever, by design.
+- **What's encrypted vs. visible**: each record's content (`record_json`) is sealed into the same PBKDF2 + AES-GCM envelope format as encrypted backups — no new crypto or schema migration was needed, it's the identical envelope, just sealed once per record instead of once per backup. Routing metadata stays in cleartext columns exactly as before (entity type, record id, timestamps, deletion state) — these were already called out as "non-sensitive routing columns" and remain so; the server only ever additionally sees a one-way content checksum alongside the ciphertext, never the passphrase or key.
+- **Sealed records from another device** show up as **locked**: visible (you can see one exists and its cleartext metadata) but unreadable — they can't be pushed over, pulled, or diffed — until you enter the correct passphrase via "Unlock sealed records" on the Sync page. A wrong passphrase is rejected and you're asked to try again; nothing is silently corrupted or overwritten.
+- **Mixed histories work fine**: encrypted and unencrypted records sync side by side. Turning the setting on only affects what *this device* uploads from now on.
+
+Engine: `src/utils/sealedSync.ts` (thin per-record encrypt/decrypt wrapper reusing `src/utils/encryptedBackup.ts`) and the `locked`/`sealed` handling in `src/lib/cloudSync.ts`. Covered by 9 new unit tests plus the existing sync/conflict test suite, all passing unmodified.
+
+## v3.2 Bring Your Own Provider
+
+FlightLog v3.2 makes the flight-status Worker forkable and self-hostable end to end, so a fork isn't locked into AeroDataBox.
+
+- **Provider adapter interface**: the Worker's AeroDataBox-specific logic now lives behind a small adapter interface (`workers/flight-status-worker/providers/`). Swapping in FlightAware, OpenSky, AviationStack, or any other aviation data source means implementing one module and registering it — no changes to the Worker's routing, request validation, or response caching, which are all provider-agnostic.
+- **Capabilities endpoint**: `GET /capabilities` reports the active provider and what it supports (`supportsFlightStatus`, `supportsAirportStatus`), so the frontend hides a feature a provider doesn't implement (e.g. no airport delay board) instead of showing a broken one. It fails open — an older, un-redeployed Worker with no `/capabilities` route is treated as fully capable, so nothing regresses for existing users.
+- **Self-host guide**: `docs/SELF_HOSTING.md` is a fork checklist covering the static app, the Worker (including adding a new provider adapter), and Supabase — each step independent and skippable.
+
+See `workers/flight-status-worker/README.md` → "Provider adapters" for the adapter contract and how to add one.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

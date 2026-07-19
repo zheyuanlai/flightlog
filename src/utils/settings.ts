@@ -20,6 +20,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   goalFlightsPerYear: 0,
   goalCountriesPerYear: 0,
   goalAirportsPerYear: 0,
+  syncEncryptionEnabled: false,
 }
 
 const distanceUnits = new Set<AppSettings['distanceUnit']>(['miles', 'kilometers'])
@@ -70,6 +71,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     goalFlightsPerYear: numberSetting(input.goalFlightsPerYear, DEFAULT_APP_SETTINGS.goalFlightsPerYear, 0, 10000),
     goalCountriesPerYear: numberSetting(input.goalCountriesPerYear, DEFAULT_APP_SETTINGS.goalCountriesPerYear, 0, 500),
     goalAirportsPerYear: numberSetting(input.goalAirportsPerYear, DEFAULT_APP_SETTINGS.goalAirportsPerYear, 0, 10000),
+    syncEncryptionEnabled: booleanSetting(input.syncEncryptionEnabled, DEFAULT_APP_SETTINGS.syncEncryptionEnabled),
   }
 }
 

@@ -27,6 +27,9 @@ import {
   pushLocalChanges,
   pushTombstones,
   resolveConflict,
+  sealRecordsForUpload,
+  SealedSyncPassphraseError,
+  syncRecordLabel,
   type SyncRecord,
 } from '../lib/cloudSync'
 
@@ -239,5 +242,74 @@ describe('settings and sync foundation', () => {
     expect(comparison.tombstonesToPull).toHaveLength(1)
     expect(pullRemoteChanges(comparison)).toHaveLength(0)
     expect(pullTombstones(comparison).map((record) => record.localId)).toEqual(['flight-deleted'])
+  })
+})
+
+describe('sealed sync (v3.1)', () => {
+  const PASSPHRASE = 'correct horse battery staple'
+  const FAST_ITERATIONS = 1000
+
+  it('seals a record for upload so the server never sees plaintext, and unseals it back with the right passphrase', async () => {
+    const local = await getLocalSyncState({ flights: [flight({ notes: 'very private note' })], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const flightRecord = local.records.find((record) => record.entityType === 'flight')!
+    const [sealed] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
+    expect(sealed.sealed).toBe(true)
+    expect(sealed.checksum).toBe(flightRecord.checksum) // checksum stays plaintext-derived, unaffected by sealing
+    expect(JSON.stringify(sealed.record)).not.toContain('very private note')
+
+    const { client, store } = mockSyncClient([])
+    await pushLocalChanges({ client, userId: 'user-a', records: [sealed], deviceId: 'device-a' })
+    expect(JSON.stringify(store.upserted[0].record_json)).not.toContain('very private note')
+
+    const remoteRows = [remoteRow(sealed)]
+    const { client: pullClient } = mockSyncClient(remoteRows)
+    const remote = await getRemoteSyncState(pullClient, { passphrase: PASSPHRASE })
+    const [unsealed] = remote.records.filter((record) => record.entityType === 'flight')
+    expect(unsealed.locked).toBeUndefined()
+    expect(unsealed.sealed).toBe(true)
+    expect((unsealed.record as FlightLogEntry).notes).toBe('very private note')
+    expect(unsealed.checksum).toBe(flightRecord.checksum)
+  })
+
+  it('comes back locked (not decrypted) without a passphrase, and never surfaces as pullable', async () => {
+    const local = await getLocalSyncState({ flights: [flight()], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const flightRecord = local.records.find((record) => record.entityType === 'flight')!
+    const [sealed] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
+
+    const { client } = mockSyncClient([remoteRow(sealed)])
+    const remote = await getRemoteSyncState(client)
+    const [locked] = remote.records.filter((record) => record.entityType === 'flight')
+    expect(locked.locked).toBe(true)
+    expect(locked.record).toBeUndefined()
+
+    const emptyLocal = await getLocalSyncState({ flights: [], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const comparison = compareLocalAndRemote(emptyLocal, remote)
+    const item = comparison.items.find((entry) => entry.entityType === 'flight')
+    expect(item?.status).toBe('locked')
+    expect(comparison.locked).toHaveLength(1)
+    expect(comparison.remoteOnly).toHaveLength(0) // locked records are never mistaken for pullable content
+    expect(pullRemoteChanges(comparison)).toHaveLength(0)
+    expect(syncRecordLabel(item!)).toContain('locked')
+  })
+
+  it('throws SealedSyncPassphraseError on a wrong passphrase instead of silently locking', async () => {
+    const local = await getLocalSyncState({ flights: [flight()], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const flightRecord = local.records.find((record) => record.entityType === 'flight')!
+    const [sealed] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
+    const { client } = mockSyncClient([remoteRow(sealed)])
+    await expect(getRemoteSyncState(client, { passphrase: 'the wrong passphrase' })).rejects.toBeInstanceOf(SealedSyncPassphraseError)
+  })
+
+  it('mixes sealed and unsealed records in the same sync state without either interfering with the other', async () => {
+    const local = await getLocalSyncState({ flights: [flight({ id: 'sealed-flight' }), flight({ id: 'plain-flight', flightNumber: 'UA1' })], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const [sealedSource, plainSource] = local.records.filter((record) => record.entityType === 'flight')
+    const [sealed] = await sealRecordsForUpload([sealedSource], PASSPHRASE, { iterations: FAST_ITERATIONS })
+
+    const { client } = mockSyncClient([remoteRow(sealed), remoteRow(plainSource)])
+    const remote = await getRemoteSyncState(client, { passphrase: PASSPHRASE })
+    const flights = remote.records.filter((record) => record.entityType === 'flight')
+    expect(flights).toHaveLength(2)
+    expect(flights.find((record) => record.localId === 'sealed-flight')?.sealed).toBe(true)
+    expect(flights.find((record) => record.localId === 'plain-flight')?.sealed).toBeFalsy()
   })
 })

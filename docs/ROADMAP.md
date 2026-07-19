@@ -123,21 +123,22 @@ Goal: deepen the passport identity and turn FlightLog from an app into a small, 
 - **Streaks & goals (shipped)**: user-set yearly targets (flights / countries / airports) in `AppSettings`, with current-year progress on the passport page.
 - **Tests (shipped)**: 33 pure-function tests (`achievements.test.ts`, `passportBook.test.ts`) over synthetic flight histories with an injected airport resolver.
 
-### v3.1 — "Sealed sync": end-to-end encrypted Sync Lite records (autonomous build, one design gate)
+### v3.1 — "Sealed sync": end-to-end encrypted Sync Lite records (autonomous build, one design gate) — ✅ shipped
 
 Extend E2EE from snapshots to record-level sync.
 
-- Per-record AES-GCM using a key derived from a sync passphrase; server stores only ciphertext + non-sensitive routing columns.
-- Backward-compatible: unencrypted records still sync; a per-user "encrypt sync" opt-in.
-- ⚠️ **Human gate (security design):** cross-device key management — passphrase re-entry per device vs. a wrapped-key escrow. Changes the threat model; the owner chooses. Everything else is autonomous.
+- **Human gate resolved (2026-07-19):** cross-device key management — the owner chose **passphrase re-entry per device** (zero-knowledge, same model as encrypted backups) over wrapped-key escrow, for consistency with what's already shipped and to avoid the server ever storing key material, even wrapped.
+- **Per-record encryption (shipped)**: `src/utils/sealedSync.ts` reuses the existing PBKDF2 + AES-GCM envelope from encrypted backups per record — no new crypto primitives or schema migration; the envelope drops directly into the existing `record_json` column, the same way `cloud_backups.backup_json` already stores one.
+- **Backward-compatible (shipped)**: a per-user "Encrypt sync" opt-in (`AppSettings.syncEncryptionEnabled`, default off); unencrypted records keep syncing exactly as before. Sealed records from another device surface as **locked** (visible metadata, unreadable content) until unlocked with the correct passphrase — never silently corrupted or treated as plaintext.
+- **Tests (shipped)**: 9 new unit tests (`sealedSync.test.ts`) plus 4 new integration tests in `settingsSync.test.ts` covering seal/unseal round-trips, the locked state, wrong-passphrase rejection, and mixed sealed/unsealed histories.
 
-### v3.2 — "Bring your own provider": pluggable data layer (autonomous)
+### v3.2 — "Bring your own provider": pluggable data layer (autonomous) — ✅ shipped
 
 Make FlightLog forkable and self-hostable end to end.
 
-- **Provider adapter interface** in the Worker so a fork can swap AeroDataBox for FlightAware, OpenSky, AviationStack, etc., by implementing one module.
-- **Self-host guide + one-click templates**: documented `wrangler` deploy, `.dev.vars` templates, and a GitHub-Pages-plus-Worker fork checklist.
-- **Config surface**: the app reads provider capability flags from the Worker so features degrade gracefully per deployment.
+- **Provider adapter interface (shipped)** in the Worker (`workers/flight-status-worker/providers/`) — AeroDataBox-specific logic extracted behind a fixed adapter contract; a fork swaps in FlightAware, OpenSky, AviationStack, etc. by implementing one module and registering it, with zero changes to routing, validation, or caching.
+- **Self-host guide (shipped)**: `docs/SELF_HOSTING.md` — a fork checklist for the static app, the Worker (including adding a provider), and Supabase, each step independent and skippable.
+- **Config surface (shipped)**: `GET /capabilities` reports the active provider and its capability flags; the frontend (`src/utils/providerCapabilities.ts`) fails open (treats an older Worker with no route as fully capable) and hides a feature (e.g. the airport delay board) a provider doesn't implement instead of erroring.
 - All autonomous; a maintainer deploying a fork is doing their own human step, not ours.
 
 ### v3.3 — "Companion surfaces": read-only widgets & views (autonomous, within constraints)
@@ -284,6 +285,7 @@ The non-negotiables are a contract; this ledger is where the owner records any d
 | --- | --- | --- | --- | --- |
 | 2026-07-18 | — (scope) | Apple login | **Declined** — Apple Developer Program cost not justified; added to the permanent out-of-scope list. | zheyuanlai |
 | 2026-07-18 | — (quality gate) | v2.6 translations (zh-CN / zh-TW / ja) | **Reviewed and approved**; in-app "pending review" disclaimer removed. | zheyuanlai |
+| 2026-07-19 | — (security design) | v3.1 Sealed Sync key management | **Decided: passphrase re-entry per device** over wrapped-key escrow — zero-knowledge, consistent with the already-shipped encrypted-backup model, no server-stored key material even wrapped. | zheyuanlai |
 
 Candidate future entries (pending, not decided): push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
 
