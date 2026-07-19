@@ -194,11 +194,22 @@ Goal: make FlightLog outlive its original author — sustainable, governed, acce
 - **Performance budget (shipped, partial)**: `size-limit` bundle-size budgets enforced in a new PR-gated CI workflow (`.github/workflows/ci.yml`) and on the release/deploy path — previously nothing ran automatically before merge. ⚠️ **Deferred:** the Lighthouse PWA ≥ 95 gate — `@lhci/cli`'s current release drags in 300+ transitive packages with several unpatched vulnerabilities (including one high-severity) and no clean fix path; not a tradeoff worth making until the tooling catches up.
 - **Storage resilience (shipped)**: an app-wide error boundary, IndexedDB availability feature-detection at startup with a clear on-screen message, a visible recovery banner (linking to Backup Center) instead of a silent empty-dashboard failure when the initial load fails, and error handling on the backup merge/replace actions.
 
-### v5.1 — "Open house": community & governance (human/community gated)
+### v5.1 — "Open house": community & governance (human/community gated) — ◐ infra shipped, gates open
 
-- **Contribution infrastructure**: CONTRIBUTING, issue/PR templates, a public roadmap board, and a triage rota.
-- **Localization program**: a translation-contribution workflow so the community can add languages beyond en/zh-CN.
-- ⚠️ **Human gates:** LICENSE confirmation, governance model (BDFL vs. maintainer team), code of conduct adoption, and whether/how to announce the project.
+- **Contribution infrastructure (shipped)**: `CONTRIBUTING.md`, issue templates (bug report, feature
+  request, a `config.yml` pointing at the roadmap and data-format docs), and a PR template with a
+  checklist tied to this repo's actual checks (lint/typecheck/test/build/size, light+dark UI,
+  mobile width). The "public roadmap board" is `docs/ROADMAP.md` itself, already public in the
+  repo — a separate GitHub Projects board was judged redundant rather than skipped for scope
+  reasons. A triage rota needs more than one active maintainer to be meaningful, so it's deferred
+  alongside the governance-model decision below rather than invented as a placeholder.
+- **Localization program (shipped)**: `docs/LOCALIZATION.md` documents the concrete steps to add a
+  language (which files change, how the coverage tests validate it, and that translation quality
+  still needs human review before the in-app "pending review" caveat is lifted — the same bar
+  zh-CN/zh-TW/ja already cleared, per §10).
+- ⚠️ **Human gates (still open):** LICENSE confirmation, governance model (BDFL vs. maintainer
+  team), code of conduct adoption, and whether/how to announce the project. `CONTRIBUTING.md`
+  is deliberately explicit that these are unresolved rather than assuming an answer — see §9.
 
 ### v5.2 — "Sustainable": funding without betraying "free" (human decision gated)
 
@@ -272,7 +283,7 @@ Owner status is noted inline where a gate has already been resolved or declined.
 6. **Sync-record key-management model** (v3.1).
 7. **Live collaboration beyond file/link** (v4.2).
 8. ~~**Data-source licensing** for reference data (v4.3)~~ — **decided: see §10.** Aircraft tail history ships (own-log + AeroDataBox); historical route analytics is declined for lack of a clean license-safe global source.
-9. **Governance, LICENSE, code of conduct, announcement** (v5.1).
+9. **Governance, LICENSE, code of conduct, announcement** (v5.1) — the only remaining part of v5.1; contribution infra and the localization workflow already shipped without these.
 10. **Sustainability/funding model** (v5.2).
 11. **Any Horizon promotion** — especially push, which tensions "free to run" / "no server."
 
