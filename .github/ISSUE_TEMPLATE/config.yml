@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap and design non-negotiables
+    url: https://github.com/zheyuanlai/flightlog/blob/main/docs/ROADMAP.md
+    about: Planned stages, what's already decided, and what's deliberately out of scope.
+  - name: Data format reference
+    url: https://github.com/zheyuanlai/flightlog/blob/main/docs/DATA_FORMAT.md
+    about: The on-device, backup, and interchange data shapes, for anyone building against exported files.
