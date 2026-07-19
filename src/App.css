@@ -127,6 +127,15 @@
   color: #5eead4;
 }
 
+:root[data-theme="dark"] .tail-history {
+  background: rgba(20, 184, 166, 0.14);
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .tail-history strong {
+  color: #5eead4;
+}
+
 :root[data-theme="dark"] .connection-risk-high {
   background: rgba(220, 38, 38, 0.18);
   color: #fecaca;
@@ -1821,6 +1830,15 @@ a {
 }
 
 .route-insight strong {
+  color: #0f766e;
+}
+
+.tail-history {
+  background: #f0fdfa;
+  color: #0f172a;
+}
+
+.tail-history strong {
   color: #0f766e;
 }
 

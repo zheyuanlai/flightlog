@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import worker, { validateAirportStatusRequest, validateFlightStatusRequest } from './index.js'
+import worker, { validateAircraftHistoryRequest, validateAirportStatusRequest, validateFlightStatusRequest } from './index.js'
 import { normalizeFlightNumber } from './providers/util.js'
 import {
+  buildAeroDataBoxAircraftUrl,
   buildAeroDataBoxFidsUrl,
   buildAeroDataBoxUrl,
+  fetchAeroDataBoxAircraft,
   fetchAeroDataBoxAirportStatus,
   mapAeroDataBoxStatus,
+  mockAircraft,
   mockAirportStatus,
+  normalizeAeroDataBoxAircraft,
   normalizeAeroDataBoxFlight,
   normalizeAirportFids,
   selectBestFlight,
@@ -156,6 +160,93 @@ describe('airport status endpoint', () => {
   })
 })
 
+describe('aircraft history endpoint', () => {
+  it('validates and normalizes the registration query param', () => {
+    expect(validateAircraftHistoryRequest(new URL('https://worker.test/aircraft-history?registration=9v-sga'))).toEqual({ registration: '9V-SGA' })
+    expect(validateAircraftHistoryRequest(new URL('https://worker.test/aircraft-history?registration=B-18317'))).toEqual({ registration: 'B-18317' })
+    expect(validateAircraftHistoryRequest(new URL('https://worker.test/aircraft-history?registration='))).toEqual({ error: 'registration must be 2-10 letters, numbers, or hyphens' })
+    expect(validateAircraftHistoryRequest(new URL('https://worker.test/aircraft-history?registration=' + 'A'.repeat(20)))).toEqual({ error: 'registration must be 2-10 letters, numbers, or hyphens' })
+  })
+
+  it('builds the AeroDataBox aircraft-by-registration endpoint', () => {
+    const url = buildAeroDataBoxAircraftUrl('9V-SGA')
+    expect(url.toString()).toBe('https://aerodatabox.p.rapidapi.com/aircrafts/reg/9V-SGA')
+  })
+
+  it('normalizes a real aircraft response, dropping unmapped/missing fields', () => {
+    const normalized = normalizeAeroDataBoxAircraft({
+      reg: '9v-sga',
+      model: 'Airbus A350-900',
+      typeCode: 'A359',
+      serial: '12345',
+      airlineName: 'Singapore Airlines',
+      ageYears: 5.2,
+      firstFlightDate: '2020-02-01',
+      deliveryDate: '2020-03-01',
+    })
+    expect(normalized).toEqual({
+      registration: '9V-SGA',
+      type: 'Airbus A350-900',
+      typeCode: 'A359',
+      serialNumber: '12345',
+      airlineName: 'Singapore Airlines',
+      ageYears: 5.2,
+      firstFlightDate: '2020-02-01',
+      deliveryDate: '2020-03-01',
+      provider: 'AeroDataBox',
+      warnings: [],
+    })
+  })
+
+  it('treats a response with no registration as unparseable rather than fabricating one', () => {
+    expect(normalizeAeroDataBoxAircraft({ model: 'Airbus A350-900' })).toBeUndefined()
+    expect(normalizeAeroDataBoxAircraft(null)).toBeUndefined()
+  })
+
+  it('returns a deterministic mock aircraft lookup', () => {
+    const mock = mockAircraft('9V-SGA')
+    expect(mock.registration).toBe('9V-SGA')
+    expect(mock.provider).toBe('mock-worker')
+  })
+
+  it('fetches and normalizes a real aircraft lookup', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ reg: '9V-SGA', model: 'Airbus A350-900' }), { status: 200 }))
+    try {
+      const result = await fetchAeroDataBoxAircraft('9V-SGA', { AERODATABOX_API_KEY: 'k', AERODATABOX_API_HOST: 'h' })
+      expect(result.registration).toBe('9V-SGA')
+      expect(result.type).toBe('Airbus A350-900')
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('surfaces a missing API key as a clean 503, not a crash', async () => {
+    await expect(fetchAeroDataBoxAircraft('9V-SGA', {})).rejects.toMatchObject({ status: 503 })
+  })
+
+  it('surfaces a provider 404 for an unknown registration', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 404 }))
+    try {
+      await expect(fetchAeroDataBoxAircraft('ZZ-NONE', { AERODATABOX_API_KEY: 'k' })).rejects.toMatchObject({ status: 404 })
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('surfaces a provider 204 (AeroDataBox\'s empty-result convention, as used by the sibling flight/airport endpoints) as a clean 404, not a JSON-parse 502', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }))
+    try {
+      await expect(fetchAeroDataBoxAircraft('ZZ-NONE', { AERODATABOX_API_KEY: 'k' })).rejects.toMatchObject({ status: 404, message: 'No aircraft found for this registration.' })
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+})
+
 describe('provider registry', () => {
   it('resolves the default adapter when FLIGHTLOG_PROVIDER is unset or unrecognized', () => {
     expect(resolveProvider({}).name).toBe(DEFAULT_PROVIDER)
@@ -185,7 +276,7 @@ describe('GET /capabilities', () => {
     const request = new Request('https://worker.test/capabilities', { headers: { Origin: 'https://zheyuanlai.github.io' } })
     const response = await worker.fetch(request, { FLIGHTLOG_PROVIDER_MODE: 'mock' }, ctx)
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ provider: 'aerodatabox', mode: 'mock', supportsFlightStatus: true, supportsAirportStatus: true })
+    expect(await response.json()).toEqual({ provider: 'aerodatabox', mode: 'mock', supportsFlightStatus: true, supportsAirportStatus: true, supportsAircraftHistory: true })
   })
 
   it('reflects an unrecognized FLIGHTLOG_PROVIDER by falling back to the default rather than erroring', async () => {

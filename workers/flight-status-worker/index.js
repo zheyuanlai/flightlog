@@ -71,6 +71,12 @@ export function validateAirportStatusRequest(url) {
   return { iata, hours }
 }
 
+export function validateAircraftHistoryRequest(url) {
+  const registration = String(url.searchParams.get('registration') ?? '').trim().toUpperCase()
+  if (!/^[A-Z0-9-]{2,10}$/.test(registration)) return { error: 'registration must be 2-10 letters, numbers, or hyphens' }
+  return { registration }
+}
+
 export function providerMode(env = {}) {
   const mode = String(env.FLIGHTLOG_PROVIDER_MODE ?? env.PROVIDER_MODE ?? '').trim().toLowerCase()
   if (mode === 'mock' || mode === 'real') return mode
@@ -141,6 +147,35 @@ async function handleAirportStatus(request, env, ctx, origin, url) {
   }
 }
 
+async function handleAircraftHistory(request, env, ctx, origin, url) {
+  const input = validateAircraftHistoryRequest(url)
+  if (input.error) return json({ error: input.error }, 400, origin)
+
+  const provider = resolveProvider(env)
+  if (!provider.supportsAircraftHistory) return json({ error: `Provider "${provider.name}" does not support aircraft history lookups.` }, 501, origin)
+
+  const cacheUrl = new URL(url)
+  cacheUrl.searchParams.set('registration', input.registration)
+  cacheUrl.searchParams.set('schema', `aircraft-v1-${provider.name}`)
+  const cacheKey = new Request(cacheUrl.toString(), request)
+  const cached = await caches.default.match(cacheKey)
+  if (cached) return cached
+
+  try {
+    const aircraft = providerMode(env) === 'mock'
+      ? provider.mockAircraftHistory(input.registration)
+      : await provider.fetchAircraftHistory(input.registration, env)
+    // Aircraft metadata (type, age, delivery date) changes rarely, unlike live
+    // flight status -- cache for a day instead of minutes.
+    const response = json(aircraft, 200, origin, 60 * 60 * 24)
+    ctx.waitUntil(caches.default.put(cacheKey, response.clone()))
+    return response
+  } catch (error) {
+    if (error instanceof ProviderError) return json({ error: error.message }, error.status, origin)
+    return json({ error: 'Unable to fetch aircraft history.' }, 500, origin)
+  }
+}
+
 // Lets the frontend (or a fork's own client) discover what this deployment can do
 // without hardcoding a provider name, so features degrade gracefully per deployment.
 function handleCapabilities(env, origin) {
@@ -150,6 +185,7 @@ function handleCapabilities(env, origin) {
     mode: providerMode(env),
     supportsFlightStatus: provider.supportsFlightStatus,
     supportsAirportStatus: provider.supportsAirportStatus,
+    supportsAircraftHistory: provider.supportsAircraftHistory,
   }, 200, origin, 300)
 }
 
@@ -164,6 +200,9 @@ export default {
     }
     if (request.method === 'GET' && url.pathname === '/airport-status') {
       return handleAirportStatus(request, env, ctx, origin, url)
+    }
+    if (request.method === 'GET' && url.pathname === '/aircraft-history') {
+      return handleAircraftHistory(request, env, ctx, origin, url)
     }
     if (request.method === 'GET' && url.pathname === '/capabilities') {
       return handleCapabilities(env, origin)

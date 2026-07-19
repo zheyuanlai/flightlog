@@ -418,16 +418,99 @@ export async function fetchAeroDataBoxAirportStatus(iata, hours, env) {
   return normalizeAirportFids(iata, data, warnings)
 }
 
+// --- Aircraft registration history (v4.3) ---
+
+export function buildAeroDataBoxAircraftUrl(registration) {
+  return new URL(`/aircrafts/reg/${encodeURIComponent(registration)}`, AERODATABOX_BASE_URL)
+}
+
+// KNOWN LIMITATION (see Worker README "Aircraft registration history"): the field
+// names below are mapped from AeroDataBox's publicly documented aircraft-by-
+// registration response shape, but have not been verified against a live call --
+// this repo has no AeroDataBox credentials to test with. Every field is read
+// defensively (stripUndefined drops anything missing), so a wrong field name just
+// means that one field is blank, not a crash. Verify field names during post-deploy
+// verification and adjust this normalizer if fields that should be populated aren't.
+export function normalizeAeroDataBoxAircraft(data, warnings = []) {
+  if (!data || typeof data !== 'object') return undefined
+  const registration = cleanString(data.reg)?.toUpperCase() ?? cleanString(data.registration)?.toUpperCase()
+  if (!registration) return undefined
+  return stripUndefined({
+    registration,
+    type: cleanString(data.model) ?? cleanString(data.typeName) ?? cleanString(data.type),
+    typeCode: cleanString(data.typeCode),
+    serialNumber: cleanString(data.serial) ?? cleanString(data.serialNumber),
+    airlineName: cleanString(data.airlineName) ?? cleanString(data.airline?.name),
+    ageYears: cleanNumber(data.ageYears),
+    firstFlightDate: cleanString(data.firstFlightDate),
+    deliveryDate: cleanString(data.deliveryDate),
+    provider: 'AeroDataBox',
+    warnings,
+  })
+}
+
+export async function fetchAeroDataBoxAircraft(registration, env) {
+  if (!env.AERODATABOX_API_KEY) {
+    throw new ProviderError(503, 'AeroDataBox API key is not configured')
+  }
+  const host = env.AERODATABOX_API_HOST || DEFAULT_AERODATABOX_HOST
+  const endpoint = buildAeroDataBoxAircraftUrl(registration)
+  const response = await fetch(endpoint, {
+    headers: {
+      'x-rapidapi-host': host,
+      'x-rapidapi-key': env.AERODATABOX_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+  })
+
+  // response.ok is true for 204, so it must be checked before the !response.ok
+  // guard below -- matches how fetchAeroDataBoxStatus/fetchAeroDataBoxAirportStatus
+  // already treat AeroDataBox's 204-for-empty-result convention on their endpoints.
+  if (response.status === 204) throw new ProviderError(404, 'No aircraft found for this registration.')
+  if (!response.ok) throw await providerErrorFromResponse(response, 'No aircraft found for this registration.')
+
+  let data
+  try {
+    data = await response.json()
+  } catch {
+    throw new ProviderError(502, 'Unable to parse aviation data provider response.')
+  }
+
+  const normalized = normalizeAeroDataBoxAircraft(data, [])
+  if (!normalized) throw new ProviderError(404, 'No aircraft found for this registration.')
+  return normalized
+}
+
+export function mockAircraft(registration) {
+  return {
+    registration: (registration || '9V-MOCK').toUpperCase(),
+    type: 'Airbus A350-900',
+    typeCode: 'A359',
+    serialNumber: '12345',
+    airlineName: 'Singapore Airlines',
+    ageYears: 5.2,
+    firstFlightDate: '2020-02-01',
+    deliveryDate: '2020-03-01',
+    provider: 'mock-worker',
+    warnings: [],
+  }
+}
+
 /**
  * The provider adapter contract every fork-in adapter implements:
  *   - name: a short lowercase identifier, used as the FLIGHTLOG_PROVIDER value.
- *   - supportsFlightStatus / supportsAirportStatus: capability flags returned by
- *     GET /capabilities so the frontend can hide features an adapter can't serve.
+ *   - supportsFlightStatus / supportsAirportStatus / supportsAircraftHistory:
+ *     capability flags returned by GET /capabilities so the frontend can hide
+ *     features an adapter can't serve.
  *   - fetchFlightStatus(flightNumber, date, dateRole, env): real-mode lookup for a
  *     single flight; normalize its result to the FlightLiveStatus shape below.
  *   - fetchAirportStatus(iata, hours, env): real-mode lookup for an airport's board.
- *   - mockFlightStatus(flightNumber, date) / mockAirportStatus(iata): deterministic
- *     data for FLIGHTLOG_PROVIDER_MODE=mock, so the frontend works without credentials.
+ *   - fetchAircraftHistory(registration, env): real-mode lookup for an aircraft's
+ *     registration/type metadata.
+ *   - mockFlightStatus(flightNumber, date) / mockAirportStatus(iata) /
+ *     mockAircraftHistory(registration): deterministic data for
+ *     FLIGHTLOG_PROVIDER_MODE=mock, so the frontend works without credentials.
  * See providers/index.js to register a new adapter, and the Worker README's
  * "Provider adapters" section for the full guide.
  */
@@ -435,8 +518,11 @@ export const aeroDataBoxAdapter = {
   name: 'aerodatabox',
   supportsFlightStatus: true,
   supportsAirportStatus: true,
+  supportsAircraftHistory: true,
   fetchFlightStatus: fetchAeroDataBoxStatus,
   fetchAirportStatus: fetchAeroDataBoxAirportStatus,
+  fetchAircraftHistory: fetchAeroDataBoxAircraft,
   mockFlightStatus: mockStatus,
   mockAirportStatus,
+  mockAircraftHistory: mockAircraft,
 }

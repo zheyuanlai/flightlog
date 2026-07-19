@@ -3,6 +3,7 @@ export interface ProviderCapabilities {
   mode: string
   supportsFlightStatus: boolean
   supportsAirportStatus: boolean
+  supportsAircraftHistory: boolean
 }
 
 export interface FetchProviderCapabilitiesOptions {
@@ -10,14 +11,23 @@ export interface FetchProviderCapabilitiesOptions {
   fetcher?: typeof fetch
 }
 
-// Fails open: every deployment supports both features until the Worker says
-// otherwise. This is also what a pre-v3.2 Worker (no /capabilities route) looks
-// like from here, so an un-redeployed Worker keeps working exactly as before.
+// supportsFlightStatus/supportsAirportStatus fail OPEN: both predate the
+// /capabilities endpoint itself (v2.7/v2.x), so a pre-v3.2 Worker that has no
+// /capabilities route at all already supports them -- defaulting to true keeps
+// an un-redeployed Worker working exactly as before.
+//
+// supportsAircraftHistory fails CLOSED: it's a new capability introduced
+// alongside the /aircraft-history route itself (v4.3). A Worker that hasn't been
+// redeployed with that route yet will omit this field from its /capabilities
+// response (or have no /capabilities route at all), and calling the missing
+// route would 404 -- so treat "field absent" as "not supported" and hide the UI
+// instead of showing a broken lookup button.
 export const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapabilities = {
   provider: 'unknown',
   mode: 'unknown',
   supportsFlightStatus: true,
   supportsAirportStatus: true,
+  supportsAircraftHistory: false,
 }
 
 export function buildCapabilitiesUrl(baseUrl: string): string {
@@ -31,6 +41,7 @@ export function normalizeProviderCapabilities(value: unknown): ProviderCapabilit
     mode: typeof record.mode === 'string' && record.mode ? record.mode : DEFAULT_PROVIDER_CAPABILITIES.mode,
     supportsFlightStatus: typeof record.supportsFlightStatus === 'boolean' ? record.supportsFlightStatus : DEFAULT_PROVIDER_CAPABILITIES.supportsFlightStatus,
     supportsAirportStatus: typeof record.supportsAirportStatus === 'boolean' ? record.supportsAirportStatus : DEFAULT_PROVIDER_CAPABILITIES.supportsAirportStatus,
+    supportsAircraftHistory: typeof record.supportsAircraftHistory === 'boolean' ? record.supportsAircraftHistory : DEFAULT_PROVIDER_CAPABILITIES.supportsAircraftHistory,
   }
 }
 

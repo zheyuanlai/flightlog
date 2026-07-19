@@ -160,6 +160,8 @@ import {
 } from './utils/flightTime'
 import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleArc, overallPunctuality, routeDelayHistory, routePunctuality, type PunctualityStat } from './utils/insights'
 import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } from './utils/airportStatus'
+import { fetchAircraftLookup, type AircraftLookup } from './utils/aircraftHistory'
+import { findTailHistory } from './utils/tailHistory'
 import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
 import { predictDelay } from './utils/predict'
@@ -1891,11 +1893,54 @@ function TripDetailPage({
   )
 }
 
+function AircraftLookupPanel({ registration, isOnline, supportsAircraftHistory }: { registration: string; isOnline: boolean; supportsAircraftHistory: boolean }) {
+  const settings = useAppSettings()
+  const [lookup, setLookup] = useState<AircraftLookup | undefined>()
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  if (!supportsAircraftHistory) return null
+  async function handleLookup() {
+    if (!isOnline && settings.liveDataMode !== 'mock') {
+      setMessage(offlineActionMessage('aircraft lookup'))
+      return
+    }
+    setBusy(true)
+    setMessage('')
+    setLookup(undefined)
+    try {
+      setLookup(await fetchAircraftLookup(registration, { liveDataMode: settings.liveDataMode }))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to look up this aircraft.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="panel aircraft-lookup-panel">
+      <div className="section-heading compact-heading"><div><p className="eyebrow">Aircraft</p><h3>Look up this aircraft</h3></div><Plane aria-hidden="true" /></div>
+      <p className="muted">Look up {registration}'s type, age, and delivery date from the live data proxy.</p>
+      <div className="actions"><button type="button" disabled={busy} onClick={() => void handleLookup()}><Search aria-hidden="true" /> {busy ? 'Looking up…' : `Look up ${registration}`}</button></div>
+      {message && <p className="notice warning">{message}</p>}
+      {lookup && (
+        <dl className="meta-grid">
+          <div><dt>Type</dt><dd>{lookup.type ?? 'Unknown'}</dd></div>
+          <div><dt>Airline</dt><dd>{lookup.airlineName ?? 'Unknown'}</dd></div>
+          <div><dt>Age</dt><dd>{lookup.ageYears !== undefined ? `${lookup.ageYears.toFixed(1)} years` : 'Unknown'}</dd></div>
+          <div><dt>First flight</dt><dd>{lookup.firstFlightDate ?? 'Unknown'}</dd></div>
+          <div><dt>Delivered</dt><dd>{lookup.deliveryDate ?? 'Unknown'}</dd></div>
+        </dl>
+      )}
+      {lookup?.warnings?.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
+    </section>
+  )
+}
+
 function FlightDetailPage({
   flight,
   flights,
   airportVersion,
   isOnline,
+  supportsAircraftHistory,
   onBack,
   onEdit,
   onDelete,
@@ -1906,6 +1951,7 @@ function FlightDetailPage({
   flights: FlightLogEntry[]
   airportVersion: number
   isOnline: boolean
+  supportsAircraftHistory: boolean
   onBack: () => void
   onEdit: (flight: FlightLogEntry) => void
   onDelete: (id: string) => Promise<void>
@@ -1919,6 +1965,7 @@ function FlightDetailPage({
     void airportVersion
     return flight ? computeFlight(flight) : undefined
   }, [flight, airportVersion])
+  const tailHistory = useMemo(() => (flight ? findTailHistory(flights, flight) : []), [flights, flight])
   if (!flight || !computed) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Flight not found</h2><button type="button" onClick={onBack}>Back to flights</button></section></main>
   }
@@ -1974,6 +2021,11 @@ function FlightDetailPage({
             {routeHistory && <span><strong>Your {routeHistory.route} history:</strong> {routeHistory.measuredFlights} measured flight{routeHistory.measuredFlights === 1 ? '' : 's'}, {routeHistory.onTimePercent}% on time, avg {formatDelayLabel(routeHistory.averageDelayMinutes)}.</span>}
           </p>
         )}
+        {tailHistory.length > 0 && (
+          <p className="notice tail-history">
+            <strong>You've flown {flight.aircraftRegistration} before:</strong> {tailHistory.length} time{tailHistory.length === 1 ? '' : 's'} — {tailHistory.slice(0, 3).map((entry) => `${entry.flightNumber} (${entry.origin} → ${entry.destination}, ${entry.date})`).join(', ')}{tailHistory.length > 3 ? `, +${tailHistory.length - 3} more` : ''}.
+          </p>
+        )}
         {warnings.map((warning, index) => <p className="notice warning" key={`detail-${index}-${warning}`}>{warning}</p>)}
         <div className="actions action-row">
           <button type="button" className="secondary" disabled={!isOnline || !refreshAvailable} onClick={() => onRefresh(flight)}><RefreshCw aria-hidden="true" /> {refreshAvailable ? 'Refresh' : refreshLabel}</button>
@@ -1990,6 +2042,7 @@ function FlightDetailPage({
       </div>
       <CalendarSection flight={flight} />
       <ExternalLinksSection flight={flight} />
+      {flight.aircraftRegistration && <AircraftLookupPanel key={flight.aircraftRegistration} registration={flight.aircraftRegistration} isOnline={isOnline} supportsAircraftHistory={supportsAircraftHistory} />}
       <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
       <section className="panel danger-zone">
         <div className="flight-main"><div><p className="eyebrow">Secondary action</p><h3>Delete flight</h3></div><Trash2 aria-hidden="true" /></div>
@@ -2471,7 +2524,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v35',
+    serviceWorkerCacheVersion: 'flightlog-v36',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -4419,7 +4472,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v4.2',
+        appVersion: 'v4.3',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -5281,7 +5334,7 @@ function App() {
       {showForm && <FlightForm editing={editing} isOnline={isOnline} initialLookup={quickAddPrefill} onCancel={() => { setShowForm(false); setEditing(undefined); setQuickAddPrefill(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
       {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} onFocus={(flight) => navigateToFocus(flight.id)} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
-      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
+      {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} supportsAircraftHistory={providerCapabilities.supportsAircraftHistory} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
       {route.page === 'trip-detail' && <TripDetailPage key={route.tripId} trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onMutateChecklist={(tripId, fallbackTemplate, mutate) => void handleMutateTripChecklist(tripId, fallbackTemplate, mutate)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} supportsAirportStatus={providerCapabilities.supportsAirportStatus} />}
