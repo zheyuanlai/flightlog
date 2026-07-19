@@ -2,6 +2,8 @@
 
 FlightLog is a static personal flight passport for logging trips, reviewing travel stats, mapping routes, and moving data in and out of the browser. The core app runs entirely in the browser and stores data locally with IndexedDB.
 
+[MIT licensed](LICENSE) · see [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`GOVERNANCE.md`](GOVERNANCE.md) to contribute.
+
 ## MVP Features
 
 - Manual flight logging with airport autocomplete and validation.
@@ -184,12 +186,15 @@ FlightLog v5.0 is a durability release: no new user-facing features, just making
 - **Accessibility fixes** (WCAG 2.2 AA groundwork): every page now has a proper heading landmark, a skip-to-content link lets keyboard/screen-reader users bypass the nav on every page, the two form controls that were relying on placeholder-as-label are properly labeled, all overlay-style UI (the flight form, passphrase dialogs, the mobile navigation sheet) now closes on Escape and moves focus in on open, and a color-contrast bug in locked Passport achievement cards is fixed. ⚠️ **Human gate (as designed):** this is the automated-audit-and-fixes half of the work; a full WCAG 2.2 AA sign-off needs human verification alongside these automated checks, per `docs/ROADMAP.md` §9 — not claimed as "certified" here. Automated `eslint-plugin-jsx-a11y` linting is deferred until the plugin supports this project's ESLint 10 (no compatible release exists yet); forcing an incompatible peer dependency in a durability release would trade one landmine for another.
 - **Performance budget in CI**: a new `pull_request`-triggered workflow (`.github/workflows/ci.yml`) runs lint, typecheck, tests, and a bundle-size budget check on every PR — previously nothing ran automatically until *after* merge. `size-limit` enforces a gzip budget per chunk plus a total-JS budget, anchored to the current bundle with headroom for normal growth; the same check now also gates the production deploy. A Lighthouse PWA score gate was investigated and deliberately deferred: `@lhci/cli`'s current release pulls in 300+ transitive packages with several unpatched vulnerabilities and no clean fix available yet — not a tradeoff worth making for this release.
 
-## v5.1 Open House (partial)
+## v5.1 Open House
 
-v5.1 is community & governance infrastructure. Only the license-agnostic half is shipped; the rest is a set of human decisions FlightLog's owner hasn't made yet.
+v5.1 is community & governance infrastructure.
 
-- **Shipped**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (setup, checks, PR process), issue templates (bug report, feature request, plus a `config.yml` pointing at the roadmap and data-format docs), a PR template with a checklist matched to this repo's actual CI checks, and [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) walking through the exact files to touch to add a new language (see [v2.6 Localization](#v26-localization) for the language layer itself).
-- ⚠️ **Not shipped, and deliberately not guessed at**: this repository has no LICENSE file yet, no formal governance model, and no code of conduct. `CONTRIBUTING.md` says so plainly rather than assuming an answer. See `docs/ROADMAP.md` §9 for the open decisions.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) (setup, checks, PR process), issue templates (bug report, feature request, plus a `config.yml` pointing at the roadmap and data-format docs), a PR template with a checklist matched to this repo's actual CI checks, and [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) walking through the exact files to touch to add a new language (see [v2.6 Localization](#v26-localization) for the language layer itself).
+- **License**: [MIT](LICENSE).
+- **Governance**: [`GOVERNANCE.md`](GOVERNANCE.md) — a single maintainer today, with a described path to a maintainer team if the project grows.
+- **Code of conduct**: [Contributor Covenant v2.1](CODE_OF_CONDUCT.md).
+- ⚠️ **Deliberately not decided here**: whether/how to announce the project. That's an exposure decision for the owner to make explicitly, if and when they want to, not something to default into alongside the others.
 
 ## v5.3 Archive
 

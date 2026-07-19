@@ -194,7 +194,7 @@ Goal: make FlightLog outlive its original author — sustainable, governed, acce
 - **Performance budget (shipped, partial)**: `size-limit` bundle-size budgets enforced in a new PR-gated CI workflow (`.github/workflows/ci.yml`) and on the release/deploy path — previously nothing ran automatically before merge. ⚠️ **Deferred:** the Lighthouse PWA ≥ 95 gate — `@lhci/cli`'s current release drags in 300+ transitive packages with several unpatched vulnerabilities (including one high-severity) and no clean fix path; not a tradeoff worth making until the tooling catches up.
 - **Storage resilience (shipped)**: an app-wide error boundary, IndexedDB availability feature-detection at startup with a clear on-screen message, a visible recovery banner (linking to Backup Center) instead of a silent empty-dashboard failure when the initial load fails, and error handling on the backup merge/replace actions.
 
-### v5.1 — "Open house": community & governance (human/community gated) — ◐ infra shipped, gates open
+### v5.1 — "Open house": community & governance (human/community gated) — ✅ shipped (announcement still open)
 
 - **Contribution infrastructure (shipped)**: `CONTRIBUTING.md`, issue templates (bug report, feature
   request, a `config.yml` pointing at the roadmap and data-format docs), and a PR template with a
@@ -202,14 +202,17 @@ Goal: make FlightLog outlive its original author — sustainable, governed, acce
   mobile width). The "public roadmap board" is `docs/ROADMAP.md` itself, already public in the
   repo — a separate GitHub Projects board was judged redundant rather than skipped for scope
   reasons. A triage rota needs more than one active maintainer to be meaningful, so it's deferred
-  alongside the governance-model decision below rather than invented as a placeholder.
+  alongside the governance model below rather than invented as a placeholder.
 - **Localization program (shipped)**: `docs/LOCALIZATION.md` documents the concrete steps to add a
   language (which files change, how the coverage tests validate it, and that translation quality
   still needs human review before the in-app "pending review" caveat is lifted — the same bar
   zh-CN/zh-TW/ja already cleared, per §10).
-- ⚠️ **Human gates (still open):** LICENSE confirmation, governance model (BDFL vs. maintainer
-  team), code of conduct adoption, and whether/how to announce the project. `CONTRIBUTING.md`
-  is deliberately explicit that these are unresolved rather than assuming an answer — see §9.
+- **License, governance, code of conduct (shipped)**: MIT (`LICENSE`), a single-maintainer
+  governance model documented in `GOVERNANCE.md` with a described path to a maintainer team if
+  the project grows, and the Contributor Covenant v2.1 (`CODE_OF_CONDUCT.md`) — decided by the
+  owner; see §10.
+- ⚠️ **Still open:** whether/how to announce the project — an exposure decision only the owner
+  should make, at the time they actually want to make it, not something to default into.
 
 ### v5.2 — "Sustainable": funding without betraying "free" (human decision gated)
 
@@ -283,7 +286,7 @@ Owner status is noted inline where a gate has already been resolved or declined.
 6. **Sync-record key-management model** (v3.1).
 7. **Live collaboration beyond file/link** (v4.2).
 8. ~~**Data-source licensing** for reference data (v4.3)~~ — **decided: see §10.** Aircraft tail history ships (own-log + AeroDataBox); historical route analytics is declined for lack of a clean license-safe global source.
-9. **Governance, LICENSE, code of conduct, announcement** (v5.1) — the only remaining part of v5.1; contribution infra and the localization workflow already shipped without these.
+9. ~~**Governance, LICENSE, code of conduct** (v5.1)~~ — **decided: see §10.** MIT license, single-maintainer governance (`GOVERNANCE.md`), Contributor Covenant v2.1. **Announcement** is still open — deliberately left to the owner to decide if/when, not defaulted into alongside the other three.
 10. **Sustainability/funding model** (v5.2).
 11. **Any Horizon promotion** — especially push, which tensions "free to run" / "no server."
 
@@ -299,8 +302,9 @@ The non-negotiables are a contract; this ledger is where the owner records any d
 | 2026-07-18 | — (quality gate) | v2.6 translations (zh-CN / zh-TW / ja) | **Reviewed and approved**; in-app "pending review" disclaimer removed. | zheyuanlai |
 | 2026-07-19 | — (security design) | v3.1 Sealed Sync key management | **Decided: passphrase re-entry per device** over wrapped-key escrow — zero-knowledge, consistent with the already-shipped encrypted-backup model, no server-stored key material even wrapped. | zheyuanlai |
 | 2026-07-19 | — (data licensing) | v4.3 Deep parity data sources | **Researched and decided.** Aircraft tail history: ships two ways — "you've flown this tail before" from the user's own logged flights (no external data, no license question) plus an aircraft-lookup enrichment via AeroDataBox, the provider already integrated and paid for since v2.7 (confirmed to offer a registration-lookup endpoint, works globally, no non-commercial restriction). Historical route analytics: **declined** — OpenSky Network's terms require a separate written license for use in any live product regardless of non-commercial status; US DOT/BTS is public-domain but US-domestic-only with no API (bulk monthly files only, would require building and hosting a full ETL pipeline for a feature that would then only cover a fraction of routes); OpenFlights' routes data is stale since ~2014 and has no aircraft/on-time fields. No source met the bar of free + globally applicable + safe for a public open-source app without a bespoke agreement or major new infrastructure — skipped rather than shipped on a shaky license or with US-only coverage presented as general. | zheyuanlai |
+| 2026-07-19 | — (governance) | v5.1 License, governance, code of conduct | **Decided.** License: **MIT** — permissive, standard for a small tool with no existing forks/external contributors to disrupt, easy to revisit later since nothing depends on the choice yet. Governance: **single maintainer** (`GOVERNANCE.md`), documenting current reality rather than adopting a committee structure prematurely; describes a path to a maintainer team if sustained outside contribution happens. Code of conduct: **Contributor Covenant v2.1** (`CODE_OF_CONDUCT.md`), the de facto standard. Deliberately excludes the fourth item bundled with these in earlier drafts of this ledger — **whether/how to announce the project** — since that's an exposure decision that needs the owner's explicit go-ahead at the time, not a default. | zheyuanlai |
 
-Candidate future entries (pending, not decided): push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
+Candidate future entries (pending, not decided): whether/how to announce the project; push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
 
 ---
 

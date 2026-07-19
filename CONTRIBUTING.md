@@ -1,8 +1,8 @@
 # Contributing to FlightLog
 
 Thanks for considering a contribution. This document covers the mechanics of contributing —
-local setup, checks, and the PR process. It does not (yet) cover licensing or governance; see the
-**Legal and governance status** section below before you invest significant time.
+local setup, checks, and the PR process. See [`LICENSE`](LICENSE) for the license, and
+[`GOVERNANCE.md`](GOVERNANCE.md) for how decisions get made.
 
 ## Before you start
 
@@ -54,11 +54,11 @@ and keep comments to the "why," not the "what" (identifiers should already say w
 
 ## Legal and governance status
 
-FlightLog does not yet have a LICENSE file, a formal governance model, or a code of conduct — these
-are open items tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md#9-what-genuinely-needs-a-human) (§9,
-items 9–10) as decisions only the project's owner can make, not something a contribution session
-can resolve on its own. Until a LICENSE is added, the source is visible on GitHub but no license is
-granted for reuse beyond what's needed to review and contribute back to this repository. If you're
-considering a contribution that depends on knowing the license terms (e.g. redistributing, forking
-for a separate product), please check the current status in `docs/ROADMAP.md` or ask in an issue
-first — this section will be updated once those decisions are made.
+- **License**: [MIT](LICENSE). Permissive — you can use, modify, and redistribute FlightLog
+  (including commercially), as long as the copyright notice and license text are preserved.
+- **Governance**: see [`GOVERNANCE.md`](GOVERNANCE.md) — a single maintainer today, with a
+  described path to a maintainer team if the project grows.
+- **Code of conduct**: [Contributor Covenant v2.1](CODE_OF_CONDUCT.md), applies to all project
+  spaces (issues, PRs, discussions).
+- **Announcing/publicizing the project**: not yet decided, and not something anyone but the
+  project's owner should do unilaterally.
