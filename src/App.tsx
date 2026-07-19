@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowRight,
   AlertTriangle,
@@ -51,6 +51,7 @@ import {
   getProviderAirports,
   getTripMetadata,
   mutateTripFlightIds,
+  mutateTripPackingChecklist,
   LOCAL_SCHEMA_VERSION,
   listLocalSyncEvents,
   migrateLegacyTripNames,
@@ -68,7 +69,7 @@ import {
   setAppMetadata,
 } from './db'
 import { sampleFlights } from './sampleData'
-import type { AppMetadata, AppSettings, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, SyncDevice, SyncEventLog, SyncMetadata, TripMetadata, TripType } from './types'
+import type { AppMetadata, AppSettings, ChecklistItem, FlightLiveAirport, FlightLiveStatus, FlightLogEntry, FlightPurpose, FlightSource, FlightWithComputed, LookupDateRole, ProviderAirportSnapshot, SyncDevice, SyncEventLog, SyncMetadata, TripMetadata, TripType } from './types'
 import { authRedirectUrl, isSupabaseConfigured, supabase } from './lib/supabase'
 import {
   cloudBackupErrorMessage,
@@ -161,6 +162,9 @@ import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } f
 import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
 import { predictDelay } from './utils/predict'
+import { tripConnectionRisks } from './utils/connectionRisk'
+import { findAlternativeRoutes, isDisrupted, type AlternativeRouteHint } from './utils/rebookingHints'
+import { addChecklistItem, defaultChecklistItems, removeChecklistItem, toggleChecklistItem } from './utils/packingChecklist'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { formatCountdown, listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
@@ -1660,6 +1664,7 @@ function TripDetailPage({
   onBack,
   onOpenFlight,
   onUpdate,
+  onMutateChecklist,
   onAddFlight,
   onRemoveFlight,
   onConvertToManual,
@@ -1671,6 +1676,7 @@ function TripDetailPage({
   onBack: () => void
   onOpenFlight: (flight: FlightLogEntry) => void
   onUpdate: (tripId: string, patch: Partial<TripMetadata>) => void
+  onMutateChecklist: (tripId: string, fallbackTemplate: ChecklistItem[], mutate: (items: ChecklistItem[]) => ChecklistItem[]) => void
   onAddFlight: (trip: TripGroup, flightId: string) => Promise<void>
   onRemoveFlight: (trip: TripGroup, flightId: string) => Promise<void>
   onConvertToManual: (trip: TripGroup) => Promise<void>
@@ -1680,8 +1686,40 @@ function TripDetailPage({
   const displayOptions = flightTimeDisplayOptions(settings)
   const [includeShareNotes, setIncludeShareNotes] = useState(false)
   const [flightQuery, setFlightQuery] = useState('')
+  const [newChecklistText, setNewChecklistText] = useState('')
+  const savedChecklist = trip?.metadata?.packingChecklist
+  const tripType = trip?.type
+  const packingChecklist = useMemo(
+    () => (Array.isArray(savedChecklist) ? savedChecklist : tripType ? defaultChecklistItems(tripType) : []),
+    [savedChecklist, tripType],
+  )
+  const tripFlights = trip?.flights
+  const connectionRisks = useMemo(
+    () => (tripFlights ? tripConnectionRisks(tripFlights, flights) : []),
+    [tripFlights, flights],
+  )
+  const alternativesByFlightId = useMemo(() => {
+    const map = new globalThis.Map<string, AlternativeRouteHint[]>()
+    for (const flight of tripFlights ?? []) {
+      if (isDisrupted(flight)) map.set(flight.id, findAlternativeRoutes(flights, flight))
+    }
+    return map
+  }, [tripFlights, flights])
   if (!trip) {
     return <main className="page"><section className="empty-state"><Plane aria-hidden="true" /><h2>Trip not found</h2><button type="button" onClick={onBack}>Back to trips</button></section></main>
+  }
+  const tripId = trip.id
+  function handleToggleChecklistItem(id: string) {
+    onMutateChecklist(tripId, packingChecklist, (items) => toggleChecklistItem(items, id))
+  }
+  function handleAddChecklistItem() {
+    if (!newChecklistText.trim()) return
+    const text = newChecklistText
+    setNewChecklistText('')
+    onMutateChecklist(tripId, packingChecklist, (items) => addChecklistItem(items, text))
+  }
+  function handleRemoveChecklistItem(id: string) {
+    onMutateChecklist(tripId, packingChecklist, (items) => removeChecklistItem(items, id))
   }
   const shareData = tripShareCardData(trip, { distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
   const memberIds = new Set(trip.flights.map((flight) => flight.id))
@@ -1717,18 +1755,54 @@ function TripDetailPage({
         <div className="actions"><button type="button" className="secondary" onClick={() => onUpdate(trip.id, { isFavorite: !trip.isFavorite })}>{trip.isFavorite ? 'Unpin trip' : 'Pin trip'}</button></div>
       </section>
       <div className="stack">
-        {trip.flights.map((flight) => (
-          <article className="flight-card" key={flight.id}>
-            <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className="status scheduled">{flight.origin}{' -> '}{flight.destination}</span></div>
-            <dl className="meta-grid"><div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div><div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div><div><dt>Distance</dt><dd>{formatDistance(flight.distanceKm, settings.distanceUnit)}</dd></div></dl>
-            <div className="actions">
-              <button type="button" onClick={() => onOpenFlight(flight)}>View flight</button>
-              {trip.isManual && <button type="button" className="ghost" onClick={() => void onRemoveFlight(trip, flight.id)}><X aria-hidden="true" /> Remove from trip</button>}
-            </div>
-          </article>
-        ))}
+        {trip.flights.map((flight) => {
+          const risk = connectionRisks.find((item) => item.fromFlight.id === flight.id)
+          const disrupted = isDisrupted(flight)
+          const alternatives = alternativesByFlightId.get(flight.id) ?? []
+          return (
+            <Fragment key={flight.id}>
+              <article className="flight-card">
+                <div className="flight-main"><div><p className="eyebrow">{getFlightDepartureLocalDate(flight)}</p><h3>{flight.flightNumber} - {flight.airline}</h3></div><span className="status scheduled">{flight.origin}{' -> '}{flight.destination}</span></div>
+                <dl className="meta-grid"><div><dt>Departure</dt><dd>{formatDepartureLocalTime(flight, displayOptions).label}</dd></div><div><dt>Arrival</dt><dd>{formatArrivalLocalTime(flight, displayOptions).label}</dd></div><div><dt>Distance</dt><dd>{formatDistance(flight.distanceKm, settings.distanceUnit)}</dd></div></dl>
+                {disrupted && (
+                  <p className="notice warning">
+                    <strong>This flight was {flight.liveStatus?.status}.</strong>{alternatives.length > 0 ? ` You've flown this route before: ${alternatives.map((hint) => `${hint.airline} ${hint.flightNumber} (${hint.timesFlown}x)`).join(', ')}.` : ' No other flights on this route in your log yet.'}
+                  </p>
+                )}
+                <div className="actions">
+                  <button type="button" onClick={() => onOpenFlight(flight)}>View flight</button>
+                  {trip.isManual && <button type="button" className="ghost" onClick={() => void onRemoveFlight(trip, flight.id)}><X aria-hidden="true" /> Remove from trip</button>}
+                </div>
+              </article>
+              {risk && (
+                <p className={`notice connection-risk connection-risk-${risk.level}`}>
+                  <strong>{risk.level === 'high' ? 'Tight connection' : risk.level === 'medium' ? 'Connection worth watching' : 'Comfortable connection'} at {risk.airport}:</strong> {risk.explanation}
+                </p>
+              )}
+            </Fragment>
+          )
+        })}
         {trip.isManual && trip.flights.length === 0 && <p className="empty-inline">No flights in this trip yet. Add flights below.</p>}
       </div>
+      <section className="panel packing-checklist-panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Packing</p><h3>Packing checklist</h3></div></div>
+        <p className="muted">Starts from a {trip.type} trip template; edit freely, it's yours.</p>
+        <ul className="checklist">
+          {packingChecklist.map((item) => (
+            <li key={item.id} className={item.done ? 'checklist-done' : undefined}>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={item.done} onChange={() => handleToggleChecklistItem(item.id)} />
+                {item.text}
+              </label>
+              <button type="button" className="ghost" onClick={() => handleRemoveChecklistItem(item.id)} aria-label={`Remove ${item.text}`}><X aria-hidden="true" /></button>
+            </li>
+          ))}
+        </ul>
+        <form className="checklist-add" onSubmit={(event) => { event.preventDefault(); handleAddChecklistItem() }}>
+          <input value={newChecklistText} onChange={(event) => setNewChecklistText(event.target.value)} placeholder="Add an item" aria-label="Add a checklist item" />
+          <button type="submit"><Plus aria-hidden="true" /> Add</button>
+        </form>
+      </section>
       {trip.isManual ? (
         <section className="panel trip-editor-panel">
           <div className="section-heading compact-heading"><div><p className="eyebrow">Trip editor</p><h3>Add flights to this trip</h3></div></div>
@@ -2344,7 +2418,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v33',
+    serviceWorkerCacheVersion: 'flightlog-v34',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -4001,6 +4075,12 @@ function App() {
     await markLocalChange()
   }
 
+  async function handleMutateTripChecklist(tripId: string, fallbackTemplate: ChecklistItem[], mutate: (items: ChecklistItem[]) => ChecklistItem[]) {
+    await mutateTripPackingChecklist(tripId, fallbackTemplate, mutate)
+    await loadTripMetadata()
+    await markLocalChange()
+  }
+
   async function handleCreateTrip() {
     const id = crypto.randomUUID()
     await saveTripMetadata({ id, name: 'New trip', isManual: true, flightIds: [] })
@@ -4257,7 +4337,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v4.0',
+        appVersion: 'v4.1',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -5121,7 +5201,7 @@ function App() {
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
-      {route.page === 'trip-detail' && <TripDetailPage trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
+      {route.page === 'trip-detail' && <TripDetailPage key={route.tripId} trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onMutateChecklist={(tripId, fallbackTemplate, mutate) => void handleMutateTripChecklist(tripId, fallbackTemplate, mutate)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} supportsAirportStatus={providerCapabilities.supportsAirportStatus} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
       {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
