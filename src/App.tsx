@@ -595,8 +595,8 @@ function SyncStatusBadge({ status, onCompare }: { status: SyncStatusSnapshot; on
       </div>
       <dl className="meta-grid">
         <div><dt>Last compared</dt><dd>{status.lastCompared ? formatDateTime(status.lastCompared, displayOptions) : 'Never'}</dd></div>
-        <div><dt>Conflicts</dt><dd>{status.conflictCount}</dd></div>
-        <div><dt>Tombstones</dt><dd>{status.tombstoneCount}</dd></div>
+        <div><dt>Needs review</dt><dd>{status.conflictCount}</dd></div>
+        <div><dt>Pending deletions</dt><dd>{status.tombstoneCount}</dd></div>
       </dl>
       {onCompare && <div className="actions"><button type="button" className="secondary" onClick={() => void onCompare()}><Search aria-hidden="true" /> Compare now</button></div>}
     </article>
@@ -1686,7 +1686,7 @@ function FlightDetailPage({
       <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
       <section className="panel danger-zone">
         <div className="flight-main"><div><p className="eyebrow">Secondary action</p><h3>Delete flight</h3></div><Trash2 aria-hidden="true" /></div>
-        <p className="muted">Deletion moves the flight to Trash and preserves a tombstone for Sync Lite. Permanent deletion remains separate in Trash.</p>
+        <p className="muted">Deleting moves the flight to Trash and remembers the change so it can sync to your other devices. Permanently deleting is a separate step in Trash.</p>
         <div className="actions"><button type="button" className="ghost danger" onClick={() => onDelete(flight.id)}><Trash2 aria-hidden="true" /> Delete</button></div>
       </section>
     </main>
@@ -2053,24 +2053,24 @@ function DataOwnershipCard() {
     <section className="panel">
       <div className="flight-main">
         <div>
-          <p className="eyebrow">Data ownership</p>
+          <p className="eyebrow">Your data, your device</p>
           <h3>FlightLog is local-first.</h3>
         </div>
         <Shield aria-hidden="true" />
       </div>
-      <p className="muted">Without sign-in, your data stays in this browser&apos;s IndexedDB. With cloud backup or Sync Lite, snapshots or records are stored in Supabase under your signed-in user. Signing out does not delete local data, deleting cloud backups does not delete local data, and clearing local data does not delete cloud backups. Deleted flights move to Trash first and sync as tombstones; permanent deletion is a separate local action.</p>
+      <p className="muted">Your flights live on this device and work fully offline — no account needed. If you turn on cloud backup or sync, a copy is stored under your account so you can restore it or move between devices. Signing out, deleting a cloud backup, and clearing this device are all independent — doing one never affects the others.</p>
       <details>
-        <summary>What is stored in cloud?</summary>
-        <p className="muted">Flights, deleted-flight tombstones, trip metadata, provider-derived airports, app settings, sync metadata, sync history, and device records. Cloud backups and sync records are plain JSON protected by Supabase Auth and RLS; they are not end-to-end encrypted yet. Client-side encrypted backups remain a future option.</p>
+        <summary>What gets stored in the cloud?</summary>
+        <p className="muted">Your flights, trips, and app settings, protected by your account sign-in. Cloud copies are not end-to-end encrypted yet — that&apos;s on the roadmap. Deleted flights move to Trash first, and permanent deletion is always a separate step.</p>
       </details>
     </section>
   )
 }
 
 function accountStatusLabel(configured: boolean, session: Session | null): string {
-  if (!configured) return 'Supabase not configured'
-  if (!session) return 'Supabase configured, signed out'
-  return 'Signed in, cloud backup available'
+  if (!configured) return 'On this device only'
+  if (!session) return 'Not signed in'
+  return 'Signed in'
 }
 
 function SettingsPage({
@@ -2156,9 +2156,22 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v20',
+    serviceWorkerCacheVersion: 'flightlog-v30',
     syncMetadata,
   })
+  const liveDataLabel = settings.liveDataMode === 'disabled'
+    ? 'Off'
+    : settings.liveDataMode === 'mock'
+      ? 'Using demo data'
+      : liveApiStatus.status === 'reachable'
+        ? 'Connected'
+        : liveApiStatus.status === 'error'
+          ? 'Not reachable'
+          : liveApiStatus.status === 'checking'
+            ? 'Checking…'
+            : 'Not checked yet'
+  const dataIssueCount = health.missingTimezoneCount + health.missingAirportCoordinateCount + health.missingTimeCount + health.orphanedTripMetadataCount
+  const canReresolve = health.repairableAirportSnapshotCount > 0
 
   async function submitEmail(event: FormEvent) {
     event.preventDefault()
@@ -2176,57 +2189,53 @@ function SettingsPage({
 
   return (
     <main className="page settings-page">
-      <div className="section-heading"><div><p className="eyebrow">Settings</p><h2>Preferences, cloud, and diagnostics</h2></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Settings</p><h2>Settings</h2><p className="muted">Preferences, backups, and your data — all kept on this device.</p></div></div>
       <nav className="settings-nav" aria-label="Settings sections">
         <a href="#account">Account</a>
-        <a href="#sync-lite">Sync</a>
         <a href="#display">Display</a>
-        <a href="#pwa">PWA</a>
+        <a href="#live-data">Live data</a>
+        <a href="#sync-lite">Sync</a>
         <a href="#data-storage">Data</a>
-        <a href="#diagnostics">Diagnostics</a>
       </nav>
       <DataOwnershipCard />
       <div id="pwa"><PwaInstallPanel standalone={standalone} canPrompt={installPromptAvailable} onInstall={onInstallPrompt} /></div>
       <SyncStatusBadge status={syncStatus} onCompare={onCompareSync} />
       <section className="panel" id="account">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Account</p><h3>{accountStatusLabel(configured, session)}</h3></div><span className="status scheduled">{session ? 'signed in' : configured ? 'local-only' : 'offline-ready'}</span></div>
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Account</p><h3>{accountStatusLabel(configured, session)}</h3></div><span className={`status ${session ? 'scheduled' : ''}`}>{session ? 'signed in' : configured ? 'not signed in' : 'device only'}</span></div>
         {!configured ? (
-          <p className="notice warning">Supabase is not configured. FlightLog still works locally, and local backup export/import remains available.</p>
+          <p className="muted">Cloud sync isn&apos;t set up on this copy of FlightLog. Everything still works — your flights are saved on this device, and you can export and import backups any time.</p>
         ) : authLoading ? (
-          <p className="empty-inline">Loading Supabase session...</p>
+          <p className="empty-inline">Checking your account…</p>
         ) : !session ? (
           <>
-            <p className="muted">You can keep using FlightLog without signing in. Sign in only if you want optional cloud backup snapshots or manual Sync Lite push/pull.</p>
+            <p className="muted">You can keep using FlightLog without an account. Sign in only if you&apos;d like optional cloud backups or to sync between devices — neither happens automatically.</p>
             <div className="actions"><button type="button" onClick={() => void onGoogleSignIn()}><LogIn aria-hidden="true" /> Continue with Google</button></div>
-            <form onSubmit={submitEmail} className="form-grid compact"><label>Email magic link<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required /></label><div className="actions"><button type="submit"><Mail aria-hidden="true" /> Send magic link</button></div></form>
-            <p className="muted">Cloud backup gives restore points. Sync Lite lets you compare, push, and pull records manually. Neither runs automatically.</p>
+            <form onSubmit={submitEmail} className="form-grid compact"><label>Or get a sign-in link by email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required /></label><div className="actions"><button type="submit"><Mail aria-hidden="true" /> Email me a link</button></div></form>
           </>
         ) : (
           <>
             <dl className="meta-grid">
-              <div><dt>Email</dt><dd>{session.user.email ?? 'Supabase user'}</dd></div>
-              <div><dt>Provider</dt><dd>{typeof provider === 'string' ? provider : 'auth'}</dd></div>
-              <div><dt>Status</dt><dd>Signed in</dd></div>
+              <div><dt>Signed in as</dt><dd>{session.user.email ?? 'Cloud account'}</dd></div>
+              <div><dt>Sign-in method</dt><dd>{typeof provider === 'string' ? provider : 'email'}</dd></div>
             </dl>
-            <details><summary>Diagnostics identifiers</summary><p className="muted">User ID: {session.user.id}</p></details>
+            <details><summary>Account ID (for support)</summary><p className="muted">{session.user.id}</p></details>
             <div className="actions"><button type="button" className="secondary" onClick={() => void onSignOut()}><LogOut aria-hidden="true" /> Sign out</button></div>
           </>
         )}
         {authMessage && <p className="notice">{authMessage}</p>}
       </section>
 
-      <CloudBackupSection cloud={cloud} appMetadata={appMetadata} />
+      <div id="backup"><CloudBackupSection cloud={cloud} appMetadata={appMetadata} /></div>
 
       <section className="panel" id="sync-lite">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Cloud Sync Lite</p><h3>Manual compare, push, and pull</h3></div><button type="button" onClick={onNavigateSync}><Cloud aria-hidden="true" /> Open Sync</button></div>
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Sync</p><h3>Keep devices in step</h3></div><button type="button" onClick={onNavigateSync}><Cloud aria-hidden="true" /> Open Sync</button></div>
+        <p className="muted">A backup is a full restore point. Sync updates individual flights between your devices only when you ask it to — it never runs in the background or overwrites your data silently.</p>
         <dl className="meta-grid">
           <div><dt>Last compared</dt><dd>{syncMetadata.lastCloudCompareAt ? formatDateTime(syncMetadata.lastCloudCompareAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Last push</dt><dd>{syncMetadata.lastCloudPushAt ? formatDateTime(syncMetadata.lastCloudPushAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Last pull</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Tombstones</dt><dd>{syncStatus.tombstoneCount}</dd></div>
-          <div><dt>Conflicts</dt><dd>{syncComparison?.conflicts.length ?? 'Not compared'}</dd></div>
+          <div><dt>Last upload</dt><dd>{syncMetadata.lastCloudPushAt ? formatDateTime(syncMetadata.lastCloudPushAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Last download</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Needs review</dt><dd>{syncComparison?.conflicts.length ?? '—'}</dd></div>
         </dl>
-        <p className="muted">Backup is a snapshot restore point. Sync Lite is manual record-level push/pull. It does not poll, auto-merge, or silently overwrite data.</p>
       </section>
 
       <section className="two-columns settings-columns">
@@ -2241,7 +2250,7 @@ function SettingsPage({
           </div>
         </article>
         <article className="panel" id="units">
-          <p className="eyebrow">Units & Formatting</p>
+          <p className="eyebrow">Units & formatting</p>
           <div className="form-grid compact">
             <label>Distance unit<select value={settings.distanceUnit} onChange={(event) => void onSettingsChange({ distanceUnit: event.target.value as AppSettings['distanceUnit'] })}><option value="kilometers">Kilometers</option><option value="miles">Miles</option></select></label>
             <label>Time format<select value={settings.timeFormat} onChange={(event) => void onSettingsChange({ timeFormat: event.target.value as AppSettings['timeFormat'] })}><option value="system">System</option><option value="12h">12-hour</option><option value="24h">24-hour</option></select></label>
@@ -2252,7 +2261,7 @@ function SettingsPage({
 
       <section className="two-columns settings-columns">
         <article className="panel" id="defaults">
-          <p className="eyebrow">Defaults</p>
+          <p className="eyebrow">New-flight defaults</p>
           <div className="form-grid compact">
             <label>Default cabin<select value={settings.defaultCabin} onChange={(event) => void onSettingsChange({ defaultCabin: event.target.value as AppSettings['defaultCabin'] })}><option value="">No default</option><option>Economy</option><option>Premium Economy</option><option>Business</option><option>First</option></select></label>
             <label>Default purpose<select value={settings.defaultPurpose} onChange={(event) => void onSettingsChange({ defaultPurpose: event.target.value as AppSettings['defaultPurpose'] })}><option value="">No default</option><option value="personal">Personal</option><option value="work">Work</option><option value="school">School</option><option value="other">Other</option></select></label>
@@ -2260,10 +2269,10 @@ function SettingsPage({
         </article>
         <article className="panel" id="reminders">
           <p className="eyebrow">Reminders</p>
-          <label className="checkbox-row"><input type="checkbox" checked={settings.backupReminderEnabled} onChange={(event) => void onSettingsChange({ backupReminderEnabled: event.target.checked })} /> Backup reminder</label>
-          <label>Backup age threshold days<input type="number" min={1} max={365} value={settings.backupAgeThresholdDays} onChange={(event) => void onSettingsChange({ backupAgeThresholdDays: Number(event.target.value) })} /></label>
-          <label className="checkbox-row"><input type="checkbox" checked={settings.syncReminderEnabled} onChange={(event) => void onSettingsChange({ syncReminderEnabled: event.target.checked })} /> Sync reminder</label>
-          <label className="checkbox-row"><input type="checkbox" checked={settings.upcomingFlightRefreshReminderEnabled} onChange={(event) => void onSettingsChange({ upcomingFlightRefreshReminderEnabled: event.target.checked })} /> Upcoming flight refresh reminder</label>
+          <label className="checkbox-row"><input type="checkbox" checked={settings.backupReminderEnabled} onChange={(event) => void onSettingsChange({ backupReminderEnabled: event.target.checked })} /> Remind me to back up</label>
+          <label>Remind me after (days)<input type="number" min={1} max={365} value={settings.backupAgeThresholdDays} onChange={(event) => void onSettingsChange({ backupAgeThresholdDays: Number(event.target.value) })} /></label>
+          <label className="checkbox-row"><input type="checkbox" checked={settings.syncReminderEnabled} onChange={(event) => void onSettingsChange({ syncReminderEnabled: event.target.checked })} /> Remind me to sync</label>
+          <label className="checkbox-row"><input type="checkbox" checked={settings.upcomingFlightRefreshReminderEnabled} onChange={(event) => void onSettingsChange({ upcomingFlightRefreshReminderEnabled: event.target.checked })} /> Remind me to refresh upcoming flights</label>
           <DayOfNotificationsToggle enabled={settings.dayOfNotificationsEnabled} onChange={onSettingsChange} />
         </article>
         <article className="panel" id="passport-goals">
@@ -2276,61 +2285,46 @@ function SettingsPage({
       </section>
 
       <section className="panel" id="live-data">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Live Flight Data</p><h3>Worker API</h3></div><button type="button" className="secondary" onClick={() => void onRunLiveApiTest()} disabled={liveApiStatus.status === 'checking'}><RefreshCw aria-hidden="true" /> Test flight lookup</button></div>
-        <div className="form-grid compact"><label>Live data mode<select value={settings.liveDataMode} onChange={(event) => void onSettingsChange({ liveDataMode: event.target.value as AppSettings['liveDataMode'] })}><option value="real">Real Worker mode</option><option value="mock">Mock data mode</option><option value="disabled">Disabled</option></select></label></div>
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Live flight data</p><h3>Automatic flight status</h3></div><button type="button" className="secondary" onClick={() => void onRunLiveApiTest()} disabled={liveApiStatus.status === 'checking'}><RefreshCw aria-hidden="true" /> Test connection</button></div>
+        <p className="muted">Look up schedules, gates, and delays for the flights you add. Choose demo data to try it without a connection, or turn it off to stay fully manual.</p>
+        <div className="form-grid compact"><label>Live flight data<select value={settings.liveDataMode} onChange={(event) => void onSettingsChange({ liveDataMode: event.target.value as AppSettings['liveDataMode'] })}><option value="real">On</option><option value="mock">Demo data</option><option value="disabled">Off</option></select></label></div>
         <dl className="meta-grid">
-          <div><dt>Worker</dt><dd>{import.meta.env.VITE_FLIGHTLOG_API_BASE_URL ? 'Configured' : 'Not configured'}</dd></div>
-          <div><dt>Status</dt><dd>{liveApiStatus.status}</dd></div>
+          <div><dt>Status</dt><dd>{liveDataLabel}</dd></div>
           <div><dt>Last checked</dt><dd>{liveApiStatus.checkedAt ? formatDateTime(liveApiStatus.checkedAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Provider</dt><dd>AeroDataBox</dd></div>
-          <div><dt>Last success</dt><dd>{lastSuccessfulLookup ? formatDateTime(lastSuccessfulLookup, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Worker URL</dt><dd>{import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'Not configured'}</dd></div>
+          <div><dt>Last successful lookup</dt><dd>{lastSuccessfulLookup ? formatDateTime(lastSuccessfulLookup, displayOptions) : 'Never'}</dd></div>
         </dl>
         {liveApiStatus.message && <p className={`notice ${liveApiStatus.status === 'error' ? 'warning' : ''}`}>{liveApiStatus.message}</p>}
       </section>
 
       <section className="panel" id="data-storage">
-        <div className="section-heading compact-heading"><div><p className="eyebrow">Data & Storage</p><h3>Local browser data</h3></div></div>
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Your data</p><h3>Saved on this device</h3></div><span className={`status ${dataIssueCount === 0 ? 'scheduled' : 'cancelled'}`}>{dataIssueCount === 0 ? 'all healthy' : `${dataIssueCount} to review`}</span></div>
         <dl className="meta-grid">
-          <div><dt>Flights</dt><dd>{storage.flightCount}</dd></div>
-          <div><dt>Active flights</dt><dd>{storage.activeFlightCount}</dd></div>
-          <div><dt>Deleted flights</dt><dd>{storage.deletedFlightCount}</dd></div>
-          <div><dt>Trip metadata</dt><dd>{storage.tripMetadataCount}</dd></div>
-          <div><dt>Provider airports</dt><dd>{storage.providerAirportCount}</dd></div>
-          <div><dt>App metadata</dt><dd>{storage.appMetadataCount}</dd></div>
+          <div><dt>Flights</dt><dd>{storage.activeFlightCount}</dd></div>
+          <div><dt>In Trash</dt><dd>{storage.deletedFlightCount}</dd></div>
+          <div><dt>Trips</dt><dd>{storage.tripMetadataCount}</dd></div>
           <div><dt>Backup size</dt><dd>{storage.estimatedBackupLabel}</dd></div>
-          <div><dt>Local schema</dt><dd>v{storage.localSchemaVersion}</dd></div>
         </dl>
+        {dataIssueCount > 0 && (
+          <p className="muted small">{dataIssueCount} flight detail{dataIssueCount === 1 ? '' : 's'} could be filled in (missing times, time zones, or coordinates).{canReresolve ? ' Re-resolving airports below can fix some automatically.' : ''}</p>
+        )}
         <div className="actions">
-          <button type="button" onClick={() => void onExportBackup()}><Download aria-hidden="true" /> Export local backup</button>
-          <button type="button" className="secondary" onClick={onNavigateBackup}><Upload aria-hidden="true" /> Import local backup</button>
+          <button type="button" onClick={() => void onExportBackup()}><Download aria-hidden="true" /> Export a backup</button>
+          <button type="button" className="secondary" onClick={onNavigateBackup}><Upload aria-hidden="true" /> Import a backup</button>
           <button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button>
-          <button type="button" className="secondary" onClick={() => void onRepairData()} disabled={health.repairableAirportSnapshotCount === 0}><Database aria-hidden="true" /> Re-resolve airport snapshots</button>
+          {canReresolve && <button type="button" className="secondary" onClick={() => void onRepairData()}><Database aria-hidden="true" /> Re-resolve airports</button>}
         </div>
-        <dl className="meta-grid">
-          <div><dt>Missing timezone</dt><dd>{health.missingTimezoneCount}</dd></div>
-          <div><dt>Missing coordinates</dt><dd>{health.missingAirportCoordinateCount}</dd></div>
-          <div><dt>Provider warnings</dt><dd>{health.providerWarningCount}</dd></div>
-          <div><dt>Missing times</dt><dd>{health.missingTimeCount}</dd></div>
-          <div><dt>Orphaned trip metadata</dt><dd>{health.orphanedTripMetadataCount}</dd></div>
-          <div><dt>Missing sync metadata</dt><dd>{health.missingSyncMetadataCount}</dd></div>
-          <div><dt>Remote tombstones</dt><dd>{health.remoteTombstonesCount}</dd></div>
-        </dl>
-      </section>
-
-      <section className="panel" id="diagnostics">
-        <details>
-          <summary><span><SlidersHorizontal aria-hidden="true" /> Diagnostics</span></summary>
+        <details className="support-details">
+          <summary><span><SlidersHorizontal aria-hidden="true" /> Technical details for support</span></summary>
           <pre className="diagnostics-output">{diagnostics}</pre>
-          <div className="actions"><button type="button" className="secondary" onClick={() => void copyDiagnostics()}><Copy aria-hidden="true" /> Copy diagnostics</button></div>
+          <div className="actions"><button type="button" className="secondary" onClick={() => void copyDiagnostics()}><Copy aria-hidden="true" /> Copy details</button></div>
           {diagnosticsMessage && <p className="notice">{diagnosticsMessage}</p>}
         </details>
       </section>
 
       <section className="panel danger-zone" id="danger-zone">
-        <div className="flight-main"><div><p className="eyebrow">Danger Zone</p><h3>Clear local data</h3></div><AlertTriangle aria-hidden="true" /></div>
-        <p className="muted">Export a local backup or create a cloud backup before clearing local data. This does not delete cloud backups or cloud sync records.</p>
-        <div className="actions"><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button><button type="button" className="ghost danger" onClick={() => void onClearLocalData()}><Trash2 aria-hidden="true" /> Clear local data</button></div>
+        <div className="flight-main"><div><p className="eyebrow">Danger zone</p><h3>Clear this device</h3></div><AlertTriangle aria-hidden="true" /></div>
+        <p className="muted">Export a backup first — this erases the flights stored on this device. It does not touch your cloud backups or synced records.</p>
+        <div className="actions"><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button><button type="button" className="ghost danger" onClick={() => void onClearLocalData()}><Trash2 aria-hidden="true" /> Clear this device</button></div>
       </section>
     </main>
   )
@@ -2396,27 +2390,27 @@ function AccountPage({
           </div>
           <Shield aria-hidden="true" />
         </div>
-        <p className="muted">Without sign-in, your flights stay in this browser&apos;s IndexedDB. With cloud backup enabled, FlightLog uploads plain JSON backup snapshots to your Supabase project and protects rows with Supabase Auth and RLS. Signing out does not delete local data, and cloud backups remain until you delete them.</p>
+        <p className="muted">Without an account, your flights stay on this device. Turn on cloud backup and FlightLog saves restore points to your account that only you can open. Signing out never deletes your local data, and your cloud backups stay until you remove them.</p>
       </section>
       {!configured ? (
         <section className="panel">
-          <h3>Cloud backup is not configured</h3>
-          <p className="notice warning">Local backups still work. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, run the SQL migration, and configure Supabase redirect URLs to enable cloud backup.</p>
+          <h3>Cloud backup isn&apos;t set up</h3>
+          <p className="muted">Whoever set up this copy of FlightLog hasn&apos;t enabled cloud accounts. Everything still works — you can export and import local backups any time.</p>
         </section>
       ) : authLoading ? (
-        <section className="panel"><p className="empty-inline">Loading Supabase session...</p></section>
+        <section className="panel"><p className="empty-inline">Checking your account…</p></section>
       ) : !session ? (
         <section className="two-columns">
           <article className="panel">
             <h3>Sign in to enable cloud backup</h3>
-            <p className="muted">Google OAuth and email magic link are supported for v1.6. Apple login is reserved for a future release.</p>
+            <p className="muted">Continue with Google or get a one-time sign-in link by email.</p>
             <div className="actions"><button type="button" onClick={() => void onGoogleSignIn()}><LogIn aria-hidden="true" /> Continue with Google</button></div>
           </article>
           <article className="panel">
-            <h3>Email magic link</h3>
+            <h3>Sign in by email</h3>
             <form onSubmit={submitEmail}>
               <div className="form-grid compact"><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required /></label></div>
-              <div className="actions"><button type="submit"><Mail aria-hidden="true" /> Send magic link</button></div>
+              <div className="actions"><button type="submit"><Mail aria-hidden="true" /> Email me a link</button></div>
             </form>
           </article>
         </section>
@@ -2424,8 +2418,8 @@ function AccountPage({
         <>
           <section className="panel">
             <div className="flight-main">
-              <div><p className="eyebrow">Signed in</p><h3>{session.user.email ?? 'Supabase user'}</h3></div>
-              <span className="status scheduled">{typeof provider === 'string' ? provider : 'auth'}</span>
+              <div><p className="eyebrow">Signed in</p><h3>{session.user.email ?? 'Cloud account'}</h3></div>
+              <span className="status scheduled">{typeof provider === 'string' ? provider : 'email'}</span>
             </div>
             <dl className="meta-grid">
               <div><dt>Cloud backups</dt><dd>{cloudBackups.length}</dd></div>
@@ -2516,31 +2510,27 @@ function CloudBackupSection({ cloud, appMetadata }: { cloud: CloudBackupControls
   return (
     <section className="panel cloud-panel">
       <div className="section-heading compact-heading">
-        <div><p className="eyebrow">Cloud Backup</p><h3>Supabase snapshots</h3></div>
+        <div><p className="eyebrow">Cloud backup</p><h3>Restore points in your account</h3></div>
         <div className="heading-actions">
           <button type="button" className="ghost" onClick={cloud.onNavigateAccount}>Account</button>
-          <button type="button" className="ghost" onClick={cloud.onNavigateSync}>Sync Lite</button>
+          <button type="button" className="ghost" onClick={cloud.onNavigateSync}>Sync</button>
         </div>
       </div>
       {!cloud.configured ? (
-        <p className="notice warning">Cloud backup is not configured. Local backups still work.</p>
+        <p className="muted">Cloud backup isn&apos;t set up on this copy of FlightLog. Exporting and importing local backups still works.</p>
       ) : !cloud.signedIn ? (
         <div>
-          <p className="muted">Sign in to upload plain JSON backup snapshots protected by Supabase Auth and RLS.</p>
+          <p className="muted">Sign in to save restore points to your account. Only you can access them.</p>
           <div className="actions"><button type="button" onClick={cloud.onNavigateAccount}><LogIn aria-hidden="true" /> Sign in</button></div>
         </div>
       ) : (
         <>
           <dl className="meta-grid">
-            <div><dt>Signed in</dt><dd>{cloud.userEmail ?? 'Supabase user'}</dd></div>
-            <div><dt>Status</dt><dd>{cloud.configured && cloud.signedIn ? 'Enabled' : 'Disabled'}</dd></div>
+            <div><dt>Signed in as</dt><dd>{cloud.userEmail ?? 'Cloud account'}</dd></div>
             <div><dt>Cloud backups</dt><dd>{cloud.backups.length}</dd></div>
             <div><dt>Latest cloud backup</dt><dd>{latest ? formatDateTime(latest.createdAt, displayOptions) : 'Never'}</dd></div>
             <div><dt>Last local export</dt><dd>{lastBackupAt ? formatDateTime(lastBackupAt, displayOptions) : 'Never'}</dd></div>
-            <div><dt>Last cloud restore</dt><dd>{lastCloudRestoreAt ? formatDateTime(lastCloudRestoreAt, displayOptions) : 'Never'}</dd></div>
-            <div><dt>Backup schema</dt><dd>v4</dd></div>
-            <div><dt>Current checksum</dt><dd>{shortChecksum(cloud.currentChecksum)}</dd></div>
-            <div><dt>Last cloud checksum</dt><dd>{shortChecksum(appMetadataValue(appMetadata, 'lastCloudBackupChecksum'))}</dd></div>
+            <div><dt>Last restore</dt><dd>{lastCloudRestoreAt ? formatDateTime(lastCloudRestoreAt, displayOptions) : 'Never'}</dd></div>
           </dl>
           {localChanged && <p className="notice warning">Local data has changed since your last cloud backup.</p>}
           <div className="form-grid compact">
@@ -2795,7 +2785,7 @@ function BackupCenterPage({
       <section className="two-columns">
         <article className="panel">
           <h3>Full backup</h3>
-          <p className="muted">Exports flights, trip metadata, provider airports, app metadata, schema version, and export time.</p>
+          <p className="muted">Includes your flights, trips, and app settings, plus the date it was exported.</p>
           <div className="actions"><button type="button" onClick={() => void onExportBackup()}><Download aria-hidden="true" /> Export full backup</button></div>
         </article>
         <article className="panel">
@@ -2847,20 +2837,14 @@ function BackupCenterPage({
         </section>
       )}
       <section className="panel">
-        <h3>Data Health</h3>
+        <h3>Data health</h3>
         <dl className="meta-grid">
-          <div><dt>Missing timezone</dt><dd>{health.missingTimezoneCount}</dd></div>
-          <div><dt>Missing coordinates</dt><dd>{health.missingAirportCoordinateCount}</dd></div>
-          <div><dt>Provider warnings</dt><dd>{health.providerWarningCount}</dd></div>
-          <div><dt>Missing times</dt><dd>{health.missingTimeCount}</dd></div>
-          <div><dt>Safe repairs</dt><dd>{health.repairableAirportSnapshotCount}</dd></div>
-          <div><dt>Active flights</dt><dd>{health.activeFlightsCount}</dd></div>
-          <div><dt>Deleted flights</dt><dd>{health.deletedFlightsCount}</dd></div>
-          <div><dt>Orphaned trip metadata</dt><dd>{health.orphanedTripMetadataCount}</dd></div>
-          <div><dt>Missing sync metadata</dt><dd>{health.missingSyncMetadataCount}</dd></div>
-          <div><dt>Remote tombstones</dt><dd>{health.remoteTombstonesCount}</dd></div>
+          <div><dt>Flights</dt><dd>{health.activeFlightsCount}</dd></div>
+          <div><dt>In Trash</dt><dd>{health.deletedFlightsCount}</dd></div>
+          <div><dt>Need more details</dt><dd>{health.missingTimezoneCount + health.missingAirportCoordinateCount + health.missingTimeCount + health.orphanedTripMetadataCount}</dd></div>
         </dl>
-        <div className="actions"><button type="button" className="secondary" disabled={health.repairableAirportSnapshotCount === 0} onClick={() => void onRepairData()}>Re-resolve airport snapshots</button><button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button></div>
+        <p className="muted small">&ldquo;Need more details&rdquo; counts flights missing times, time zones, or coordinates. Re-resolving airports can fill in some automatically.</p>
+        <div className="actions">{health.repairableAirportSnapshotCount > 0 && <button type="button" className="secondary" onClick={() => void onRepairData()}><Database aria-hidden="true" /> Re-resolve airports</button>}<button type="button" className="secondary" onClick={onNavigateTrash}><Trash2 aria-hidden="true" /> Open Trash</button></div>
       </section>
       <section className="panel import-app-panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Switch to FlightLog</p><h3>Import from another app</h3></div><Import aria-hidden="true" /></div>
@@ -3090,23 +3074,23 @@ function SyncPage({
   return (
     <main className="page sync-page">
       <div className="section-heading">
-        <div><p className="eyebrow">Cloud Sync Lite</p><h2>Manual local/cloud compare</h2></div>
-        <div className="heading-actions"><button type="button" className="ghost" onClick={onNavigateSettings}>Settings</button><button type="button" className="ghost" onClick={onNavigateBackup}>Backup Center</button></div>
+        <div><p className="eyebrow">Sync</p><h2>Keep your devices in step</h2></div>
+        <div className="heading-actions"><button type="button" className="ghost" onClick={onNavigateSettings}>Settings</button><button type="button" className="ghost" onClick={onNavigateBackup}>Backups</button></div>
       </div>
       <SyncStatusBadge status={status} onCompare={configured && session ? onCompare : undefined} />
       <section className="panel">
-        <div className="flight-main"><div><p className="eyebrow">Status</p><h3>{session ? 'Signed in, manual sync available' : configured ? 'Sign in to sync' : 'Supabase not configured'}</h3></div><Cloud aria-hidden="true" /></div>
-        {!configured && <p className="notice warning">Cloud Sync Lite is disabled until Supabase variables are configured and migrations 002 and 003 are run.</p>}
-        {configured && !session && <p className="notice warning">Sign in from Settings to compare, push, or pull cloud sync records.</p>}
+        <div className="flight-main"><div><p className="eyebrow">Status</p><h3>{session ? 'Signed in — sync ready' : configured ? 'Sign in to sync' : 'On this device only'}</h3></div><Cloud aria-hidden="true" /></div>
+        {!configured && <p className="muted">Sync isn&apos;t set up on this copy of FlightLog. Your flights stay on this device, and local backups still work.</p>}
+        {configured && !session && <p className="notice warning">Sign in from Settings to compare and sync your flights between devices.</p>}
         <dl className="meta-grid">
           <div><dt>Last compared</dt><dd>{syncMetadata.lastCloudCompareAt ? formatDateTime(syncMetadata.lastCloudCompareAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last push</dt><dd>{syncMetadata.lastCloudPushAt ? formatDateTime(syncMetadata.lastCloudPushAt, displayOptions) : 'Never'}</dd></div>
           <div><dt>Last pull</dt><dd>{syncMetadata.lastCloudPullAt ? formatDateTime(syncMetadata.lastCloudPullAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Last tombstone push</dt><dd>{syncMetadata.lastTombstonePushAt ? formatDateTime(syncMetadata.lastTombstonePushAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Last tombstone pull</dt><dd>{syncMetadata.lastTombstonePullAt ? formatDateTime(syncMetadata.lastTombstonePullAt, displayOptions) : 'Never'}</dd></div>
-          <div><dt>Local records</dt><dd>{comparison ? localCount : 'Not compared'}</dd></div>
-          <div><dt>Remote records</dt><dd>{comparison ? remoteCount : 'Not compared'}</dd></div>
-          <div><dt>Conflicts</dt><dd>{comparison?.conflicts.length ?? 'Not compared'}</dd></div>
+          <div><dt>Last deletion uploaded</dt><dd>{syncMetadata.lastTombstonePushAt ? formatDateTime(syncMetadata.lastTombstonePushAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>Last deletion downloaded</dt><dd>{syncMetadata.lastTombstonePullAt ? formatDateTime(syncMetadata.lastTombstonePullAt, displayOptions) : 'Never'}</dd></div>
+          <div><dt>On this device</dt><dd>{comparison ? localCount : 'Not compared'}</dd></div>
+          <div><dt>In the cloud</dt><dd>{comparison ? remoteCount : 'Not compared'}</dd></div>
+          <div><dt>Needs review</dt><dd>{comparison?.conflicts.length ?? 'Not compared'}</dd></div>
         </dl>
         <p className={recentBackup ? 'notice' : 'notice warning'}>{recentBackup ? `Safety backup available: ${latestBackup.label || 'Cloud backup'} from ${formatDateTime(latestBackup.createdAt, displayOptions)}.` : 'Create a cloud backup snapshot before push, pull, or tombstone sync if this data matters.'}</p>
         <div className="actions">
@@ -4306,7 +4290,7 @@ function App() {
       return
     }
     if (!supabase || !authSession) {
-      setSyncMessage(!supabase ? 'Cloud Sync Lite is not configured. Local data still works.' : 'Sign in to compare local and cloud sync records.')
+      setSyncMessage(!supabase ? 'Sync isn’t set up on this copy of FlightLog. Your local data still works.' : 'Sign in to compare and sync your flights.')
       return
     }
     setSyncBusy(true)
