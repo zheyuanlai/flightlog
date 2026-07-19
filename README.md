@@ -141,6 +141,15 @@ FlightLog v3.3 adds three read-only, no-server companion views around the core a
 
 Deliberately **not** built: an OS home-screen widget — that needs a native shell FlightLog doesn't have.
 
+## v4.0 Delay Sense
+
+FlightLog v4.0 adds an on-device, fully explainable delay prediction for upcoming flights — no server ML, no black box.
+
+- **Heuristic delay model** (`src/utils/predict.ts`): weighs the upcoming flight's own route, airline, and origin-airport delay history from your own logged flights (more measured flights on a signal = more weight, up to a cap), producing a delay probability, an expected-delay band, and a confidence tier (low/medium/high). It also accepts an optional live inbound-aircraft delay signal for when that data source exists — the model degrades gracefully to history-only when it doesn't, rather than guessing.
+- **Confidence and explanation everywhere**: every prediction lists exactly which signals fed it and their own stats (e.g. "Your SIN-LAX history: delayed 1 time out of 2, avg 20m late"), so nothing is asserted without showing its work.
+- **Surfaced in two places**: a compact one-line "Delay sense" summary on the Dashboard's day-of-travel card, and a full breakdown (probability, band, confidence, and every contributing signal) on the Flight Detail page's Flight assistant panel — both only for flights that haven't departed yet.
+- **Route preview is now a real map**: the Flight Detail page's route preview renders an actual Leaflet map (great-circle arc, airport markers, OpenStreetMap tiles) instead of a stylized placeholder, reusing the same map engine as the full Map page. Flights whose airports lack coordinates still fall back to the simple placeholder.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.
