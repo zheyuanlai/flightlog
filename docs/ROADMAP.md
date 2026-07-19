@@ -166,13 +166,13 @@ Goal: move from recording to assisting. This is where FlightLog earns the "smart
 - **What-if & rebooking hints (shipped)**: `src/utils/rebookingHints.ts` — surfaces the user's own alternative airline/flight-number combinations from history when a flight is cancelled/diverted (no booking — informational only, purely a reflection of the user's own log).
 - **Packing/prep checklist (shipped)**: `src/utils/packingChecklist.ts` — a per-trip-type template (personal/work/school/other), fully user-editable (check/add/remove), persisted on `TripMetadata` and synced like any other trip edit.
 
-### v4.2 — "Shared journeys": careful, serverless collaboration (build autonomous; one product gate)
+### v4.2 — "Shared journeys": careful, serverless collaboration (build autonomous; one product gate) — ✅ shipped
 
 Collaboration without betraying the non-negotiables.
 
-- **Export a trip as a signed, optionally-encrypted link/file** a companion can import — asynchronous, no live server, no accounts required.
-- **Merge a shared trip** into the recipient's log with the existing dedupe preview.
-- ⚠️ **Human gate (product/privacy):** anything beyond file/link exchange (a shared live view) would need a server and moderation — explicitly deferred pending an owner decision recorded in §10.
+- **Export a trip as a signed, optionally-encrypted file (shipped)**: `src/utils/tripShare.ts` — a trip export is a regular full-backup export (scoped to that trip's flights, local/device fields stripped) plus a checksum and a trip-share marker, so it's asynchronous, needs no live server, and no accounts.
+- **Merge a shared trip (shipped)** into the recipient's log via the *existing* backup-import pipeline (`parseFullBackupJson`/`previewBackupImport`) unchanged — the Backup Center detects the trip-share marker and shows trip-specific preview copy, hides "Replace all local data", and flags a checksum-mismatch warning if the file was altered after export.
+- ⚠️ **Human gate (product/privacy), still deferred:** anything beyond file/link exchange (a shared live view) would need a server and moderation — explicitly out of scope for this stage, pending an owner decision recorded in §10.
 
 ### v4.3 — "Deep parity": Variflight-grade reference data (provider/data gated)
 
@@ -242,7 +242,7 @@ Speculative bets to reconsider as the platform and web evolve — each would req
 | Connection risk / planning | ✅ | ◐ | v4.1 |
 | Aircraft/tail history | — | ✅ | v4.3 (data-license gated) |
 | Historical route analytics | — | ✅ | v4.3 (data-license gated) |
-| Collaboration / sharing | ✅ | — | v4.2 file/link only; live sharing is a product gate |
+| Collaboration / sharing | ✅ | — | ✅ shipped v4.2 (file/link only); live sharing is a product gate |
 | Self-host / bring-your-own-provider | — | — | v3.2 (FlightLog-specific strength) |
 | Accessibility AA | ◐ | ◐ | v5.0 (target: exceed both) |
 | Friends/social feed | ✅ | — | Deliberately out of scope (needs server + moderation) |
