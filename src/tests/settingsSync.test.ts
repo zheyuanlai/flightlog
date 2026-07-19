@@ -254,12 +254,18 @@ describe('sealed sync (v3.1)', () => {
     const flightRecord = local.records.find((record) => record.entityType === 'flight')!
     const [sealed] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
     expect(sealed.sealed).toBe(true)
-    expect(sealed.checksum).toBe(flightRecord.checksum) // checksum stays plaintext-derived, unaffected by sealing
+    // The uploaded checksum must NOT be derived from plaintext — FlightLog's record
+    // shapes have low enough entropy that a plaintext-keyed hash would let a database
+    // reader recover content via offline dictionary attack, without the passphrase.
+    expect(sealed.checksum).not.toBe(flightRecord.checksum)
+    expect(sealed.contentChecksum).not.toBe(flightRecord.contentChecksum)
     expect(JSON.stringify(sealed.record)).not.toContain('very private note')
+    expect(JSON.stringify(sealed.checksum)).not.toContain('very private note')
 
     const { client, store } = mockSyncClient([])
     await pushLocalChanges({ client, userId: 'user-a', records: [sealed], deviceId: 'device-a' })
     expect(JSON.stringify(store.upserted[0].record_json)).not.toContain('very private note')
+    expect(store.upserted[0].record_checksum).not.toBe(flightRecord.checksum)
 
     const remoteRows = [remoteRow(sealed)]
     const { client: pullClient } = mockSyncClient(remoteRows)
@@ -268,7 +274,20 @@ describe('sealed sync (v3.1)', () => {
     expect(unsealed.locked).toBeUndefined()
     expect(unsealed.sealed).toBe(true)
     expect((unsealed.record as FlightLogEntry).notes).toBe('very private note')
+    // After decrypting, the checksum is recomputed from the plaintext and matches
+    // the original local record again — only the server-visible value is opaque.
     expect(unsealed.checksum).toBe(flightRecord.checksum)
+  })
+
+  it('does not let a database reader distinguish identical plaintext records by checksum (fresh IV every seal)', async () => {
+    const local = await getLocalSyncState({ flights: [flight()], tripMetadata: [], providerAirports: [], settings: DEFAULT_APP_SETTINGS })
+    const flightRecord = local.records.find((record) => record.entityType === 'flight')!
+    const [sealedOnce] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
+    const [sealedAgain] = await sealRecordsForUpload([flightRecord], PASSPHRASE, { iterations: FAST_ITERATIONS })
+    // Identical plaintext, same passphrase -- if the checksum were plaintext-derived
+    // these would match, letting a reader enumerate/dictionary-attack content or spot
+    // unchanged records across pushes. A fresh random IV per seal must keep them apart.
+    expect(sealedOnce.checksum).not.toBe(sealedAgain.checksum)
   })
 
   it('comes back locked (not decrypted) without a passphrase, and never surfaces as pullable', async () => {

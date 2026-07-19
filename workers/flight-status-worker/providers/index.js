@@ -2,9 +2,12 @@ import { aeroDataBoxAdapter } from './aerodatabox.js'
 
 export const DEFAULT_PROVIDER = 'aerodatabox'
 
-const PROVIDER_ADAPTERS = {
+// A null-prototype object: bracket access never walks the prototype chain, so a
+// FLIGHTLOG_PROVIDER value like "constructor" or "__proto__" can't resolve to an
+// inherited Object.prototype member instead of falling through to the default.
+const PROVIDER_ADAPTERS = Object.assign(Object.create(null), {
   aerodatabox: aeroDataBoxAdapter,
-}
+})
 
 export function listProviders() {
   return Object.keys(PROVIDER_ADAPTERS)

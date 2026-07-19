@@ -162,6 +162,12 @@ describe('provider registry', () => {
     expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'not-a-real-provider' }).name).toBe(DEFAULT_PROVIDER)
   })
 
+  it('does not resolve an inherited Object.prototype member for a colliding provider name', () => {
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'constructor' }).name).toBe(DEFAULT_PROVIDER)
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: '__proto__' }).name).toBe(DEFAULT_PROVIDER)
+    expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'toString' }).name).toBe(DEFAULT_PROVIDER)
+  })
+
   it('resolves a named adapter case-insensitively', () => {
     expect(resolveProvider({ FLIGHTLOG_PROVIDER: 'AeroDataBox' }).name).toBe('aerodatabox')
     expect(resolveProvider({ FLIGHTLOG_PROVIDER: '  aerodatabox  ' }).name).toBe('aerodatabox')

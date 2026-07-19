@@ -304,17 +304,28 @@ export async function getRemoteSyncState(client: SupabaseLike | null | undefined
 export { SealedSyncPassphraseError }
 
 /**
- * Encrypts each record's content for upload (Sealed Sync). Checksums are left as
- * already computed from the plaintext, so the next fetch — after decrypting with
- * the same passphrase — recomputes the identical checksum; the server only ever
- * sees a one-way content hash alongside the ciphertext, never the passphrase or key.
+ * Encrypts each record's content for upload (Sealed Sync). The uploaded checksum
+ * is derived from the CIPHERTEXT, not the plaintext: FlightLog's record shapes
+ * (a handful of enum/boolean settings, a small set of plausible flight fields)
+ * have low enough entropy that a plaintext-derived hash would let a database
+ * reader recover content via offline dictionary/enumeration, without ever
+ * needing the passphrase — an ordinary one-way hash is not confidentiality
+ * -preserving against a guessable input space. getRemoteSyncState never reads
+ * the server-stored checksum back for comparison (it always recomputes from the
+ * decrypted payload after unlocking), so a ciphertext-derived value here is free.
  */
 export async function sealRecordsForUpload(records: SyncRecord[], passphrase: string, options: { iterations?: number } = {}): Promise<SyncRecord[]> {
-  return Promise.all(records.map(async (record) => ({
-    ...record,
-    record: await sealSyncRecord(record.record, passphrase, options),
-    sealed: true,
-  })))
+  return Promise.all(records.map(async (record) => {
+    const envelope = await sealSyncRecord(record.record, passphrase, options)
+    const ciphertextChecksum = await sha256(envelope.payload)
+    return {
+      ...record,
+      record: envelope,
+      checksum: ciphertextChecksum,
+      contentChecksum: ciphertextChecksum,
+      sealed: true,
+    }
+  }))
 }
 
 function newerSide(local?: SyncRecord, remote?: SyncRecord): 'local' | 'remote' | 'unknown' {

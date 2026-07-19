@@ -3556,6 +3556,13 @@ function App() {
         setAuthMessage('Signed out. Local data was not deleted.')
         setCloudBackups([])
         setSyncDevices([])
+        // Covers sign-out paths other than the Settings button (session expiry, a
+        // failed token refresh, or a sign-out in another tab of the same origin) —
+        // a leftover sync passphrase must never carry over to a different signed-in
+        // user in this tab.
+        setSyncPassphrase(undefined)
+        setSyncComparison(undefined)
+        setSyncPassphraseRequest(undefined)
       }
     })
     return () => {
@@ -4125,6 +4132,38 @@ function App() {
     return passphrase
   }
 
+  // Seals records before upload when Sealed Sync is on, prompting for the
+  // passphrase if it isn't already cached this session. Returns undefined (and
+  // sets a message) if the user needs a passphrase and cancels — callers must
+  // treat that as "stop here", not push the unsealed records as a fallback.
+  async function sealForPushIfEnabled(records: SyncRecord[]): Promise<SyncRecord[] | undefined> {
+    if (!settings.syncEncryptionEnabled || records.length === 0) return records
+    const passphrase = await ensureSyncPassphrase()
+    if (!passphrase) {
+      setSyncMessage('Enter your sync passphrase to push encrypted records.')
+      return undefined
+    }
+    return sealRecordsForUpload(records, passphrase)
+  }
+
+  // The single choke point every sync push goes through, so no call site can
+  // accidentally upload plaintext when Sealed Sync is enabled. Returns undefined
+  // (not a thrown error) on a cancelled passphrase prompt, so callers can bail
+  // out cleanly without it being logged/reported as a sync failure.
+  async function pushSyncRecords(records: SyncRecord[]): Promise<number | undefined> {
+    if (records.length === 0) return 0
+    const sealed = await sealForPushIfEnabled(records)
+    if (!sealed) return undefined
+    return pushLocalChanges({ client: supabase, userId: authSession?.user.id, records: sealed, deviceId })
+  }
+
+  async function pushSyncTombstoneRecords(records: SyncRecord[]): Promise<number | undefined> {
+    if (records.length === 0) return 0
+    const sealed = await sealForPushIfEnabled(records)
+    if (!sealed) return undefined
+    return pushTombstones({ client: supabase, userId: authSession?.user.id, records: sealed, deviceId })
+  }
+
   // Fetches remote sync state using whatever passphrase is already cached this
   // session (possibly none) without ever prompting, so a plain "Compare" click
   // never surprises the user with a modal. A stale/wrong cached passphrase falls
@@ -4471,7 +4510,7 @@ function App() {
 
   async function refreshSyncComparison(message?: string) {
     if (!supabase || !authSession) return
-    const [local, remote] = await Promise.all([buildLocalSyncState(), getRemoteSyncState(supabase)])
+    const [local, remote] = await Promise.all([buildLocalSyncState(), fetchRemoteSyncState()])
     const comparison = compareLocalAndRemote(local, remote)
     setSyncComparison(comparison)
     setSyncConflictActions(Object.fromEntries(comparison.conflicts.map((item) => [item.key, syncConflictActions[item.key] ?? 'skip'])))
@@ -4492,13 +4531,8 @@ function App() {
     try {
       if (!confirmSyncWithoutRecentBackup('Push local changes')) return
       const records = syncComparison.localOnly.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
-      let recordsToPush = records
-      if (settings.syncEncryptionEnabled) {
-        const passphrase = await ensureSyncPassphrase()
-        if (!passphrase) { setSyncMessage('Enter your sync passphrase to push encrypted records.'); return }
-        recordsToPush = await sealRecordsForUpload(records, passphrase)
-      }
-      const count = await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: recordsToPush, deviceId })
+      const count = await pushSyncRecords(records)
+      if (count === undefined) return
       const now = new Date().toISOString()
       await recordSyncEvent('push', { pushed: count, tombstones: 0 })
       await updateSyncMetadata({ lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} pushed`, lastSyncError: undefined }, now)
@@ -4556,13 +4590,8 @@ function App() {
     setSyncMessage('')
     try {
       const records = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
-      let recordsToPush = records
-      if (settings.syncEncryptionEnabled) {
-        const passphrase = await ensureSyncPassphrase()
-        if (!passphrase) { setSyncMessage('Enter your sync passphrase to push encrypted records.'); return }
-        recordsToPush = await sealRecordsForUpload(records, passphrase)
-      }
-      const count = await pushTombstones({ client: supabase, userId: authSession.user.id, records: recordsToPush, deviceId })
+      const count = await pushSyncTombstoneRecords(records)
+      if (count === undefined) return
       const now = new Date().toISOString()
       await recordSyncEvent('tombstone_push', { tombstones: count })
       await updateSyncMetadata({ lastTombstonePushAt: now, lastCloudPushAt: now, lastSyncEventAt: now, lastSyncSummary: `${count} tombstones pushed`, lastSyncError: undefined }, now)
@@ -4622,8 +4651,8 @@ function App() {
       const pullRecords = pullRemoteChanges(syncComparison)
       const tombstoneRecords = syncComparison.tombstonesToPush.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
       const pulledTombstones = pullTombstones(syncComparison)
-      if (pushRecords.length > 0) await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records: pushRecords, deviceId })
-      if (tombstoneRecords.length > 0) await pushTombstones({ client: supabase, userId: authSession?.user.id, records: tombstoneRecords, deviceId })
+      if (pushRecords.length > 0 && (await pushSyncRecords(pushRecords)) === undefined) return
+      if (tombstoneRecords.length > 0 && (await pushSyncTombstoneRecords(tombstoneRecords)) === undefined) return
       if (pullRecords.length > 0 || pulledTombstones.length > 0) await applyRemoteSyncRecords([...pullRecords, ...pulledTombstones])
       const now = new Date().toISOString()
       await recordSyncEvent('push', { pushed: pushRecords.length, pulled: pullRecords.length, tombstones: tombstoneRecords.length + pulledTombstones.length })
@@ -4655,18 +4684,18 @@ function App() {
       const activeLocal = item.local && !item.local.deletedAt ? item.local : undefined
       const activeRemote = item.remote && !item.remote.deletedAt ? item.remote : undefined
       if (action === 'keep-local' && item.local) {
-        await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [item.local], deviceId })
+        if ((await pushSyncRecords([item.local])) === undefined) return
       }
       if (action === 'use-cloud' && item.remote) {
         if (!requireTypedConfirmation(`Use the cloud version of ${syncRecordLabel(item)} and overwrite this local record?`, 'USE CLOUD')) return
         await applyRemoteSyncRecords([item.remote])
       }
       if (action === 'keep-deleted' && deletedSide) {
-        if (deletedSide === item.local) await pushTombstones({ client: supabase, userId: authSession.user.id, records: [deletedSide], deviceId })
+        if (deletedSide === item.local) { if ((await pushSyncTombstoneRecords([deletedSide])) === undefined) return }
         else await applyRemoteSyncRecords([deletedSide])
       }
       if (action === 'restore-local' && activeLocal) {
-        await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [activeLocal], deviceId })
+        if ((await pushSyncRecords([activeLocal])) === undefined) return
       }
       if (action === 'restore-cloud' && activeRemote) {
         if (!requireTypedConfirmation(`Restore the active cloud version of ${syncRecordLabel(item)} into this browser?`, 'RESTORE CLOUD')) return
@@ -4709,7 +4738,11 @@ function App() {
       const saved = (await getAllFlights()).find((flight) => flight.id === savedId)
       if (!saved) throw new Error('Merged flight was not found after saving.')
       const record = await buildSyncRecord('flight', saved.id, saved, deviceId)
-      await pushLocalChanges({ client: supabase, userId: authSession.user.id, records: [record], deviceId })
+      if ((await pushSyncRecords([record])) === undefined) {
+        await loadFlights()
+        setSyncMessage(`Merged fields for ${syncRecordLabel(item)} and saved locally. Enter your sync passphrase to push it to the cloud.`)
+        return
+      }
       await loadFlights()
       const now = new Date().toISOString()
       await recordSyncEvent('conflict_resolve', { action: 'merge-fields', conflicts: 1 })
@@ -4756,10 +4789,10 @@ function App() {
       const conflicts = syncComparison.conflicts
       if (action === 'keep-local') {
         const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record))
-        await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
+        if ((await pushSyncRecords(records)) === undefined) return
       } else if (action === 'restore-local') {
         const records = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record && !record.deletedAt))
-        await pushLocalChanges({ client: supabase, userId: authSession?.user.id, records, deviceId })
+        if ((await pushSyncRecords(records)) === undefined) return
       } else if (action === 'use-cloud') {
         const records = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record))
         await applyRemoteSyncRecords(records)
@@ -4769,7 +4802,7 @@ function App() {
       } else if (action === 'keep-deleted') {
         const localDeleted = conflicts.map((item) => item.local).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
         const remoteDeleted = conflicts.map((item) => item.remote).filter((record): record is SyncRecord => Boolean(record?.deletedAt))
-        await pushTombstones({ client: supabase, userId: authSession?.user.id, records: localDeleted, deviceId })
+        if ((await pushSyncTombstoneRecords(localDeleted)) === undefined) return
         await applyRemoteSyncRecords(remoteDeleted)
       }
       const now = new Date().toISOString()
