@@ -162,6 +162,7 @@ import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleAr
 import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } from './utils/airportStatus'
 import { fetchAircraftLookup, type AircraftLookup } from './utils/aircraftHistory'
 import { findTailHistory } from './utils/tailHistory'
+import { isIndexedDbAvailable, loadErrorStorageIssue, unavailableStorageIssue, type StorageIssue } from './utils/storageHealth'
 import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
 import { predictDelay } from './utils/predict'
@@ -496,6 +497,16 @@ function OfflineBanner() {
   )
 }
 
+function StorageIssueBanner({ issue, onNavigateBackup }: { issue: StorageIssue; onNavigateBackup: () => void }) {
+  return (
+    <div className="storage-issue-banner" role="alert">
+      <AlertTriangle aria-hidden="true" />
+      <span>{issue.message}</span>
+      <button type="button" onClick={onNavigateBackup}>Open Backup Center</button>
+    </div>
+  )
+}
+
 function EmptyState({
   icon: Icon,
   title,
@@ -776,6 +787,26 @@ function FlightForm({
   const [busy, setBusy] = useState(false)
   const errors = validateFlightInput(form)
   const computedPreview = errors.length === 0 ? computeFlight(flightFromInput(form, editing)) : undefined
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const initialFormRef = useRef(form)
+  const initialLookupFlightNumberRef = useRef(lookup.flightNumber)
+
+  useEffect(() => {
+    closeButtonRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    // Escape only closes the form when nothing has been typed yet -- otherwise
+    // an accidental Escape (e.g. dismissing an airport-suggestion popup, or an
+    // IME composition keypress) would silently discard in-progress input. A
+    // dirty form still has the explicit Cancel/close button as an escape hatch.
+    const isDirty = JSON.stringify(form) !== JSON.stringify(initialFormRef.current) || lookup.flightNumber !== initialLookupFlightNumberRef.current
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !isDirty) onCancel()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onCancel, form, lookup.flightNumber])
 
   async function handleLookup(event: FormEvent) {
     event.preventDefault()
@@ -879,7 +910,7 @@ function FlightForm({
           <p className="eyebrow">{editing ? 'Edit entry' : 'New entry'}</p>
           <h2>{editing ? editing.flightNumber : 'Log a flight'}</h2>
         </div>
-        <button type="button" className="ghost" onClick={onCancel}>Close</button>
+        <button type="button" ref={closeButtonRef} className="ghost" onClick={onCancel}>Close</button>
       </div>
 
       {!editing && (
@@ -1003,6 +1034,15 @@ function PassphraseDialog({ request, title = 'Enter backup passphrase', descript
     setLastRequest(request)
     setValue('')
   }
+  useEffect(() => {
+    if (!request) return
+    const activeRequest = request
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') activeRequest.resolve(undefined)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [request])
   if (!request) return null
   return (
     <div className="passphrase-overlay" role="dialog" aria-modal="true" aria-label={label}>
@@ -1306,7 +1346,8 @@ function Dashboard({
     `${stats.airlines.length} airlines`,
   ]
   return (
-    <main className="page dashboard-page">
+    <main className="page dashboard-page" id="main-content">
+      <h1 className="visually-hidden">Dashboard</h1>
       <section className="hero-shell">
         <div>
           <p className="eyebrow">FlightLog</p>
@@ -1449,8 +1490,9 @@ function FlightsPage({ flights, airportVersion, isOnline, onOpen, onEdit, onDele
       .includes(query.toLowerCase()),
   )
   return (
-    <main className="page">
-      <div className="section-heading"><div><p className="eyebrow">Manifest</p><h2>Flights</h2></div><div className="heading-actions"><label className="search"><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search airport, airline, year, country..." /></label><button type="button" onClick={onQuickAdd}><Plus aria-hidden="true" /> Add by flight number</button></div></div>
+    <main className="page" id="main-content">
+      <h1 className="visually-hidden">Flights</h1>
+      <div className="section-heading"><div><p className="eyebrow">Manifest</p><h2>Flights</h2></div><div className="heading-actions"><label className="search"><Search aria-hidden="true" /><span className="visually-hidden">Search flights</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search airport, airline, year, country..." /></label><button type="button" onClick={onQuickAdd}><Plus aria-hidden="true" /> Add by flight number</button></div></div>
       <div className="stack">{filtered.map((flight) => <FlightCard key={flight.id} flight={flight} isOnline={isOnline} onOpen={onOpen} onEdit={onEdit} onDelete={onDelete} onRefresh={onRefresh} />)}{filtered.length === 0 && <p className="empty-inline">No matching flights.</p>}</div>
     </main>
   )
@@ -1646,7 +1688,8 @@ function TripsPage({
   onCreateTrip: () => Promise<void>
 }) {
   return (
-    <main className="page">
+    <main className="page" id="main-content">
+      <h1 className="visually-hidden">Trips</h1>
       <div className="section-heading">
         <div><p className="eyebrow">Trips</p><h2>Grouped journeys</h2></div>
         <button type="button" onClick={() => void onCreateTrip()}><Plus aria-hidden="true" /> New trip</button>
@@ -1774,7 +1817,8 @@ function TripDetailPage({
         .slice(0, 8)
     : []
   return (
-    <main className="page detail-page">
+    <main className="page detail-page" id="main-content">
+      <h1 className="visually-hidden">Trip: {trip.name || 'Untitled trip'}</h1>
       <div className="section-heading">
         <div>
           <p className="eyebrow">{trip.startDate} to {trip.endDate}</p>
@@ -1790,7 +1834,7 @@ function TripDetailPage({
           <div><dt>Total distance</dt><dd>{formatDistance(trip.distanceKm, settings.distanceUnit)}</dd></div>
           <div><dt>Airports</dt><dd>{trip.airports.join(', ')}</dd></div>
           <div><dt>Countries</dt><dd>{trip.countries.join(', ') || 'Not set'}</dd></div>
-          <div><dt>Trip type</dt><dd><select value={trip.type} onChange={(event) => onUpdate(trip.id, { type: event.target.value as TripType })}><option value="personal">Personal</option><option value="work">Work</option><option value="school">School</option><option value="other">Other</option></select></dd></div>
+          <div><dt>Trip type</dt><dd><select aria-label="Trip type" value={trip.type} onChange={(event) => onUpdate(trip.id, { type: event.target.value as TripType })}><option value="personal">Personal</option><option value="work">Work</option><option value="school">School</option><option value="other">Other</option></select></dd></div>
           <div><dt>Favorite</dt><dd><label className="checkbox-row"><input type="checkbox" checked={trip.isFavorite} onChange={(event) => onUpdate(trip.id, { isFavorite: event.target.checked })} /> Pin trip</label></dd></div>
         </dl>
         <label className="wide trip-notes">Trip notes<textarea value={trip.notes ?? ''} onChange={(event) => onUpdate(trip.id, { notes: event.target.value })} rows={3} placeholder="Trip notes, purpose, memories..." /></label>
@@ -1982,7 +2026,8 @@ function FlightDetailPage({
   const ownDelay = flightDelayMinutes(flight, 'departure')
   const routeHistory = routeDelayHistory(flights.filter((item) => item.id !== flight.id), flight)
   return (
-    <main className="page detail-page">
+    <main className="page detail-page" id="main-content">
+      <h1 className="visually-hidden">Flight: {flight.flightNumber || 'details'}</h1>
       <div className="section-heading">
         <div>
           <p className="eyebrow">{getFlightDepartureLocalDate(flight)} · {flight.source}</p>
@@ -2199,7 +2244,7 @@ function MapPage({ flights, airportVersion, isOnline, supportsAirportStatus }: {
   }, [computed, leafletReady])
 
   const mappedFlights = computed.filter((flight) => flight.hasRouteCoordinates).length
-  return <main className="page"><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}<AirportStatusPanel isOnline={isOnline} supportsAirportStatus={supportsAirportStatus} /></main>
+  return <main className="page" id="main-content"><h1 className="visually-hidden">Map</h1><div className="section-heading"><div><p className="eyebrow">Route atlas</p><h2>Map</h2></div></div>{flights.length === 0 ? <p className="empty-inline">Log a flight to draw your first route.</p> : <><div className="map-frame" ref={mapRef} />{mappedFlights < flights.length && <p className="notice warning">{flights.length - mappedFlights} flight route{flights.length - mappedFlights === 1 ? '' : 's'} saved without coordinates and cannot be mapped yet.</p>}</>}<AirportStatusPanel isOnline={isOnline} supportsAirportStatus={supportsAirportStatus} /></main>
 }
 
 function ListPanel({ title, rows }: { title: string; rows: string[] }) {
@@ -2356,7 +2401,8 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
     longestTrip ? `Biggest trip: ${longestTrip.name} covered ${formatDistance(longestTrip.distanceKm, settings.distanceUnit)}.` : 'Group flights into trips to unlock trip superlatives.',
   ]
   return (
-    <main className="page passport">
+    <main className="page passport" id="main-content">
+      <h1 className="visually-hidden">Passport</h1>
       <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p></div>
       <section className="stats-grid passport-headline">
         <StatCard icon={Globe2} label="Countries" value={String(summary.countryCount)} />
@@ -2524,7 +2570,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v36',
+    serviceWorkerCacheVersion: 'flightlog-v37',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -2556,7 +2602,8 @@ function SettingsPage({
   }
 
   return (
-    <main className="page settings-page">
+    <main className="page settings-page" id="main-content">
+      <h1 className="visually-hidden">Settings</h1>
       <div className="section-heading"><div><p className="eyebrow">Settings</p><h2>Settings</h2><p className="muted">Preferences, backups, and your data — all kept on this device.</p></div></div>
       <nav className="settings-nav" aria-label="Settings sections">
         <a href="#account">Account</a>
@@ -2747,7 +2794,8 @@ function AccountPage({
   }
 
   return (
-    <main className="page account-page">
+    <main className="page account-page" id="main-content">
+      <h1 className="visually-hidden">Account</h1>
       <div className="section-heading">
         <div><p className="eyebrow">Account</p><h2>Local-first cloud backup</h2></div>
         <button type="button" className="ghost" onClick={onNavigateBackup}>Backup Center</button>
@@ -3123,21 +3171,29 @@ function BackupCenterPage({
   }
   async function mergeBackup() {
     if (!backupPreview) return
-    await onMergeBackup(backupPreview)
-    setBackupMessage(
-      tripShareInfo
-        ? `Merged shared trip "${tripShareInfo.tripName}": added ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicates.`
-        : `Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`,
-    )
-    setBackupPreview(undefined)
-    setTripShareInfo(undefined)
+    try {
+      await onMergeBackup(backupPreview)
+      setBackupMessage(
+        tripShareInfo
+          ? `Merged shared trip "${tripShareInfo.tripName}": added ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicates.`
+          : `Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`,
+      )
+      setBackupPreview(undefined)
+      setTripShareInfo(undefined)
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? `Unable to merge this backup: ${error.message}` : 'Unable to merge this backup.')
+    }
   }
   async function replaceBackup() {
     if (!backupPreview) return
-    await onReplaceBackup(backupPreview)
-    setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
-    setBackupPreview(undefined)
-    setTripShareInfo(undefined)
+    try {
+      await onReplaceBackup(backupPreview)
+      setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
+      setBackupPreview(undefined)
+      setTripShareInfo(undefined)
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? `Unable to replace local data: ${error.message}` : 'Unable to replace local data.')
+    }
   }
   async function handleExternalImportFile(file: File) {
     setExternalMessage('')
@@ -3157,7 +3213,8 @@ function BackupCenterPage({
     setExternalMessage('')
   }
   return (
-    <main className="page">
+    <main className="page" id="main-content">
+      <h1 className="visually-hidden">Backup Center</h1>
       <div className="section-heading"><div><p className="eyebrow">Data safety</p><h2>Backup Center</h2></div></div>
       <section className="stats-grid">
         <StatCard icon={Plane} label="Flights" value={String(flights.length)} />
@@ -3338,7 +3395,8 @@ function TrashPage({
   }
 
   return (
-    <main className="page trash-page">
+    <main className="page trash-page" id="main-content">
+      <h1 className="visually-hidden">Trash</h1>
       <div className="section-heading">
         <div><p className="eyebrow">Recently Deleted</p><h2>Trash</h2></div>
         <div className="heading-actions">
@@ -3473,7 +3531,8 @@ function SyncPage({
   }
 
   return (
-    <main className="page sync-page">
+    <main className="page sync-page" id="main-content">
+      <h1 className="visually-hidden">Sync</h1>
       <div className="section-heading">
         <div><p className="eyebrow">Sync</p><h2>Keep your devices in step</h2></div>
         <div className="heading-actions"><button type="button" className="ghost" onClick={onNavigateSettings}>Settings</button><button type="button" className="ghost" onClick={onNavigateBackup}>Backups</button></div>
@@ -3688,9 +3747,17 @@ function MobileMoreMenu({
   onClose: () => void
 }) {
   const t = useTranslator()
+  useEffect(() => {
+    if (!open) return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [open, onClose])
   if (!open) return null
   return (
-    <div className="mobile-more-sheet" role="dialog" aria-label="More navigation">
+    <div className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More navigation">
       <div className="mobile-more-header">
         <strong>{t('nav.more')}</strong>
         <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Close more navigation"><X aria-hidden="true" /></button>
@@ -3715,7 +3782,8 @@ function App() {
   const [quickAddPrefill, setQuickAddPrefill] = useState<QuickAddParams | undefined>()
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const [toast, setToast] = useState('')
-  const [initialDataLoading, setInitialDataLoading] = useState(true)
+  const [initialDataLoading, setInitialDataLoading] = useState(() => isIndexedDbAvailable())
+  const [storageIssue, setStorageIssue] = useState<StorageIssue | undefined>(() => (isIndexedDbAvailable() ? undefined : unavailableStorageIssue()))
   const [airportVersion, setAirportVersion] = useState(0)
   const [airportDatasetLabel, setAirportDatasetLabel] = useState(`${airportCount()} airport fallback loaded`)
   const [providerAirportState, setProviderAirportState] = useState<ProviderAirportSnapshot[]>([])
@@ -3770,6 +3838,10 @@ function App() {
     const [active, all] = await Promise.all([getFlights(), getAllFlights()])
     setFlights(active)
     setAllFlights(all)
+    // A successful load proves storage is working again, so clear a stale
+    // load-error banner (but leave an 'unavailable' issue alone -- this path
+    // can't succeed while IndexedDB is genuinely unavailable).
+    setStorageIssue((current) => (current?.kind === 'load-error' ? undefined : current))
   }
 
   async function loadTripMetadata() {
@@ -3839,33 +3911,57 @@ function App() {
 
   useEffect(() => {
     let mounted = true
-    void Promise.all([getFlights(), getAllFlights()]).then(([loadedFlights, loadedAllFlights]) => {
-      if (!mounted) return
-      setFlights(loadedFlights)
-      setAllFlights(loadedAllFlights)
-    }).finally(() => {
-      if (mounted) setInitialDataLoading(false)
-    })
-    void getProviderAirports().then((airports) => {
-      if (!mounted) return
-      setProviderAirports(airports)
-      setProviderAirportState(airports)
-      setAirportVersion((version) => version + 1)
-    })
-    void migrateLegacyTripNames(legacyTripNamesFromLocalStorage()).then(async (metadata) => {
-      const allMetadata = await getAllTripMetadata()
-      if (!mounted) return
-      setTripMetadataState(metadata.filter((item) => !item.deletedAt))
-      setAllTripMetadataState(allMetadata)
-    })
-    void getAllAppMetadata().then(async (metadata) => {
-      const migrated = migrateAppMetadataDefaults(metadata, localDeviceId())
-      if (migrated.changed) await bulkSetAppMetadata(migrated.metadata)
-      if (mounted) setAppMetadataState(migrated.metadata)
-    })
-    void listLocalSyncEvents(20).then((events) => {
-      if (mounted) setSyncEvents(events)
-    })
+    const storageAvailable = isIndexedDbAvailable()
+    if (storageAvailable) {
+      void Promise.all([getFlights(), getAllFlights()]).then(([loadedFlights, loadedAllFlights]) => {
+        if (!mounted) return
+        setFlights(loadedFlights)
+        setAllFlights(loadedAllFlights)
+        // A successful load proves storage is working again, so clear a stale
+        // load-error banner (this effect only reaches here when storageAvailable
+        // is true, so there is no 'unavailable' issue to preserve).
+        setStorageIssue(undefined)
+      }).catch((error) => {
+        if (!mounted) return
+        setStorageIssue(loadErrorStorageIssue(error))
+      }).finally(() => {
+        if (mounted) setInitialDataLoading(false)
+      })
+    } else {
+      // The render-time and effect-time IndexedDB checks disagreed (extremely
+      // unlikely outside contrived test/polyfill scenarios) -- fail safe
+      // rather than leaving the app stuck on the loading skeleton forever.
+      void Promise.resolve().then(() => {
+        if (!mounted) return
+        setInitialDataLoading(false)
+        setStorageIssue((current) => current ?? unavailableStorageIssue())
+      })
+    }
+    if (storageAvailable) {
+      void getProviderAirports().then((airports) => {
+        if (!mounted) return
+        setProviderAirports(airports)
+        setProviderAirportState(airports)
+        setAirportVersion((version) => version + 1)
+      })
+      void migrateLegacyTripNames(legacyTripNamesFromLocalStorage()).then(async (metadata) => {
+        const allMetadata = await getAllTripMetadata()
+        if (!mounted) return
+        setTripMetadataState(metadata.filter((item) => !item.deletedAt))
+        setAllTripMetadataState(allMetadata)
+      })
+      void getAllAppMetadata().then(async (metadata) => {
+        const migrated = migrateAppMetadataDefaults(metadata, localDeviceId())
+        if (migrated.changed) await bulkSetAppMetadata(migrated.metadata)
+        if (mounted) setAppMetadataState(migrated.metadata)
+      })
+      void listLocalSyncEvents(20).then((events) => {
+        if (mounted) setSyncEvents(events)
+      })
+    }
+    // Static bundled JSON, the hashchange/share-target/deep-link listeners below,
+    // and the Worker capabilities check are independent of IndexedDB, so they
+    // still run even when local storage itself is unavailable.
     void fetchProviderCapabilities().then((capabilities) => {
       if (mounted) setProviderCapabilities(capabilities)
     })
@@ -4472,7 +4568,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v4.3',
+        appVersion: 'v5.0',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -5322,12 +5418,14 @@ function App() {
   return (
     <AppSettingsContext.Provider value={settings}>
     <div className={appShellClass}>
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <header>
         <button type="button" className="brand" onClick={() => navigate('dashboard')}><Plane aria-hidden="true" /><span>FlightLog</span></button>
         <nav aria-label="Primary navigation">{desktopNavItems.map((item) => <button key={item.page} type="button" className={navPage(route) === item.page ? 'active' : ''} onClick={() => navigate(item.page)}>{t(`nav.${item.page}`, item.label)}</button>)}</nav>
         <button type="button" onClick={openQuickAdd}><Plus aria-hidden="true" /> {t('action.addFlight')}</button>
       </header>
       {!isOnline && <OfflineBanner />}
+      {storageIssue && <StorageIssueBanner issue={storageIssue} onNavigateBackup={() => navigate('backup')} />}
       {toast && <div className="toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast('')}>Dismiss</button></div>}
       <PassphraseDialog request={cloudPassphraseRequest} />
       <PassphraseDialog request={syncPassphraseRequest} title="Enter sync passphrase" description="Sync is encrypted end-to-end. Enter the same passphrase on every device — it is used only on this device and never uploaded." label="Encrypted sync passphrase" />

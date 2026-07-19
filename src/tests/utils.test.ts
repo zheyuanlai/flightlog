@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import type { FlightLogEntry, ProviderAirportSnapshot, TripMetadata } from '../types'
 import { loadGeneratedAirports, lookupAirport, normalizeIata, searchAirports, setProviderAirports } from '../utils/airports'
 import { airlineDisplayName, airlineSearchUrl, lookupAirline } from '../utils/airlines'
-import { backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt } from '../utils/backup'
+import { backupAgeWarning, createFullBackup, FLIGHTLOG_BACKUP_SCHEMA_VERSION, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt } from '../utils/backup'
 import { buildCalendarEventDetails, calendarDescription } from '../utils/calendarLinks'
 import { parseFlightsCsv, flightsToCsv } from '../utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from '../utils/dataHealth'
@@ -340,6 +340,42 @@ describe('flight utilities', () => {
     expect(preview.duplicateFlights).toBe(1)
     expect(preview.flightsToAdd).toBe(1)
     expect(preview.mergeFlights[0].id).toBe('new')
+  })
+
+  // Migration guarantee (docs/DATA_FORMAT.md §5): a backup from any schema
+  // version -- older or newer than this app build knows about -- must still
+  // parse and import successfully. These lock that guarantee in so a future
+  // change to parseFullBackupJson/previewBackupImport can't silently break it.
+  it('imports a backup missing schemaVersion entirely, defaulting it to 1 rather than rejecting it', () => {
+    const raw = { app: 'FlightLog', exportedAt: '2020-01-01T00:00:00.000Z', flights: [flight({ id: 'ancient' })], tripMetadata: [], providerAirports: [], appMetadata: [] }
+    const backup = parseFullBackupJson(JSON.stringify(raw))
+    expect(backup.schemaVersion).toBe(1)
+    const preview = previewBackupImport(backup, [])
+    expect(preview.flightsToAdd).toBe(1)
+    expect(preview.warnings).toEqual([])
+  })
+
+  it('imports a backup with an explicit old schemaVersion (1) without any migration-related warning', () => {
+    const raw = { app: 'FlightLog', schemaVersion: 1, exportedAt: '2020-01-01T00:00:00.000Z', flights: [flight({ id: 'old' })], tripMetadata: [], providerAirports: [], appMetadata: [] }
+    const backup = parseFullBackupJson(JSON.stringify(raw))
+    const preview = previewBackupImport(backup, [])
+    expect(preview.flightsToAdd).toBe(1)
+    expect(preview.warnings).toEqual([])
+  })
+
+  it('imports a backup from a newer, unrecognized schemaVersion, warning but not rejecting it', () => {
+    const raw = { app: 'FlightLog', schemaVersion: FLIGHTLOG_BACKUP_SCHEMA_VERSION + 95, exportedAt: '2099-01-01T00:00:00.000Z', flights: [flight({ id: 'future' })], tripMetadata: [], providerAirports: [], appMetadata: [] }
+    const backup = parseFullBackupJson(JSON.stringify(raw))
+    const preview = previewBackupImport(backup, [])
+    expect(preview.flightsToAdd).toBe(1)
+    expect(preview.warnings.some((warning) => warning.includes('newer than this app schema'))).toBe(true)
+  })
+
+  it('ignores unknown top-level fields in a backup rather than failing to parse it', () => {
+    const raw = { app: 'FlightLog', schemaVersion: FLIGHTLOG_BACKUP_SCHEMA_VERSION, exportedAt: '2026-01-01T00:00:00.000Z', flights: [flight({ id: 'a' })], tripMetadata: [], providerAirports: [], appMetadata: [], someFutureField: { nested: true } }
+    const backup = parseFullBackupJson(JSON.stringify(raw))
+    expect(backup.flights).toHaveLength(1)
+    expect((backup as unknown as Record<string, unknown>).someFutureField).toBeUndefined()
   })
 
   it('uses local or cloud backup timestamps for backup warnings', () => {

@@ -175,6 +175,15 @@ FlightLog v4.3 was scoped as two features (historical route analytics + aircraft
 - **Aircraft lookup** (`src/utils/aircraftHistory.ts`, Worker `GET /aircraft-history`): an on-demand "Look up this aircraft" panel calls the already-integrated AeroDataBox provider for the tail's type, age, and delivery date. It's opt-in (a button, not an automatic fetch) and gated by the Worker's `/capabilities` flag, so a deployment or fork without this endpoint just doesn't show the panel rather than erroring.
 - **Skipped: historical route analytics** (typical aircraft per route, seasonal punctuality). OpenSky Network's terms require a separate written license for use in any live product, regardless of non-commercial status; the only fully public-domain option (US DOT/BTS) covers domestic US flights only and ships as bulk monthly files with no API, which would mean building and hosting an entire ETL/aggregation pipeline for a feature that would then only work for a fraction of routes. No source cleared the "free, global, low-risk" bar, so this half of the original scope is skipped rather than shipped on shaky footing.
 
+## v5.0 Built to Last
+
+FlightLog v5.0 is a durability release: no new user-facing features, just making sure the app and its data outlive any one version of the code.
+
+- **Documented, versioned data format** (`docs/DATA_FORMAT.md`): a standalone, field-by-field spec for every on-device (IndexedDB) and interchange (backup, encrypted backup, trip share) shape, replacing scattered README notes. States the migration guarantee explicitly — a backup from any past FlightLog version still imports today, locked in by regression tests — and documents the one place that's deliberately fail-closed instead (the encrypted backup envelope, which refuses to decrypt a file from a newer, unrecognized version rather than guessing).
+- **Storage resilience**: an app-wide error boundary so an unexpected crash shows a recovery screen instead of a blank page; IndexedDB availability is feature-detected at startup (common in private/incognito browsing) with a clear on-screen explanation instead of a silently-empty dashboard; a failed initial data load now surfaces a dismissible banner pointing to Backup Center instead of failing silently; and the backup-restore actions (merge/replace) now report a real error instead of leaving the screen in limbo if a write fails partway through.
+- **Accessibility fixes** (WCAG 2.2 AA groundwork): every page now has a proper heading landmark, a skip-to-content link lets keyboard/screen-reader users bypass the nav on every page, the two form controls that were relying on placeholder-as-label are properly labeled, all overlay-style UI (the flight form, passphrase dialogs, the mobile navigation sheet) now closes on Escape and moves focus in on open, and a color-contrast bug in locked Passport achievement cards is fixed. ⚠️ **Human gate (as designed):** this is the automated-audit-and-fixes half of the work; a full WCAG 2.2 AA sign-off needs human verification alongside these automated checks, per `docs/ROADMAP.md` §9 — not claimed as "certified" here. Automated `eslint-plugin-jsx-a11y` linting is deferred until the plugin supports this project's ESLint 10 (no compatible release exists yet); forcing an incompatible peer dependency in a durability release would trade one landmine for another.
+- **Performance budget in CI**: a new `pull_request`-triggered workflow (`.github/workflows/ci.yml`) runs lint, typecheck, tests, and a bundle-size budget check on every PR — previously nothing ran automatically until *after* merge. `size-limit` enforces a gzip budget per chunk plus a total-JS budget, anchored to the current bundle with headroom for normal growth; the same check now also gates the production deploy. A Lighthouse PWA score gate was investigated and deliberately deferred: `@lhci/cli`'s current release pulls in 300+ transitive packages with several unpatched vulnerabilities and no clean fix available yet — not a tradeoff worth making for this release.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.
@@ -434,19 +443,12 @@ If rows leak across users, stop using cloud features and review RLS before deplo
 
 ## Cloud Backup Format
 
-Cloud snapshots reuse the full local backup format:
-
-```txt
-app: "FlightLog"
-schemaVersion: 4
-exportedAt
-flights
-tripMetadata
-providerAirports
-appMetadata
-```
-
-Current backups use schema version 4. Tombstone metadata is stored directly on deleted records, so full backups include active records, deleted records, Trash metadata, trip metadata, provider airports, and app metadata. Restoring a backup with deleted records keeps those records deleted until they are explicitly restored from Trash.
+Cloud snapshots reuse the full local backup format (`FlightLogBackup`) — see
+[`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md) for the authoritative, versioned field-by-field spec
+and the backward/forward-compatibility guarantee. Tombstone metadata is stored directly on
+deleted records, so full backups include active records, deleted records, Trash metadata, trip
+metadata, provider airports, and app metadata. Restoring a backup with deleted records keeps
+those records deleted until they are explicitly restored from Trash.
 
 The Supabase row also stores summary columns: flight count, trip metadata count, provider airport count, schema version, exported time, checksum, label, device ID, app version, and timestamps.
 
