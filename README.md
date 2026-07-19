@@ -158,6 +158,15 @@ FlightLog v4.1 turns a trip page from a flight list into a forward-looking assis
 - **What-if / rebooking hints** (`src/utils/rebookingHints.ts`): when a flight in a trip is cancelled or diverted, surfaces the airline/flight-number combinations you've personally flown on that same route before, most-flown first — purely a reflection of your own log, no booking or live availability involved.
 - **Packing checklist** (`src/utils/packingChecklist.ts`): every trip gets a checklist seeded from a template for its trip type (personal/work/school/other), fully editable — check items off, add your own, remove any — stored on the trip and synced like any other trip edit.
 
+## v4.2 Shared Journeys
+
+FlightLog v4.2 adds careful, serverless trip sharing — a companion can import your itinerary without either of you touching a server.
+
+- **Share a trip as a file** (`src/utils/tripShare.ts`): from any Trip page, "Download trip file" exports just that trip's flights as a checksum-"signed" JSON file — local/device bookkeeping fields (sync tombstones, provider session IDs, etc.) are stripped first, so nothing meaningless or identifying about your device leaks into the file. An optional passphrase encrypts it (same AES-GCM/PBKDF2 envelope as encrypted backups) before download.
+- **Import reuses the existing backup pipeline unchanged**: a shared trip file is a regular full-backup export under the hood, so the Backup Center's existing restore flow (drag in the file, preview, merge) handles it automatically — it just recognizes the trip-share marker and shows trip-specific preview copy ("Merge shared trip '…'") instead of generic backup text, and hides the "Replace all local data" button, since replacing your whole log with one shared trip would never be intentional.
+- **Checksum verification, not blind trust**: on import, FlightLog recomputes the checksum over the file's flight/trip content and flags a prominent (non-blocking) warning if it doesn't match the one recorded at export — a sign the file was edited or corrupted in transit. Cosmetic fields like the trip's display name are intentionally excluded from the checksum, so renaming a shared file doesn't trip the warning.
+- ⚠️ **Deferred (product/privacy gate)**: live shared views (a companion watching your trip update in real time) would need a server and moderation — out of scope for this file/link-only stage, pending an owner decision.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

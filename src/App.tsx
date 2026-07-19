@@ -121,6 +121,7 @@ import {
 import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirports, normalizeIata, searchAirports, setProviderAirports } from './utils/airports'
 import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
 import { appMetadataValue, backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview, type FlightLogBackup } from './utils/backup'
+import { buildTripShareFile, detectAndVerifyTripShare, type TripShareDetection } from './utils/tripShare'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { deletedFlights as sortDeletedFlights, deletedTripMetadata } from './utils/deletedRecords'
@@ -1687,6 +1688,11 @@ function TripDetailPage({
   const [includeShareNotes, setIncludeShareNotes] = useState(false)
   const [flightQuery, setFlightQuery] = useState('')
   const [newChecklistText, setNewChecklistText] = useState('')
+  const [sharePassphrase, setSharePassphrase] = useState('')
+  const [shareConfirm, setShareConfirm] = useState('')
+  const [shareHint, setShareHint] = useState('')
+  const [shareError, setShareError] = useState('')
+  const [shareBusy, setShareBusy] = useState(false)
   const savedChecklist = trip?.metadata?.packingChecklist
   const tripType = trip?.type
   const packingChecklist = useMemo(
@@ -1720,6 +1726,40 @@ function TripDetailPage({
   }
   function handleRemoveChecklistItem(id: string) {
     onMutateChecklist(tripId, packingChecklist, (items) => removeChecklistItem(items, id))
+  }
+  function tripFileSlug(): string {
+    return trip!.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'trip'
+  }
+  async function handleDownloadTripFile() {
+    setShareError('')
+    try {
+      const file = await buildTripShareFile(trip!)
+      downloadFile(`${tripFileSlug()}-flightlog-trip.json`, JSON.stringify(file, null, 2), 'application/json')
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : 'Unable to build the trip file in this browser.')
+    }
+  }
+  async function handleDownloadEncryptedTripFile() {
+    if (shareBusy) return
+    setShareError('')
+    const validationError = validateBackupPassphrase(sharePassphrase, shareConfirm)
+    if (validationError) {
+      setShareError(validationError)
+      return
+    }
+    setShareBusy(true)
+    try {
+      const file = await buildTripShareFile(trip!)
+      const envelope = await encryptBackupJson(JSON.stringify(file), sharePassphrase, { hint: shareHint || undefined })
+      downloadFile(`${tripFileSlug()}-flightlog-trip.encrypted.json`, JSON.stringify(envelope, null, 2), 'application/json')
+      setSharePassphrase('')
+      setShareConfirm('')
+      setShareHint('')
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : 'Unable to encrypt the trip file in this browser.')
+    } finally {
+      setShareBusy(false)
+    }
   }
   const shareData = tripShareCardData(trip, { distanceUnit: settings.distanceUnit, includeNotes: includeShareNotes })
   const memberIds = new Set(trip.flights.map((flight) => flight.id))
@@ -1833,6 +1873,19 @@ function TripDetailPage({
           <div className="actions"><button type="button" className="secondary" onClick={() => void onConvertToManual(trip)}><SlidersHorizontal aria-hidden="true" /> Convert to editable trip</button></div>
         </section>
       )}
+      <section className="panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Share</p><h3>Share this trip</h3></div><Shield aria-hidden="true" /></div>
+        <p className="muted">Export just this trip's flights as a file — recipients can import it into their own FlightLog without seeing the rest of your log. Local/device bookkeeping fields are stripped before export, and a checksum lets them verify the file wasn't altered in transit.</p>
+        <div className="actions"><button type="button" onClick={() => void handleDownloadTripFile()}><Download aria-hidden="true" /> Download trip file</button></div>
+        <p className="muted">Optionally encrypts the trip file on this device with AES-GCM before it is written, using a key derived from your passphrase (PBKDF2, 600k iterations). The passphrase is never stored and cannot be recovered.</p>
+        <div className="form-grid compact">
+          <label>Passphrase<input type="password" value={sharePassphrase} onChange={(event) => setSharePassphrase(event.target.value)} autoComplete="new-password" /></label>
+          <label>Confirm passphrase<input type="password" value={shareConfirm} onChange={(event) => setShareConfirm(event.target.value)} autoComplete="new-password" /></label>
+          <label>Optional hint (stored unencrypted)<input value={shareHint} onChange={(event) => setShareHint(event.target.value)} placeholder="e.g. the usual travel one" /></label>
+        </div>
+        {shareError && <p className="notice warning">{shareError}</p>}
+        <div className="actions"><button type="button" disabled={shareBusy} onClick={() => void handleDownloadEncryptedTripFile()}><Shield aria-hidden="true" /> {shareBusy ? 'Encrypting…' : 'Download encrypted trip file'}</button></div>
+      </section>
       <ShareCardPreview data={shareData} includeNotes={includeShareNotes} onIncludeNotesChange={setIncludeShareNotes} />
     </main>
   )
@@ -2418,7 +2471,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v34',
+    serviceWorkerCacheVersion: 'flightlog-v35',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -2922,6 +2975,7 @@ function BackupCenterPage({
   const [externalImport, setExternalImport] = useState<ReturnType<typeof importDelimitedFlights> | undefined>()
   const [externalMessage, setExternalMessage] = useState('')
   const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
+  const [tripShareInfo, setTripShareInfo] = useState<TripShareDetection | undefined>()
   const [backupMessage, setBackupMessage] = useState('')
   const [encryptedImport, setEncryptedImport] = useState<EncryptedBackupEnvelope | undefined>()
   const [importPassphrase, setImportPassphrase] = useState('')
@@ -2931,6 +2985,7 @@ function BackupCenterPage({
   const [exportConfirm, setExportConfirm] = useState('')
   const [exportHint, setExportHint] = useState('')
   const [exportError, setExportError] = useState('')
+  const importRequestIdRef = useRef(0)
   const health = analyzeDataHealth(flights, { allFlights, tripMetadata: allTripMetadata, activeTripIds: trips.map((trip) => trip.id), syncComparison })
   const lastBackupAt = appMetadataValue(appMetadata, 'lastBackupAt')
   const lastImportAt = appMetadataValue(appMetadata, 'lastImportAt')
@@ -2939,11 +2994,15 @@ function BackupCenterPage({
     setPreview(file.name.endsWith('.json') ? parseFlightsJson(text) : parseFlightsCsv(text))
   }
   async function handleBackupFile(file: File) {
+    const requestId = ++importRequestIdRef.current
     setBackupMessage('')
     setEncryptedImport(undefined)
     setImportPassphrase('')
+    setBackupPreview(undefined)
+    setTripShareInfo(undefined)
     try {
       const text = await file.text()
+      if (requestId !== importRequestIdRef.current) return
       const envelope = parseEncryptedBackupJson(text)
       if (envelope) {
         setBackupPreview(undefined)
@@ -2951,20 +3010,30 @@ function BackupCenterPage({
         return
       }
       const backup = parseFullBackupJson(text)
-      setBackupPreview(previewBackupImport(backup, flights))
+      const preview = previewBackupImport(backup, flights)
+      const tripShare = await detectAndVerifyTripShare(text)
+      if (requestId !== importRequestIdRef.current) return
+      setBackupPreview(preview)
+      setTripShareInfo(tripShare)
     } catch (error) {
+      if (requestId !== importRequestIdRef.current) return
       setBackupPreview(undefined)
       setBackupMessage(error instanceof Error ? error.message : 'Unable to read backup file')
     }
   }
   async function decryptImport() {
     if (!encryptedImport || importBusy) return
+    const requestId = ++importRequestIdRef.current
     setBackupMessage('')
     setImportBusy(true)
     try {
       const decrypted = await decryptBackupEnvelope(encryptedImport, importPassphrase)
       const backup = parseFullBackupJson(decrypted)
-      setBackupPreview(previewBackupImport(backup, flights))
+      const preview = previewBackupImport(backup, flights)
+      const tripShare = await detectAndVerifyTripShare(decrypted)
+      if (requestId !== importRequestIdRef.current) return
+      setBackupPreview(preview)
+      setTripShareInfo(tripShare)
       setEncryptedImport(undefined)
       setImportPassphrase('')
       setBackupMessage('Encrypted backup decrypted locally. Review the preview below before applying it.')
@@ -3002,14 +3071,20 @@ function BackupCenterPage({
   async function mergeBackup() {
     if (!backupPreview) return
     await onMergeBackup(backupPreview)
-    setBackupMessage(`Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`)
+    setBackupMessage(
+      tripShareInfo
+        ? `Merged shared trip "${tripShareInfo.tripName}": added ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicates.`
+        : `Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`,
+    )
     setBackupPreview(undefined)
+    setTripShareInfo(undefined)
   }
   async function replaceBackup() {
     if (!backupPreview) return
     await onReplaceBackup(backupPreview)
     setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
     setBackupPreview(undefined)
+    setTripShareInfo(undefined)
   }
   async function handleExternalImportFile(file: File) {
     setExternalMessage('')
@@ -3086,18 +3161,25 @@ function BackupCenterPage({
       {backupMessage && <p className="notice">{backupMessage}</p>}
       {backupPreview && (
         <section className="panel">
-          <h3>Backup import preview</h3>
+          <h3>{tripShareInfo ? `Shared trip: ${tripShareInfo.tripName}` : 'Backup import preview'}</h3>
+          {tripShareInfo && !tripShareInfo.checksumValid && (
+            <p className="notice warning">This shared trip file's checksum doesn't match its contents — it may have been edited or corrupted after it was created. Review the details below carefully before merging.</p>
+          )}
           <dl className="meta-grid">
             <div><dt>Flights to add</dt><dd>{backupPreview.flightsToAdd}</dd></div>
             <div><dt>Existing flights</dt><dd>{backupPreview.existingFlights}</dd></div>
             <div><dt>Likely duplicates</dt><dd>{backupPreview.duplicateFlights}</dd></div>
-            <div><dt>Deleted flights</dt><dd>{backupPreview.deletedFlights}</dd></div>
+            {!tripShareInfo && <div><dt>Deleted flights</dt><dd>{backupPreview.deletedFlights}</dd></div>}
             <div><dt>Trip metadata</dt><dd>{backupPreview.tripMetadata}</dd></div>
-            <div><dt>Provider airports</dt><dd>{backupPreview.providerAirports}</dd></div>
-            <div><dt>Exported</dt><dd>{formatDateTime(backupPreview.backup.exportedAt, displayOptions)}</dd></div>
+            {!tripShareInfo && <div><dt>Provider airports</dt><dd>{backupPreview.providerAirports}</dd></div>}
+            <div><dt>{tripShareInfo ? 'Shared' : 'Exported'}</dt><dd>{formatDateTime(backupPreview.backup.exportedAt, displayOptions)}</dd></div>
           </dl>
-          {backupPreview.warnings.map((warning) => <p className="notice warning" key={warning}>{warning}</p>)}
-          <div className="actions"><button type="button" onClick={() => void mergeBackup()}>Merge new records</button><button type="button" className="secondary" onClick={() => void replaceBackup()}>Replace all local data</button><button type="button" className="ghost" onClick={() => setBackupPreview(undefined)}>Cancel</button></div>
+          {backupPreview.warnings.map((warning) => <p className="notice warning" key={warning}>{tripShareInfo ? warning.replace(/^Backup\b/, 'Shared trip') : warning}</p>)}
+          <div className="actions">
+            <button type="button" onClick={() => void mergeBackup()}>{tripShareInfo ? 'Merge shared trip' : 'Merge new records'}</button>
+            {!tripShareInfo && <button type="button" className="secondary" onClick={() => void replaceBackup()}>Replace all local data</button>}
+            <button type="button" className="ghost" onClick={() => { setBackupPreview(undefined); setTripShareInfo(undefined) }}>Cancel</button>
+          </div>
         </section>
       )}
       <section className="panel">
@@ -4337,7 +4419,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v4.1',
+        appVersion: 'v4.2',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
