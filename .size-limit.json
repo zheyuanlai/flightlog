@@ -1,0 +1,10 @@
+[
+  { "name": "App entry chunk", "path": "dist/assets/index-*.js", "limit": "115 KB", "gzip": true },
+  { "name": "React chunk", "path": "dist/assets/react-*.js", "limit": "75 KB", "gzip": true },
+  { "name": "Supabase chunk", "path": "dist/assets/supabase-*.js", "limit": "65 KB", "gzip": true },
+  { "name": "Data chunk (dexie/luxon/papaparse)", "path": "dist/assets/data-*.js", "limit": "75 KB", "gzip": true },
+  { "name": "Leaflet chunk", "path": "dist/assets/leaflet-*.js", "limit": "55 KB", "gzip": true },
+  { "name": "Vendor + Rolldown runtime", "path": ["dist/assets/vendor-*.js", "dist/assets/rolldown-runtime-*.js"], "limit": "8 KB", "gzip": true },
+  { "name": "CSS (app + Leaflet)", "path": "dist/assets/*.css", "limit": "20 KB", "gzip": true },
+  { "name": "Total JS (all chunks)", "path": "dist/assets/*.js", "limit": "360 KB", "gzip": true }
+]

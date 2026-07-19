@@ -1,3 +1,32 @@
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 8px;
+  z-index: 100;
+  padding: 10px 16px;
+  background: #0f766e;
+  color: #fff;
+  border-radius: 8px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
 .app-shell {
   --color-primary: #0f766e;
   --color-primary-strong: #0b5c55;
@@ -220,6 +249,16 @@
   background: rgba(15, 23, 42, 0.92);
 }
 
+:root[data-theme="dark"] .storage-issue-banner {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.35);
+  border-bottom-color: rgba(248, 113, 113, 0.3);
+}
+
+:root[data-theme="dark"] .storage-issue-banner button {
+  background: #dc2626;
+}
+
 :root[data-theme="dark"] .brand,
 :root[data-theme="dark"] nav button,
 :root[data-theme="dark"] .ghost,
@@ -411,6 +450,28 @@ nav button.active,
   background: rgba(255, 251, 235, 0.96);
   border-bottom: 1px solid rgba(146, 64, 14, 0.18);
   font-weight: 700;
+}
+
+.storage-issue-banner {
+  position: sticky;
+  top: 0;
+  z-index: 19;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  color: #7f1d1d;
+  background: rgba(254, 226, 226, 0.97);
+  border-bottom: 1px solid rgba(185, 28, 28, 0.24);
+  font-weight: 700;
+}
+
+.storage-issue-banner button {
+  background: #b91c1c;
+  color: #fff;
+  border: none;
 }
 
 .skeleton-block {
@@ -691,6 +752,12 @@ dd {
 .search input {
   border: 0;
   outline: 0;
+}
+
+.search input:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: 6px;
 }
 
 .form-panel {
@@ -1185,9 +1252,11 @@ details summary span {
   overflow-wrap: anywhere;
 }
 
-.inline-name-input:focus {
+.inline-name-input:focus-visible {
   border-bottom-color: #0f766e;
   outline: none;
+  box-shadow: var(--ring);
+  border-radius: 6px;
 }
 
 .inline-name-input.large {
@@ -2013,7 +2082,20 @@ a {
 }
 
 .achievement-card.locked {
-  opacity: 0.72;
+  background: rgba(248, 250, 252, 0.6);
+}
+
+.achievement-card.locked .achievement-icon {
+  opacity: 0.55;
+}
+
+/* Locked cards previously dimmed all their text via a whole-card opacity,
+   which compounded with .achievement-status's own muted color to drop well
+   below WCAG AA contrast. Keep the icon visually de-emphasized via its own
+   opacity, but give the status text a color that passes contrast on its own
+   rather than relying on the earlier opacity for de-emphasis. */
+.achievement-card.locked .achievement-status {
+  color: #475569;
 }
 
 .achievement-card.earned {
@@ -2189,6 +2271,18 @@ a {
 :root[data-theme="dark"] .achievement-body p,
 :root[data-theme="dark"] .goal-card small {
   color: #94a3b8;
+}
+
+:root[data-theme="dark"] .achievement-status {
+  color: #94a3b8;
+}
+
+/* The dark-mode override above beats .achievement-status.earned's light-mode
+   teal by CSS specificity ((0,3,0) > (0,2,0)), silently flattening earned
+   status text to the same muted gray as locked/in-progress. Restore a
+   dark-mode-appropriate teal accent that keeps 'earned' visually distinct. */
+:root[data-theme="dark"] .achievement-status.earned {
+  color: #5eead4;
 }
 
 :root[data-theme="dark"] .ink-stamp {

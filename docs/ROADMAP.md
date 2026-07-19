@@ -187,12 +187,12 @@ Collaboration without betraying the non-negotiables.
 
 Goal: make FlightLog outlive its original author — sustainable, governed, accessible, and archival-grade. Increasingly community- and decision-gated.
 
-### v5.0 — "Built to last": durability & standards (autonomous)
+### v5.0 — "Built to last": durability & standards (autonomous) — ✅ shipped (Lighthouse gate deferred, see below)
 
-- **Documented, versioned data format** with a migration guarantee and a standalone spec doc.
-- **Accessibility certification**: WCAG 2.2 AA audit and fixes; keyboard-complete flows; screen-reader passes.
-- **Performance budget**: enforced bundle/size budgets in CI; Lighthouse PWA ≥ 95 gate per release.
-- **Storage resilience**: IndexedDB corruption detection + guided recovery from the last backup.
+- **Documented, versioned data format (shipped)**: `docs/DATA_FORMAT.md` — every IndexedDB and interchange (backup, encrypted backup, trip share) shape, the migration guarantee (any past backup still imports), and regression tests locking that guarantee in.
+- **Accessibility fixes (shipped, autonomous half)**: heading landmarks on every page, a skip-to-content link, the two remaining unlabeled form controls fixed, Escape-to-close + focus-on-open for all overlay UI, a color-contrast fix on locked achievement cards. ⚠️ **Human gate (as designed, see §9):** a full WCAG 2.2 AA sign-off needs human verification alongside these automated fixes — not claimed as "certified." `eslint-plugin-jsx-a11y` (automated regression linting) is deferred until it supports this project's ESLint 10; no compatible release exists yet.
+- **Performance budget (shipped, partial)**: `size-limit` bundle-size budgets enforced in a new PR-gated CI workflow (`.github/workflows/ci.yml`) and on the release/deploy path — previously nothing ran automatically before merge. ⚠️ **Deferred:** the Lighthouse PWA ≥ 95 gate — `@lhci/cli`'s current release drags in 300+ transitive packages with several unpatched vulnerabilities (including one high-severity) and no clean fix path; not a tradeoff worth making until the tooling catches up.
+- **Storage resilience (shipped)**: an app-wide error boundary, IndexedDB availability feature-detection at startup with a clear on-screen message, a visible recovery banner (linking to Backup Center) instead of a silent empty-dashboard failure when the initial load fails, and error handling on the backup merge/replace actions.
 
 ### v5.1 — "Open house": community & governance (human/community gated)
 
@@ -245,7 +245,7 @@ Speculative bets to reconsider as the platform and web evolve — each would req
 | Historical route analytics | — | ✅ | Declined — no license-safe global data source (see §10) |
 | Collaboration / sharing | ✅ | — | ✅ shipped v4.2 (file/link only); live sharing is a product gate |
 | Self-host / bring-your-own-provider | — | — | v3.2 (FlightLog-specific strength) |
-| Accessibility AA | ◐ | ◐ | v5.0 (target: exceed both) |
+| Accessibility AA | ◐ | ◐ | ◐ v5.0 automated audit+fixes shipped; human sign-off pending (target: exceed both) |
 | Friends/social feed | ✅ | — | Deliberately out of scope (needs server + moderation) |
 | Seat maps, baggage carousel | — | ✅ | Out of scope (no free/licensed data source) |
 
