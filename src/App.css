@@ -93,6 +93,22 @@
     rgba(15, 23, 42, 0.92);
 }
 
+:root[data-theme="dark"] .share-card {
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .share-card .eyebrow {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .share-card-brand {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .share-card-notes {
+  background: rgba(20, 184, 166, 0.14);
+}
+
 :root[data-theme="dark"] .day-of-detail {
   color: #5eead4;
 }
@@ -109,6 +125,21 @@
 
 :root[data-theme="dark"] .route-insight strong {
   color: #5eead4;
+}
+
+:root[data-theme="dark"] .delay-sense,
+:root[data-theme="dark"] .delay-sense-summary {
+  background: rgba(20, 184, 166, 0.14);
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .delay-sense strong,
+:root[data-theme="dark"] .delay-sense-summary strong {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .delay-sense-signals {
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] .punctuality-row {
@@ -1007,6 +1038,13 @@ details summary span {
   border: 1px solid rgba(15, 23, 42, 0.12);
 }
 
+.route-mini-map-frame {
+  height: 220px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
 .airport-marker span {
   display: block;
   width: 14px;
@@ -1690,6 +1728,29 @@ a {
 
 .route-insight strong {
   color: #0f766e;
+}
+
+.delay-sense,
+.delay-sense-summary {
+  background: #f0fdfa;
+  color: #0f172a;
+}
+
+.delay-sense strong,
+.delay-sense-summary strong {
+  color: #0f766e;
+}
+
+.delay-sense > .delay-sense-summary {
+  margin: 0;
+  background: none;
+}
+
+.delay-sense-signals {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #475569;
 }
 
 .insights-panel .two-columns {

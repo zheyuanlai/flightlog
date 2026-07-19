@@ -154,11 +154,11 @@ Make FlightLog forkable and self-hostable end to end.
 
 Goal: move from recording to assisting. This is where FlightLog earns the "smart" comparison. Provider- and decision-gated.
 
-### v4.0 — "Delay sense": on-device prediction (autonomous heuristics; better with provider data)
+### v4.0 — "Delay sense": on-device prediction (autonomous heuristics; better with provider data) — ✅ shipped (history-based; live inbound-aircraft data source not yet wired)
 
-- **Heuristic delay model** trained/tuned on device from the user's own history + (when available) inbound-aircraft status: a probability and expected-delay band per upcoming flight. No server ML — a transparent, explainable weighted model in `src/utils/predict.ts`, fully unit-tested against fixtures.
-- **Confidence + explanation**: every prediction shows its inputs ("this route delayed 3/5 times; inbound aircraft currently 40m late").
-- ⚠️ **Soft gate:** the richest signal (inbound aircraft, airport board) needs the v2.7 Worker endpoints deployed; the heuristic degrades gracefully to history-only without them.
+- **Heuristic delay model (shipped)**: a transparent, explainable weighted model in `src/utils/predict.ts` — weighs the upcoming flight's own route, airline, and origin-airport delay history (reusing `src/utils/insights.ts`'s existing punctuality aggregation, more measured flights = more weight, capped), producing a delay probability, an expected-delay band, and a low/medium/high confidence tier. Accepts an optional live inbound-aircraft delay minutes signal that folds into the same weighted average when supplied. 20 unit tests with hand-verified weighted-average math against fixtures.
+- **Confidence + explanation (shipped)**: every prediction lists which signals fed it and their own stats (e.g. "Your SIN-LAX history: delayed 1 time out of 2, avg 20m late"), surfaced as a compact one-liner on the Dashboard's day-of-travel card and a full breakdown (probability, band, confidence, every signal) on the Flight Detail page's Flight assistant panel — both gated to flights that haven't departed yet.
+- ⚠️ **Soft gate (as designed):** the richest signal (inbound aircraft, airport board) needs the v2.7 Worker endpoints plus a new inbound-aircraft-status data source that doesn't exist yet in any provider adapter — `predictDelay()`'s `inboundDelayMinutes` option is already wired to accept it once built, but no live inbound-aircraft fetch ships in this stage. The heuristic works fully history-only today, exactly as the soft-gate design intended.
 
 ### v4.1 — "Trip planner": forward-looking assistant (autonomous)
 

@@ -160,6 +160,7 @@ import { airlinePunctuality, flightDelayMinutes, formatDelayLabel, greatCircleAr
 import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } from './utils/airportStatus'
 import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
+import { predictDelay } from './utils/predict'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
 import { formatCountdown, listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
@@ -1068,12 +1069,14 @@ function LifecycleProgress({ percent }: { percent: number }) {
   )
 }
 
-function DayOfTravelCard({ item, isOnline, onOpen, onRefresh, onFocus }: { item: DayOfTravelFlight; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void>; onFocus?: (flight: FlightLogEntry) => void }) {
+function DayOfTravelCard({ item, flights, isOnline, onOpen, onRefresh, onFocus }: { item: DayOfTravelFlight; flights: FlightLogEntry[]; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void>; onFocus?: (flight: FlightLogEntry) => void }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const { flight, lifecycle } = item
   const checkInLink = externalFlightLinks(flight).find((link) => link.label.toLowerCase().includes('check-in'))
   const cadence = refreshRecommendation(flight)
+  const isPreDeparture = lifecycle.phase === 'scheduled' || lifecycle.phase === 'check-in' || lifecycle.phase === 'departing-soon'
+  const prediction = isPreDeparture ? predictDelay(flights, flight) : undefined
   return (
     <section className="panel day-of-panel">
       <div className="flight-main">
@@ -1093,6 +1096,7 @@ function DayOfTravelCard({ item, isOnline, onOpen, onRefresh, onFocus }: { item:
         <div><dt>Cabin / seat</dt><dd>{[flight.cabin, flight.seat].filter(Boolean).join(' / ') || 'Not set'}</dd></div>
       </dl>
       {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      {prediction?.hasSignal && <p className="notice delay-sense-summary"><strong>Delay sense:</strong> {prediction.summary}</p>}
       <div className="actions">
         <button type="button" onClick={() => onOpen(flight)}>View flight</button>
         <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => void onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
@@ -1192,13 +1196,21 @@ function CompletionPromptsPanel({ prompts, isOnline, onEdit, onDismiss, onRefres
   )
 }
 
-function FlightLifecycleSection({ flight, onEdit, onDismissCompletion }: {
+function FlightLifecycleSection({ flight, flights, onEdit, onDismissCompletion }: {
   flight: FlightLogEntry
+  flights: FlightLogEntry[]
   onEdit: (flight: FlightLogEntry) => void
   onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
 }) {
+  const [, setLifecycleTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setLifecycleTick((tick) => tick + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
   const lifecycle = flightLifecycle(flight)
   const completion = flightCompletionState(flight)
+  const isPreDeparture = lifecycle.phase === 'scheduled' || lifecycle.phase === 'check-in' || lifecycle.phase === 'departing-soon'
+  const prediction = isPreDeparture ? predictDelay(flights, flight) : undefined
   return (
     <section className="panel lifecycle-panel">
       <div className="section-heading compact-heading">
@@ -1208,6 +1220,14 @@ function FlightLifecycleSection({ flight, onEdit, onDismissCompletion }: {
       {lifecycle.detail && <p className="day-of-detail">{lifecycle.detail}</p>}
       {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
       {lifecycle.hint && <p className="notice">{lifecycle.hint}</p>}
+      {prediction?.hasSignal && (
+        <div className="notice delay-sense">
+          <p className="delay-sense-summary"><strong>Delay sense</strong> ({prediction.confidence} confidence) — {prediction.summary} Likely between {formatDelayLabel(prediction.band.lowMinutes)} and {formatDelayLabel(prediction.band.highMinutes)}.</p>
+          <ul className="delay-sense-signals">
+            {prediction.signals.map((signal) => <li key={signal.key}>{signal.explanation}</li>)}
+          </ul>
+        </div>
+      )}
       {completion.needsCompletion && (
         <div className="notice completion-notice">
           <p><strong>Complete this flight:</strong> missing {completion.missing.join(', ')}.</p>
@@ -1314,7 +1334,7 @@ function Dashboard({
           <div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div>
         </EmptyState>
       ) : null}
-      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} onFocus={onFocus} />}
+      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} flights={flights} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} onFocus={onFocus} />}
       {completionPrompts.length > 0 && <CompletionPromptsPanel prompts={completionPrompts} isOnline={isOnline} onEdit={onEditFlight} onDismiss={onDismissCompletion} onRefresh={onRefresh} />}
       <section className="panel upcoming-panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
@@ -1458,16 +1478,67 @@ function FlightTimeline({ flight }: { flight: FlightLogEntry }) {
   )
 }
 
+/** Leaflet popup content is raw HTML (not escaped or React-rendered), so any user-editable text going into one must be escaped here first. */
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
 function RouteMapPreview({ flight }: { flight: FlightWithComputed }) {
   const settings = useAppSettings()
+  const mapRef = useRef<HTMLDivElement | null>(null)
+  const leafletRef = useRef<import('leaflet').Map | null>(null)
+  const leafletModuleRef = useRef<typeof import('leaflet') | null>(null)
+  const [leafletReady, setLeafletReady] = useState(false)
+
+  useEffect(() => {
+    if (!mapRef.current || !flight.hasRouteCoordinates) return
+    let cancelled = false
+    void Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')]).then(([L]) => {
+      if (cancelled || !mapRef.current) return
+      leafletModuleRef.current = L
+      const map = L.map(mapRef.current, { scrollWheelZoom: false, zoomControl: false }).setView([25, 0], 2)
+      leafletRef.current = map
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map)
+      setLeafletReady(true)
+    })
+    return () => {
+      cancelled = true
+      leafletRef.current?.remove()
+      leafletRef.current = null
+      leafletModuleRef.current = null
+      setLeafletReady(false)
+    }
+  }, [flight.hasRouteCoordinates])
+
+  useEffect(() => {
+    const map = leafletRef.current
+    const L = leafletModuleRef.current
+    const { originAirport, destinationAirport } = flight
+    if (!map || !L || !leafletReady || originAirport?.lat === undefined || originAirport.lon === undefined || destinationAirport?.lat === undefined || destinationAirport.lon === undefined) return
+    const layer = L.layerGroup().addTo(map)
+    const markerIcon = L.divIcon({ className: 'airport-marker', html: '<span></span>', iconSize: [16, 16] })
+    const arc = greatCircleArc([originAirport.lat, originAirport.lon], [destinationAirport.lat, destinationAirport.lon]) as import('leaflet').LatLngTuple[]
+    L.polyline(arc, { color: '#0f766e', weight: 3, opacity: 0.75 }).addTo(layer)
+    L.marker(arc[0], { icon: markerIcon }).bindPopup(`<strong>${escapeHtml(originAirport.iata)}</strong><br>${escapeHtml(originAirport.name)}`).addTo(layer)
+    L.marker(arc[arc.length - 1], { icon: markerIcon }).bindPopup(`<strong>${escapeHtml(destinationAirport.iata)}</strong><br>${escapeHtml(destinationAirport.name)}`).addTo(layer)
+    map.fitBounds(arc, { padding: [24, 24] })
+    return () => {
+      layer.remove()
+    }
+  }, [flight, leafletReady])
+
   return (
     <section className="panel route-preview">
       <div className="section-heading compact-heading"><div><p className="eyebrow">Route preview</p><h3>{flight.origin} to {flight.destination}</h3></div></div>
-      <div className="route-mini-map" aria-label={`${flight.origin} to ${flight.destination} route preview`}>
-        <span>{flight.origin}</span>
-        <div />
-        <span>{flight.destination}</span>
-      </div>
+      {flight.hasRouteCoordinates ? (
+        <div className="route-mini-map-frame" ref={mapRef} aria-label={`${flight.origin} to ${flight.destination} route map`} />
+      ) : (
+        <div className="route-mini-map" aria-label={`${flight.origin} to ${flight.destination} route preview`}>
+          <span>{flight.origin}</span>
+          <div />
+          <span>{flight.destination}</span>
+        </div>
+      )}
       <p className="muted">{flight.hasRouteCoordinates ? `${formatDistance(flight.distanceKm, settings.distanceUnit)} great-circle distance` : 'Airport coordinates unavailable for this route.'}</p>
     </section>
   )
@@ -1785,7 +1856,7 @@ function FlightDetailPage({
           <button type="button" className="secondary" onClick={() => downloadFile(`${flight.flightNumber}-${flight.id}.json`, JSON.stringify({ flight }, null, 2), 'application/json')}><Download aria-hidden="true" /> Export this flight as JSON</button>
         </div>
       </section>
-      <FlightLifecycleSection flight={flight} onEdit={onEdit} onDismissCompletion={onDismissCompletion} />
+      <FlightLifecycleSection flight={flight} flights={flights} onEdit={onEdit} onDismissCompletion={onDismissCompletion} />
       <div className="two-columns detail-columns">
         <FlightTimeline flight={flight} />
         <RouteMapPreview flight={computed} />
@@ -1937,9 +2008,9 @@ function MapPage({ flights, airportVersion, isOnline, supportsAirportStatus }: {
       const originPoint = arc[0]
       const destinationPoint = arc[arc.length - 1]
       for (const point of arc) bounds.push(point)
-      L.polyline(arc, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${flight.flightNumber}: ${flight.origin} to ${flight.destination}`).addTo(layer)
-      L.marker(originPoint, { icon: markerIcon }).bindPopup(`<strong>${originAirport.iata}</strong><br>${originAirport.name}<br>${[originAirport.city, originAirport.country].filter(Boolean).join(', ')}`).addTo(layer)
-      L.marker(destinationPoint, { icon: markerIcon }).bindPopup(`<strong>${destinationAirport.iata}</strong><br>${destinationAirport.name}<br>${[destinationAirport.city, destinationAirport.country].filter(Boolean).join(', ')}`).addTo(layer)
+      L.polyline(arc, { color: '#0f766e', weight: 3, opacity: 0.75 }).bindPopup(`${escapeHtml(flight.flightNumber)}: ${escapeHtml(flight.origin)} to ${escapeHtml(flight.destination)}`).addTo(layer)
+      L.marker(originPoint, { icon: markerIcon }).bindPopup(`<strong>${escapeHtml(originAirport.iata)}</strong><br>${escapeHtml(originAirport.name)}<br>${escapeHtml([originAirport.city, originAirport.country].filter(Boolean).join(', '))}`).addTo(layer)
+      L.marker(destinationPoint, { icon: markerIcon }).bindPopup(`<strong>${escapeHtml(destinationAirport.iata)}</strong><br>${escapeHtml(destinationAirport.name)}<br>${escapeHtml([destinationAirport.city, destinationAirport.country].filter(Boolean).join(', '))}`).addTo(layer)
     }
     if (bounds.length > 0) map.fitBounds(bounds, { padding: [28, 28] })
     return () => {
@@ -2273,7 +2344,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v32',
+    serviceWorkerCacheVersion: 'flightlog-v33',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -4186,7 +4257,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v3.3',
+        appVersion: 'v4.0',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
