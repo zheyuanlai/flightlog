@@ -141,11 +141,11 @@ Make FlightLog forkable and self-hostable end to end.
 - **Config surface (shipped)**: `GET /capabilities` reports the active provider and its capability flags; the frontend (`src/utils/providerCapabilities.ts`) fails open (treats an older Worker with no route as fully capable) and hides a feature (e.g. the airport delay board) a provider doesn't implement instead of erroring.
 - All autonomous; a maintainer deploying a fork is doing their own human step, not ours.
 
-### v3.3 — "Companion surfaces": read-only widgets & views (autonomous, within constraints)
+### v3.3 — "Companion surfaces": read-only widgets & views (autonomous, within constraints) — ✅ shipped
 
-- **Focus / trip mode**: a full-screen day-of view (big countdown, gate, progress) suitable for leaving on a second screen.
-- **Web share target**: register as a share target so a flight number shared from another app opens Quick Add.
-- **URL-embeddable read-only card**: a self-contained, no-data share view (renders from URL params only — no stored data, no server).
+- **Focus / trip mode (shipped)**: a full-screen day-of view (`#/focus`, `#/focus/:flightId`) — big countdown, phase, gate, progress — suitable for leaving on a second screen. Reuses the existing `flightLifecycle`/`formatCountdown` engine and `LifecycleChip`/`LifecycleProgress` primitives; ticks a local re-render every 15s (no network activity) to keep the countdown current. Bypasses the normal app shell (no header/nav) for a distraction-free view.
+- **Web share target (shipped)**: registered via `manifest.webmanifest` → `share_target` (GET method — the service worker only handles GET requests, so this needed no SW changes). `src/utils/shareTarget.ts` extracts a flight number/date from shared text client-side and routes into the existing `#/add` Quick Add deep link.
+- **URL-embeddable read-only card (shipped)**: `#/card?...` — `src/utils/embedCard.ts` encodes/decodes the existing `ShareCardData` shape to/from URL query params; the view reuses the extracted `ShareCardArticle` component with zero IndexedDB access. A "Copy embed link" action ships next to every share-card preview (flight/trip/year).
 - Deliberately *not* an OS home-screen widget (needs a native shell — out of scope).
 
 ---
