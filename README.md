@@ -131,6 +131,16 @@ FlightLog v3.2 makes the flight-status Worker forkable and self-hostable end to 
 
 See `workers/flight-status-worker/README.md` → "Provider adapters" for the adapter contract and how to add one.
 
+## v3.3 Companion surfaces
+
+FlightLog v3.3 adds three read-only, no-server companion views around the core app.
+
+- **Focus mode** (`#/focus` or `#/focus/<flightId>`): a distraction-free, full-screen day-of view — a big countdown, phase, gate, and progress bar — for a flight that's about to depart or already in the air. Suitable for leaving open on a second screen; it re-renders locally every 15 seconds to keep the countdown current and never fetches anything in the background. Open it from the "Focus mode" button on the Dashboard's day-of-travel card, or link to it directly. With no flight id it auto-picks today's flight the same way the Dashboard does; with none due, it shows a clear empty state instead of a blank screen.
+- **Web share target**: FlightLog registers as an OS share target (`manifest.webmanifest` → `share_target`, GET method). Sharing text containing a flight number from another app (a confirmation email, a messaging app) opens Quick Add prefilled with the flight number (and date, if one was included) — parsed entirely client-side (`src/utils/shareTarget.ts`), then routed through the same `#/add` deep link Quick Add already used. Nothing is sent anywhere; if no flight number is found, it still opens Quick Add for manual entry rather than doing nothing.
+- **URL-embeddable read-only card** (`#/card?...`): a self-contained share view that renders entirely from URL query params — no IndexedDB read, no network call, no app chrome. Get a link via "Copy embed link" next to any share card preview (flight, trip, or yearly summary); anyone who opens it sees that exact card and nothing else, suitable for embedding (e.g. an iframe) outside the app. `src/utils/embedCard.ts` handles the encode/decode.
+
+Deliberately **not** built: an OS home-screen widget — that needs a native shell FlightLog doesn't have.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

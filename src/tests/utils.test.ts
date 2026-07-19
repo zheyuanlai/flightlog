@@ -509,6 +509,19 @@ describe('flight utilities', () => {
     expect(mobileNavGroup(routeFromHashValue('#/passport'))).toBe('more')
   })
 
+  it('routes to focus mode with or without a flight id, and to the embeddable card', () => {
+    expect(routeFromHashValue('#/focus/test-flight')).toEqual({ page: 'focus', flightId: 'test-flight' })
+    expect(routeFromHashValue('#/focus')).toEqual({ page: 'focus', flightId: undefined })
+    expect(routeFromHashValue('#/card?title=X&route=SIN-LAX')).toEqual({ page: 'card' })
+    expect(mobileNavGroup(routeFromHashValue('#/focus/test-flight'))).toBe('home')
+  })
+
+  it('falls back to the raw id instead of throwing on malformed percent-encoding', () => {
+    expect(() => routeFromHashValue('#/focus/%zz')).not.toThrow()
+    expect(routeFromHashValue('#/focus/%zz')).toEqual({ page: 'focus', flightId: '%zz' })
+    expect(() => routeFromHashValue('#/flights/%zz')).not.toThrow()
+  })
+
   it('builds safe share card data without notes by default', () => {
     const entry = flight({
       notes: 'Private note',

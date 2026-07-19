@@ -18,6 +18,7 @@ import {
   Map,
   MoreHorizontal,
   Mail,
+  Maximize2,
   Plane,
   Plus,
   RefreshCw,
@@ -143,6 +144,8 @@ import { desktopNavItems, mobileNavGroup, moreNavItems, navPage, parseQuickAddPa
 import { importDelimitedFlights, importFields, type ImportPreset } from './utils/importers'
 import { flightShareCardData, tripShareCardData, yearlyPassportShareCardData, type ShareCardData } from './utils/shareCards'
 import { downloadShareCardPng } from './utils/shareImage'
+import { buildCardHash, decodeShareCardParams } from './utils/embedCard'
+import { buildQuickAddHashFromSharedText } from './utils/shareTarget'
 import { buildAchievements, buildPassportSummary, computeGoalProgress, passportScore, type Achievement, type GoalProgress } from './utils/achievements'
 import { buildStampPages, downloadPassportPagePng, type StampPage } from './utils/passportBook'
 import {
@@ -158,7 +161,7 @@ import { fetchAirportStatus, type AirportMovementSummary, type AirportStatus } f
 import { DEFAULT_PROVIDER_CAPABILITIES, fetchProviderCapabilities, type ProviderCapabilities } from './utils/providerCapabilities'
 import { refreshRecommendation } from './utils/refreshCadence'
 import { groupFlightsIntoTrips, type TripGroup } from './utils/trips'
-import { listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
+import { formatCountdown, listUpcomingFlights, type UpcomingFlightInfo } from './utils/upcomingFlights'
 import {
   detectDayOfNotifications,
   notificationPermissionState,
@@ -522,6 +525,25 @@ function PwaInstallPanel({ standalone, canPrompt, onInstall }: { standalone: boo
   )
 }
 
+function ShareCardArticle({ data }: { data: ShareCardData }) {
+  return (
+    <article className={`share-card share-card-${data.kind}`} aria-label={`${data.title} share card`}>
+      <div className="share-card-brand"><Plane aria-hidden="true" /><span>{data.brand}</span></div>
+      <p className="eyebrow">{data.kind}</p>
+      <h3>{data.title}</h3>
+      <p className="share-card-route">{data.route}</p>
+      <dl>
+        <div><dt>Date</dt><dd>{data.date}</dd></div>
+        <div><dt>Distance</dt><dd>{data.distance}</dd></div>
+        <div><dt>Airports</dt><dd>{data.airports.slice(0, 6).join(' · ') || 'Not set'}</dd></div>
+        <div><dt>Countries</dt><dd>{data.countries.slice(0, 5).join(' · ') || 'Not set'}</dd></div>
+      </dl>
+      <ul>{data.highlights.slice(0, 4).map((highlight, index) => <li key={`${index}-${highlight}`}>{highlight}</li>)}</ul>
+      {data.notes && <p className="share-card-notes">{data.notes}</p>}
+    </article>
+  )
+}
+
 function ShareCardPreview({
   data,
   includeNotes,
@@ -545,35 +567,57 @@ function ShareCardPreview({
       setExporting(false)
     }
   }
+  async function handleCopyEmbedLink() {
+    const link = `${window.location.origin}${window.location.pathname}${buildCardHash(data)}`
+    try {
+      await navigator.clipboard.writeText(link)
+      setExportMessage('Embed link copied. Anyone with it sees this card — no sign-in, no stored data.')
+    } catch {
+      setExportMessage('Unable to copy the link in this browser.')
+    }
+  }
   return (
     <section className="panel share-panel">
       <div className="section-heading compact-heading">
         <div><p className="eyebrow">Share card</p><h3>Preview</h3></div>
         <span className="status scheduled">v2.1</span>
       </div>
-      <article className={`share-card share-card-${data.kind}`} aria-label={`${data.title} share card`}>
-        <div className="share-card-brand"><Plane aria-hidden="true" /><span>{data.brand}</span></div>
-        <p className="eyebrow">{data.kind}</p>
-        <h3>{data.title}</h3>
-        <p className="share-card-route">{data.route}</p>
-        <dl>
-          <div><dt>Date</dt><dd>{data.date}</dd></div>
-          <div><dt>Distance</dt><dd>{data.distance}</dd></div>
-          <div><dt>Airports</dt><dd>{data.airports.slice(0, 6).join(' · ') || 'Not set'}</dd></div>
-          <div><dt>Countries</dt><dd>{data.countries.slice(0, 5).join(' · ') || 'Not set'}</dd></div>
-        </dl>
-        <ul>{data.highlights.slice(0, 4).map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
-        {data.notes && <p className="share-card-notes">{data.notes}</p>}
-      </article>
+      <ShareCardArticle data={data} />
       <div className="actions">
         {onIncludeNotesChange && (
           <label className="checkbox-row inline-checkbox"><input type="checkbox" checked={Boolean(includeNotes)} onChange={(event) => onIncludeNotesChange(event.target.checked)} /> Include notes</label>
         )}
         <button type="button" className="secondary" disabled={exporting} onClick={() => void handleExport()}><ImageIcon aria-hidden="true" /> {exporting ? 'Exporting…' : 'Export PNG'}</button>
+        <button type="button" className="secondary" onClick={() => void handleCopyEmbedLink()}><Copy aria-hidden="true" /> Copy embed link</button>
       </div>
       {exportMessage && <p className="muted" role="status">{exportMessage}</p>}
-      <p className="muted">PNG export renders the card locally in your browser; nothing is uploaded.</p>
+      <p className="muted">PNG export renders the card locally in your browser; nothing is uploaded. The embed link renders this exact card from the URL alone — no account, no stored data.</p>
     </section>
+  )
+}
+
+function currentCardQuery(): string {
+  return window.location.hash.split('?').slice(1).join('?')
+}
+
+/**
+ * A self-contained, no-storage, no-server read-only view: renders entirely
+ * from URL query params (see src/utils/embedCard.ts). Suitable for embedding
+ * outside the app (e.g. an iframe) — it never touches IndexedDB or a network
+ * call, so it works from a plain static link with nothing else running.
+ */
+function CardPage() {
+  const [data, setData] = useState<ShareCardData | undefined>(() => decodeShareCardParams(currentCardQuery()))
+  useEffect(() => {
+    const onHashChange = () => setData(decodeShareCardParams(currentCardQuery()))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+  return (
+    <div className="embed-card-page">
+      {data ? <ShareCardArticle data={data} /> : <p className="empty-inline">This card link is missing or malformed.</p>}
+      <p className="embed-card-footer">Rendered entirely from this link — no data stored, no server involved. Made with FlightLog, a free and open-source flight tracker.</p>
+    </div>
   )
 }
 
@@ -1024,7 +1068,7 @@ function LifecycleProgress({ percent }: { percent: number }) {
   )
 }
 
-function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTravelFlight; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void> }) {
+function DayOfTravelCard({ item, isOnline, onOpen, onRefresh, onFocus }: { item: DayOfTravelFlight; isOnline: boolean; onOpen: (flight: FlightLogEntry) => void; onRefresh: (flight: FlightLogEntry) => Promise<void>; onFocus?: (flight: FlightLogEntry) => void }) {
   const settings = useAppSettings()
   const displayOptions = flightTimeDisplayOptions(settings)
   const { flight, lifecycle } = item
@@ -1052,9 +1096,68 @@ function DayOfTravelCard({ item, isOnline, onOpen, onRefresh }: { item: DayOfTra
       <div className="actions">
         <button type="button" onClick={() => onOpen(flight)}>View flight</button>
         <button type="button" className="secondary" disabled={!isOnline || !canRefreshLiveStatus(flight.lastFetchedAt)} onClick={() => void onRefresh(flight)}><RefreshCw aria-hidden="true" /> Refresh status</button>
+        {onFocus && <button type="button" className="secondary" onClick={() => onFocus(flight)}><Maximize2 aria-hidden="true" /> Focus mode</button>}
         {(lifecycle.phase === 'check-in' || lifecycle.phase === 'departing-soon') && checkInLink && <a className="button-link secondary-link" href={checkInLink.url} target="_blank" rel="noopener noreferrer">{checkInLink.label}</a>}
       </div>
     </section>
+  )
+}
+
+/**
+ * A distraction-free, full-screen day-of view for one flight — big countdown,
+ * gate, and progress — suitable for leaving open on a second screen. Ticks a
+ * local re-render every 15s to keep the countdown current; this never fetches
+ * anything, it only reformats data already in memory.
+ */
+function FocusPage({ flights, flightId, loading, onExit }: { flights: FlightLogEntry[]; flightId?: string; loading: boolean; onExit: () => void }) {
+  const settings = useAppSettings()
+  const displayOptions = flightTimeDisplayOptions(settings)
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => forceTick((value) => value + 1), 15_000)
+    return () => window.clearInterval(id)
+  }, [])
+  const flight = flightId ? flights.find((item) => item.id === flightId) : pickDayOfTravelFlight(flights)?.flight
+  if (loading) {
+    return (
+      <main className="focus-mode focus-mode-empty">
+        <p className="eyebrow">Focus mode</p>
+        <h1>Loading&hellip;</h1>
+      </main>
+    )
+  }
+  if (!flight) {
+    return (
+      <main className="focus-mode focus-mode-empty">
+        <p className="eyebrow">Focus mode</p>
+        <h1>No flight to focus on right now</h1>
+        <p className="muted">Focus mode shows a big countdown, gate, and progress for a flight that&apos;s about to depart or already in the air. Open it from a flight&apos;s day-of card once one is close.</p>
+        <button type="button" className="secondary" onClick={onExit}><X aria-hidden="true" /> Back to FlightLog</button>
+      </main>
+    )
+  }
+  const lifecycle = flightLifecycle(flight)
+  const countdown = formatCountdown(flight)
+  const departure = formatDepartureLocalTime(flight, displayOptions)
+  const arrival = formatArrivalLocalTime(flight, displayOptions)
+  const gate = [flight.liveStatus?.departureTerminal, flight.liveStatus?.departureGate].filter(Boolean).join(' / ') || 'Not set'
+  const cabinSeat = [flight.cabin, flight.seat].filter(Boolean).join(' / ') || 'Not set'
+  return (
+    <main className="focus-mode">
+      <button type="button" className="ghost focus-mode-exit" onClick={onExit}><X aria-hidden="true" /> Exit</button>
+      <p className="eyebrow">{flight.flightNumber} · {flight.origin} {'->'} {flight.destination}</p>
+      <LifecycleChip lifecycle={lifecycle} />
+      <h1 className="focus-mode-countdown">{countdown}</h1>
+      {lifecycle.progressPercent !== undefined && <LifecycleProgress percent={lifecycle.progressPercent} />}
+      {lifecycle.detail && <p className="focus-mode-detail">{lifecycle.detail}</p>}
+      <dl className="focus-mode-grid">
+        <div><dt>Departure</dt><dd>{departure.label}</dd></div>
+        <div><dt>Arrival</dt><dd>{arrival.label}</dd></div>
+        <div><dt>Terminal / gate</dt><dd>{gate}</dd></div>
+        <div><dt>Cabin / seat</dt><dd>{cabinSeat}</dd></div>
+      </dl>
+      {lifecycle.hint && <p className="notice focus-mode-hint">{lifecycle.hint}</p>}
+    </main>
   )
 }
 
@@ -1133,6 +1236,7 @@ function Dashboard({
   onDismissCompletion,
   onRefresh,
   onCompareSync,
+  onFocus,
 }: {
   flights: FlightLogEntry[]
   loading: boolean
@@ -1154,6 +1258,7 @@ function Dashboard({
   onDismissCompletion: (flight: FlightLogEntry) => Promise<void>
   onRefresh: (flight: FlightLogEntry) => Promise<void>
   onCompareSync?: () => Promise<void>
+  onFocus: (flight: FlightLogEntry) => void
 }) {
   const settings = useAppSettings()
   const [, setLifecycleTick] = useState(0)
@@ -1209,7 +1314,7 @@ function Dashboard({
           <div className="actions"><button type="button" onClick={onQuickAdd}><Search aria-hidden="true" /> Add by flight number</button><button type="button" className="secondary" onClick={onAddDemo}><Plus aria-hidden="true" /> Load demo flights</button></div>
         </EmptyState>
       ) : null}
-      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} />}
+      {dayOfTravel && <DayOfTravelCard item={dayOfTravel} isOnline={isOnline} onOpen={onOpenFlight} onRefresh={onRefresh} onFocus={onFocus} />}
       {completionPrompts.length > 0 && <CompletionPromptsPanel prompts={completionPrompts} isOnline={isOnline} onEdit={onEditFlight} onDismiss={onDismissCompletion} onRefresh={onRefresh} />}
       <section className="panel upcoming-panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">Upcoming</p><h2>Upcoming flights</h2></div></div>
@@ -2168,7 +2273,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v31',
+    serviceWorkerCacheVersion: 'flightlog-v32',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -3501,13 +3606,31 @@ function App() {
     }
     const usedIdleCallback = Boolean(idleWindow.requestIdleCallback)
     const idleHandle = usedIdleCallback && idleWindow.requestIdleCallback ? idleWindow.requestIdleCallback(loadAirports) : window.setTimeout(loadAirports, 350)
+    const consumeShareTarget = () => {
+      // A GET web share_target (manifest.webmanifest) navigates here with
+      // ?title=&text=&url= in the query string, not the hash. Convert it into
+      // the existing #/add deep-link hash so it flows through the same Quick
+      // Add path below, then drop the query string so a later refresh of this
+      // URL does not re-trigger it.
+      if (!window.location.search) return
+      const params = new URLSearchParams(window.location.search)
+      if (!params.has('title') && !params.has('text') && !params.has('url')) return
+      const hash = buildQuickAddHashFromSharedText({
+        title: params.get('title') ?? undefined,
+        text: params.get('text') ?? undefined,
+        url: params.get('url') ?? undefined,
+      })
+      // A fragment-only string leaves location.search untouched when passed to
+      // replaceState, so rebuild the full path to actually drop the query string.
+      window.history.replaceState(null, '', window.location.pathname + hash)
+    }
     const consumeQuickAddDeepLink = () => {
       const params = parseQuickAddParams(window.location.hash)
       if (!params) return false
       // Consume the deep link so it does not re-open on the next hashchange.
       // replaceState (not a hash assignment) avoids a Back-button trap and does
       // not fire hashchange, which is fine since setRoute is called directly.
-      window.history.replaceState(null, '', '#/dashboard')
+      window.history.replaceState(null, '', window.location.pathname + '#/dashboard')
       setRoute({ page: 'dashboard' })
       setEditing(undefined)
       setQuickAddPrefill(params)
@@ -3518,6 +3641,7 @@ function App() {
       if (consumeQuickAddDeepLink()) return
       setRoute(routeFromHash())
     }
+    consumeShareTarget()
     consumeQuickAddDeepLink()
     window.addEventListener('hashchange', onHashChange)
     return () => {
@@ -3685,6 +3809,12 @@ function App() {
     setMobileMoreOpen(false)
     window.location.hash = `/trips/${encodeURIComponent(id)}`
     setRoute({ page: 'trip-detail', tripId: id })
+  }
+
+  function navigateToFocus(id?: string) {
+    setMobileMoreOpen(false)
+    window.location.hash = id ? `/focus/${encodeURIComponent(id)}` : '/focus'
+    setRoute({ page: 'focus', flightId: id })
   }
 
   function openQuickAdd() {
@@ -4056,7 +4186,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v3.2',
+        appVersion: 'v3.3',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -4886,6 +5016,18 @@ function App() {
     onClearPreview: () => setCloudPreview(undefined),
   }
 
+  // Focus mode and the embeddable card are deliberately outside the normal app
+  // shell — no header, no nav, no dialogs — since they're meant to be
+  // distraction-free (a second screen) or fully self-contained (an embed).
+  if (route.page === 'card') return <CardPage />
+  if (route.page === 'focus') {
+    return (
+      <AppSettingsContext.Provider value={settings}>
+        <FocusPage flights={flights} flightId={route.flightId} loading={initialDataLoading} onExit={() => navigate('dashboard')} />
+      </AppSettingsContext.Provider>
+    )
+  }
+
   const mobileGroup = mobileNavGroup(route)
   const language = resolveLanguage(settings.language, typeof navigator !== 'undefined' ? navigator.language : undefined)
   const t = createTranslator(language)
@@ -4904,7 +5046,7 @@ function App() {
       <PassphraseDialog request={cloudPassphraseRequest} />
       <PassphraseDialog request={syncPassphraseRequest} title="Enter sync passphrase" description="Sync is encrypted end-to-end. Enter the same passphrase on every device — it is used only on this device and never uploaded." label="Encrypted sync passphrase" />
       {showForm && <FlightForm editing={editing} isOnline={isOnline} initialLookup={quickAddPrefill} onCancel={() => { setShowForm(false); setEditing(undefined); setQuickAddPrefill(undefined) }} onSaved={handleSavedFlight} onProviderAirportsSaved={cacheProviderAirports} />}
-      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'dashboard' && <Dashboard flights={flights} loading={initialDataLoading} isOnline={isOnline} airportDatasetLabel={airportDatasetLabel} appMetadata={appMetadata} syncStatus={syncStatus} cloudRestorePrompt={showCloudRestorePrompt && latestCloudBackup ? { latestLabel: `${latestCloudBackup.label || 'Cloud backup'} from ${formatDateTime(latestCloudBackup.createdAt, flightTimeDisplayOptions(settings))}`, onRestoreLatest: () => handleCloudRestore(latestCloudBackup.id, 'replace'), onChooseBackup: () => navigate('backup'), onPullSync: () => navigate('sync'), onStartFresh: handleDismissCloudRestorePrompt } : undefined} onAddDemo={addDemoFlights} onQuickAdd={openQuickAdd} onOpenFlight={(flight) => navigateToFlight(flight.id)} onEditFlight={(flight) => { setEditing(flight); setShowForm(true) }} onDismissCompletion={handleDismissCompletion} onRefresh={handleRefresh} onCompareSync={authSession ? handleSyncCompare : undefined} onFocus={(flight) => navigateToFocus(flight.id)} />}
       {route.page === 'flights' && <FlightsPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} onOpen={(flight) => navigateToFlight(flight.id)} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onQuickAdd={openQuickAdd} />}
       {route.page === 'flight-detail' && <FlightDetailPage flight={currentFlight} flights={flights} airportVersion={airportVersion} isOnline={isOnline} onBack={() => navigate('flights')} onEdit={(flight) => { setEditing(flight); setShowForm(true) }} onDelete={handleDelete} onRefresh={handleRefresh} onDismissCompletion={handleDismissCompletion} />}
       {route.page === 'trips' && <TripsPage trips={trips} onOpen={(trip) => navigateToTrip(trip.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onCreateTrip={handleCreateTrip} />}
