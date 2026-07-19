@@ -10,20 +10,23 @@ format, or auditing what a backup file actually contains, this is the doc to rea
 It supersedes the scattered format notes previously spread across `README.md`; those sections
 now link here instead of repeating the field lists.
 
-## 1. Two independent version numbers
+## 1. Independent version numbers
 
-FlightLog has **two separate schema-version constants**. They are not derived from each other,
-and there's no code path or test that requires them to move in lockstep — they version different
-things on purpose:
+FlightLog has **multiple separate schema-version constants**. They are not derived from each
+other, and there's no code path or test that requires any of them to move in lockstep — they
+version different things on purpose:
 
 | Constant | Where | Current value | Versions |
 | --- | --- | --- | --- |
 | `LOCAL_SCHEMA_VERSION` | `src/db.ts` | 4 | The Dexie/IndexedDB table+index schema on this device |
 | `FLIGHTLOG_BACKUP_SCHEMA_VERSION` | `src/utils/backup.ts` | 4 | The `FlightLogBackup` JSON interchange format |
+| `ARCHIVE_SCHEMA_VERSION` | `src/utils/archive.ts` | 1 | The `ArchivePayload` extra fields layered on top of `FlightLogBackup` (§4) |
 
-They currently happen to both equal 4 — that's coincidence, not a contract. A future release
-could bump one without the other (e.g. adding a new Dexie index without changing what a backup
-file contains, or adding a new backup field that's derived/recomputed rather than stored).
+The first two currently happen to both equal 4 — that's coincidence, not a contract. A future
+release could bump any one of these without the others (e.g. adding a new Dexie index without
+changing what a backup file contains, or adding a new backup field that's derived/recomputed
+rather than stored). `ARCHIVE_SCHEMA_VERSION` starts independently at 1, the same way
+`ENCRYPTED_BACKUP_VERSION` (§4) does.
 
 ## 2. IndexedDB schema (on-device storage)
 
@@ -163,6 +166,38 @@ plus three marker fields — so it round-trips through the exact same
 `parseFullBackupJson`/`previewBackupImport` pipeline a full backup does, unchanged. Code
 consuming trip-share-specific behavior detects it via `isTripShareFile`/
 `detectAndVerifyTripShare` rather than a different parser.
+
+### `ArchivePayload` — the lifetime archive's embedded data (`src/utils/archive.ts`, v5.3)
+
+```ts
+FlightLogBackup & {
+  archiveFormat: 'flightlog-lifetime-archive'
+  archiveVersion: number          // ARCHIVE_SCHEMA_VERSION, currently 1
+  archiveGeneratedAt: string
+  archiveChecksum: string         // SHA-256 over the canonicalized JSON (via the same computeBackupChecksum
+                                   // used for a trip share -- exportedAt and volatile appMetadata keys are
+                                   // normalized before hashing, same as there; detects corruption/hand-editing,
+                                   // not a cryptographic signature -- there's no secret key)
+  archiveSummary: { totalFlights: number; countryCount: number; totalDistanceKm: number; years: string[]; firstFlightDate?: string; lastFlightDate?: string }
+  archiveAchievements: Achievement[]  // earned achievements only, frozen at export time
+}
+```
+
+The same "extend `FlightLogBackup`, don't replace it" pattern `TripShareFile` established —
+unlike a trip share, `ArchivePayload` is full-fidelity (all flights, not scoped to one trip; not
+field-stripped), so it round-trips through `parseFullBackupJson`/`previewBackupImport` exactly
+like a plain full backup, and both merge and replace are offered on import (a trip share only
+offers merge, since it's intentionally partial). `archiveSummary`/`archiveAchievements` are a
+frozen point-in-time snapshot, included so a future reader with no app to recompute stats from
+the raw flights still sees the numbers that were true when the archive was made.
+
+This JSON is never written to disk on its own — it's embedded inside a lifetime archive `.html`
+file (a single self-contained page with the data + a human-readable rendering of it: lifetime
+stats, achievements, and passport stamp pages, no external stylesheet/script/network reference)
+in a `<script type="application/json" id="flightlog-archive-payload">` tag. Importing an archive
+extracts that tag's contents back out (`resolveImportableJsonText`) before handing the text to the
+exact same parser a plain `.json` backup file uses — the app's import code never needs to know
+whether a given file was a `.json` backup or an `.html` archive.
 
 ## 5. The migration guarantee
 

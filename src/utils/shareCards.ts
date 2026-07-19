@@ -76,7 +76,12 @@ export function yearlyPassportShareCardData(
   year: string,
   options: { distanceUnit?: DistanceUnit } = {},
 ): ShareCardData {
-  const yearFlights = flights.filter((flight) => flight.date.startsWith(year))
+  // Bucket by local departure date, matching aggregateStats/FlightStats.yearly's
+  // convention -- using the raw, possibly-stale flight.date field here would let
+  // this card's flight set silently disagree with a "N flights this year" count
+  // computed the other way for the same year (e.g. overnight flights near a
+  // year boundary, or a manually edited date/time combination).
+  const yearFlights = flights.filter((flight) => getFlightDepartureLocalDate(flight).startsWith(year))
   const stats = aggregateStats(yearFlights)
   return {
     brand: 'FlightLog',

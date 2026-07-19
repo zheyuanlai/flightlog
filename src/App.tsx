@@ -2,6 +2,7 @@ import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useSta
 import {
   ArrowRight,
   AlertTriangle,
+  Archive,
   CalendarDays,
   CheckCircle2,
   Cloud,
@@ -21,6 +22,7 @@ import {
   Maximize2,
   Plane,
   Plus,
+  Printer,
   RefreshCw,
   RotateCcw,
   Search,
@@ -122,6 +124,8 @@ import { airportCount, formatAirportOption, hasKnownAirport, loadGeneratedAirpor
 import { airlineDisplayName, airlineForFlight, airlineForLiveStatus } from './utils/airlines'
 import { appMetadataValue, backupAgeWarning, createFullBackup, flightDuplicateKey, parseFullBackupJson, previewBackupImport, shouldShowFirstRunCloudRestorePrompt, type BackupImportPreview, type FlightLogBackup } from './utils/backup'
 import { buildTripShareFile, detectAndVerifyTripShare, type TripShareDetection } from './utils/tripShare'
+import { detectAndVerifyArchive, resolveImportableJsonText, type ArchiveDetection } from './utils/archive'
+import { renderLifetimeArchive } from './utils/archiveRender'
 import { csvColumns, flightFromInput, flightsToCsv, parseFlightsCsv, parseFlightsJson, validateFlightInput } from './utils/csv'
 import { analyzeDataHealth, repairFlightsFromAirportDataset } from './utils/dataHealth'
 import { deletedFlights as sortDeletedFlights, deletedTripMetadata } from './utils/deletedRecords'
@@ -2365,6 +2369,50 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   const achievements = useMemo(() => buildAchievements(flights), [flights])
   const stampPages = useMemo(() => buildStampPages(summary.countryList), [summary])
   const currentYear = new Date().getFullYear()
+  const printFrameRef = useRef<HTMLIFrameElement>(null)
+  const printPendingRef = useRef(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const [printError, setPrintError] = useState('')
+  async function handlePrintPassport() {
+    if (printBusy) return
+    setPrintBusy(true)
+    setPrintError('')
+    try {
+      // No backup/includePayload here -- printing is ephemeral, so it's not
+      // worth paying the checksum + JSON-embedding cost the full export pays.
+      const { html } = await renderLifetimeArchive({
+        activeFlights: flights,
+        trips,
+        summary,
+        stats,
+        achievements,
+        distanceUnit: settings.distanceUnit,
+        appVersionLabel: 'FlightLog v5.3',
+        includePayload: false,
+        scale: 2,
+      })
+      const frame = printFrameRef.current
+      if (!frame) {
+        setPrintBusy(false)
+        return
+      }
+      printPendingRef.current = true
+      frame.srcdoc = html
+      // printBusy stays true (the button stays disabled) until
+      // handlePrintFrameLoad fires for this srcdoc and actually calls
+      // print() -- clearing it here would let a second click reassign
+      // srcdoc mid-render, silently aborting this pending print job.
+    } catch (error) {
+      setPrintError(error instanceof Error ? error.message : 'Unable to prepare the passport for printing.')
+      setPrintBusy(false)
+    }
+  }
+  function handlePrintFrameLoad() {
+    if (!printPendingRef.current) return
+    printPendingRef.current = false
+    printFrameRef.current?.contentWindow?.print()
+    setPrintBusy(false)
+  }
   const goalProgress = useMemo(
     () => computeGoalProgress(flights, {
       flightsPerYear: settings.goalFlightsPerYear,
@@ -2403,7 +2451,15 @@ function PassportPage({ flights, trips }: { flights: FlightLogEntry[]; trips: Tr
   return (
     <main className="page passport" id="main-content">
       <h1 className="visually-hidden">Passport</h1>
-      <div className="passport-cover"><p className="eyebrow">Digital passport</p><h2>Lifetime travel record</h2><div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div><p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p></div>
+      <div className="passport-cover">
+        <p className="eyebrow">Digital passport</p>
+        <h2>Lifetime travel record</h2>
+        <div className="passport-number">{stats.totalFlights.toString().padStart(3, '0')} flights</div>
+        <p className="passport-cover-copy">Passport Pro-style achievements, superlatives, and shareable summaries are included for free and stay open source.</p>
+        <div className="actions"><button type="button" disabled={printBusy} onClick={() => void handlePrintPassport()}><Printer aria-hidden="true" /> {printBusy ? 'Preparing…' : 'Print passport'}</button></div>
+        {printError && <p className="notice warning">{printError}</p>}
+      </div>
+      <iframe ref={printFrameRef} title="Printable passport" className="print-frame" onLoad={handlePrintFrameLoad} />
       <section className="stats-grid passport-headline">
         <StatCard icon={Globe2} label="Countries" value={String(summary.countryCount)} />
         <StatCard icon={Map} label="Continents" value={`${summary.continents.length}/7`} />
@@ -2570,7 +2626,7 @@ function SettingsPage({
     latestLocalBackupChecksum: currentChecksum?.slice(0, 12),
     workerConfigured: Boolean(import.meta.env.VITE_FLIGHTLOG_API_BASE_URL),
     workerUrl: import.meta.env.VITE_FLIGHTLOG_API_BASE_URL || 'not configured',
-    serviceWorkerCacheVersion: 'flightlog-v37',
+    serviceWorkerCacheVersion: 'flightlog-v38',
     syncMetadata,
   })
   const liveDataLabel = settings.liveDataMode === 'disabled'
@@ -3038,6 +3094,7 @@ function BackupCenterPage({
   cloud,
   onImported,
   onExportBackup,
+  onExportArchive,
   onExportEncryptedBackup,
   onExportCalendarFeed,
   onImportExternal,
@@ -3060,6 +3117,7 @@ function BackupCenterPage({
   cloud: CloudBackupControls
   onImported: () => Promise<void>
   onExportBackup: () => Promise<void>
+  onExportArchive: () => Promise<void>
   onExportEncryptedBackup: (passphrase: string, hint?: string) => Promise<void>
   onExportCalendarFeed: () => void
   onImportExternal: (flights: FlightLogEntry[]) => Promise<{ added: number; skipped: number }>
@@ -3077,6 +3135,7 @@ function BackupCenterPage({
   const [externalMessage, setExternalMessage] = useState('')
   const [backupPreview, setBackupPreview] = useState<BackupImportPreview | undefined>()
   const [tripShareInfo, setTripShareInfo] = useState<TripShareDetection | undefined>()
+  const [archiveInfo, setArchiveInfo] = useState<ArchiveDetection | undefined>()
   const [backupMessage, setBackupMessage] = useState('')
   const [encryptedImport, setEncryptedImport] = useState<EncryptedBackupEnvelope | undefined>()
   const [importPassphrase, setImportPassphrase] = useState('')
@@ -3101,9 +3160,14 @@ function BackupCenterPage({
     setImportPassphrase('')
     setBackupPreview(undefined)
     setTripShareInfo(undefined)
+    setArchiveInfo(undefined)
     try {
-      const text = await file.text()
+      const rawText = await file.text()
       if (requestId !== importRequestIdRef.current) return
+      // A lifetime archive is an .html file with the same backup JSON embedded
+      // in it; this is a no-op passthrough for a plain .json file (backup or
+      // encrypted envelope alike), so it's always safe to apply first.
+      const text = resolveImportableJsonText(rawText)
       const envelope = parseEncryptedBackupJson(text)
       if (envelope) {
         setBackupPreview(undefined)
@@ -3113,9 +3177,11 @@ function BackupCenterPage({
       const backup = parseFullBackupJson(text)
       const preview = previewBackupImport(backup, flights)
       const tripShare = await detectAndVerifyTripShare(text)
+      const archive = await detectAndVerifyArchive(text)
       if (requestId !== importRequestIdRef.current) return
       setBackupPreview(preview)
       setTripShareInfo(tripShare)
+      setArchiveInfo(archive)
     } catch (error) {
       if (requestId !== importRequestIdRef.current) return
       setBackupPreview(undefined)
@@ -3132,9 +3198,11 @@ function BackupCenterPage({
       const backup = parseFullBackupJson(decrypted)
       const preview = previewBackupImport(backup, flights)
       const tripShare = await detectAndVerifyTripShare(decrypted)
+      const archive = await detectAndVerifyArchive(decrypted)
       if (requestId !== importRequestIdRef.current) return
       setBackupPreview(preview)
       setTripShareInfo(tripShare)
+      setArchiveInfo(archive)
       setEncryptedImport(undefined)
       setImportPassphrase('')
       setBackupMessage('Encrypted backup decrypted locally. Review the preview below before applying it.')
@@ -3176,10 +3244,13 @@ function BackupCenterPage({
       setBackupMessage(
         tripShareInfo
           ? `Merged shared trip "${tripShareInfo.tripName}": added ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicates.`
-          : `Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`,
+          : archiveInfo
+            ? `Merged lifetime archive: added ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicates.`
+            : `Imported ${backupPreview.flightsToAdd} new flights and skipped ${backupPreview.duplicateFlights} duplicate flights.`,
       )
       setBackupPreview(undefined)
       setTripShareInfo(undefined)
+      setArchiveInfo(undefined)
     } catch (error) {
       setBackupMessage(error instanceof Error ? `Unable to merge this backup: ${error.message}` : 'Unable to merge this backup.')
     }
@@ -3191,6 +3262,7 @@ function BackupCenterPage({
       setBackupMessage(`Replaced local data with ${backupPreview.backup.flights.length} flights from backup.`)
       setBackupPreview(undefined)
       setTripShareInfo(undefined)
+      setArchiveInfo(undefined)
     } catch (error) {
       setBackupMessage(error instanceof Error ? `Unable to replace local data: ${error.message}` : 'Unable to replace local data.')
     }
@@ -3239,9 +3311,14 @@ function BackupCenterPage({
         </article>
         <article className="panel">
           <h3>Restore backup</h3>
-          <p className="muted">Preview a full backup before merging or replacing local data. Plain and encrypted backup files are both accepted.</p>
-          <label className="file-drop"><Upload aria-hidden="true" /><span>Choose backup JSON</span><input type="file" accept=".json,application/json" onChange={(event) => event.target.files?.[0] && void handleBackupFile(event.target.files[0])} /></label>
+          <p className="muted">Preview a full backup before merging or replacing local data. Plain, encrypted, and lifetime-archive files are all accepted.</p>
+          <label className="file-drop"><Upload aria-hidden="true" /><span>Choose backup file</span><input type="file" accept=".json,.html,application/json,text/html" onChange={(event) => event.target.files?.[0] && void handleBackupFile(event.target.files[0])} /></label>
         </article>
+      </section>
+      <section className="panel">
+        <div className="section-heading compact-heading"><div><p className="eyebrow">Long-term keepsake</p><h3>Lifetime archive</h3></div><Archive aria-hidden="true" /></div>
+        <p className="muted">A single, self-contained HTML file with your flights, lifetime stats, achievements, and passport stamps rendered as a readable page — plus your data embedded for a full round-trip restore. Opens in any browser, no app required, even decades from now.</p>
+        <div className="actions"><button type="button" onClick={() => void onExportArchive()}><Download aria-hidden="true" /> Export lifetime archive</button></div>
       </section>
       <section className="panel">
         <div className="section-heading compact-heading"><div><p className="eyebrow">End-to-end encryption</p><h3>Encrypted backup export</h3></div><Shield aria-hidden="true" /></div>
@@ -3271,9 +3348,12 @@ function BackupCenterPage({
       {backupMessage && <p className="notice">{backupMessage}</p>}
       {backupPreview && (
         <section className="panel">
-          <h3>{tripShareInfo ? `Shared trip: ${tripShareInfo.tripName}` : 'Backup import preview'}</h3>
+          <h3>{tripShareInfo ? `Shared trip: ${tripShareInfo.tripName}` : archiveInfo ? 'Lifetime archive preview' : 'Backup import preview'}</h3>
           {tripShareInfo && !tripShareInfo.checksumValid && (
             <p className="notice warning">This shared trip file's checksum doesn't match its contents — it may have been edited or corrupted after it was created. Review the details below carefully before merging.</p>
+          )}
+          {archiveInfo && !archiveInfo.checksumValid && (
+            <p className="notice warning">This archive file's checksum doesn't match its contents — it may have been edited or corrupted after it was created. Review the details below carefully before merging.</p>
           )}
           <dl className="meta-grid">
             <div><dt>Flights to add</dt><dd>{backupPreview.flightsToAdd}</dd></div>
@@ -3282,13 +3362,13 @@ function BackupCenterPage({
             {!tripShareInfo && <div><dt>Deleted flights</dt><dd>{backupPreview.deletedFlights}</dd></div>}
             <div><dt>Trip metadata</dt><dd>{backupPreview.tripMetadata}</dd></div>
             {!tripShareInfo && <div><dt>Provider airports</dt><dd>{backupPreview.providerAirports}</dd></div>}
-            <div><dt>{tripShareInfo ? 'Shared' : 'Exported'}</dt><dd>{formatDateTime(backupPreview.backup.exportedAt, displayOptions)}</dd></div>
+            <div><dt>{tripShareInfo ? 'Shared' : archiveInfo ? 'Archived' : 'Exported'}</dt><dd>{formatDateTime(backupPreview.backup.exportedAt, displayOptions)}</dd></div>
           </dl>
           {backupPreview.warnings.map((warning) => <p className="notice warning" key={warning}>{tripShareInfo ? warning.replace(/^Backup\b/, 'Shared trip') : warning}</p>)}
           <div className="actions">
-            <button type="button" onClick={() => void mergeBackup()}>{tripShareInfo ? 'Merge shared trip' : 'Merge new records'}</button>
+            <button type="button" onClick={() => void mergeBackup()}>{tripShareInfo ? 'Merge shared trip' : archiveInfo ? 'Merge archive' : 'Merge new records'}</button>
             {!tripShareInfo && <button type="button" className="secondary" onClick={() => void replaceBackup()}>Replace all local data</button>}
-            <button type="button" className="ghost" onClick={() => { setBackupPreview(undefined); setTripShareInfo(undefined) }}>Cancel</button>
+            <button type="button" className="ghost" onClick={() => { setBackupPreview(undefined); setTripShareInfo(undefined); setArchiveInfo(undefined) }}>Cancel</button>
           </div>
         </section>
       )}
@@ -4424,6 +4504,29 @@ function App() {
     setToast('Full backup exported.')
   }
 
+  async function handleExportLifetimeArchive() {
+    const now = new Date().toISOString()
+    const backup = await buildExportBackup(now)
+    const summary = buildPassportSummary(flights)
+    const stats = aggregateStats(flights)
+    const achievements = buildAchievements(flights)
+    const { html, sizeEstimate } = await renderLifetimeArchive({
+      activeFlights: flights,
+      trips,
+      summary,
+      stats,
+      achievements,
+      distanceUnit: settings.distanceUnit,
+      appVersionLabel: 'FlightLog v5.3',
+      backup,
+      now,
+    })
+    downloadFile(`flightlog-lifetime-archive-${now.slice(0, 10)}.html`, html, 'text/html')
+    await setAppMetadata('lastBackupAt', now)
+    await loadAppMetadata()
+    setToast(sizeEstimate.heavy ? 'Lifetime archive exported (large file — this may take a moment to open).' : 'Lifetime archive exported.')
+  }
+
   async function handleExportEncryptedBackup(passphrase: string, hint?: string) {
     const now = new Date().toISOString()
     const backup = await buildExportBackup(now)
@@ -4568,7 +4671,7 @@ function App() {
         backup,
         label,
         deviceId,
-        appVersion: 'v5.0',
+        appVersion: 'v5.3',
         encryptPassphrase,
       })
       const verification = await verifyCloudBackupSnapshot({ client: supabase, id: uploaded.id, expectedChecksum, passphrase: encryptPassphrase })
@@ -5437,7 +5540,7 @@ function App() {
       {route.page === 'trip-detail' && <TripDetailPage key={route.tripId} trip={currentTrip} trips={trips} flights={flights} onBack={() => navigate('trips')} onOpenFlight={(flight) => navigateToFlight(flight.id)} onUpdate={(tripId, patch) => void handleTripMetadataUpdate(tripId, patch)} onMutateChecklist={(tripId, fallbackTemplate, mutate) => void handleMutateTripChecklist(tripId, fallbackTemplate, mutate)} onAddFlight={handleAddFlightToTrip} onRemoveFlight={handleRemoveFlightFromTrip} onConvertToManual={handleConvertTripToManual} onDeleteTrip={handleDeleteTrip} />}
       {route.page === 'map' && <MapPage flights={flights} airportVersion={airportVersion} isOnline={isOnline} supportsAirportStatus={providerCapabilities.supportsAirportStatus} />}
       {route.page === 'passport' && <PassportPage flights={flights} trips={trips} />}
-      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
+      {route.page === 'backup' && <BackupCenterPage flights={flights} allFlights={allFlights} trips={trips} tripMetadata={tripMetadata} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncMetadata={syncMetadata} syncStatus={syncStatus} syncComparison={syncComparison} cloud={cloudControls} onImported={reloadLocalData} onExportBackup={handleExportFullBackup} onExportArchive={handleExportLifetimeArchive} onExportEncryptedBackup={handleExportEncryptedBackup} onExportCalendarFeed={handleExportCalendarFeed} onImportExternal={handleImportExternalFlights} onMergeBackup={handleMergeBackup} onReplaceBackup={handleReplaceBackup} onRepairData={handleRepairData} onNavigateTrash={() => navigate('trash')} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'account' && <AccountPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} appMetadata={appMetadata} cloudBackups={cloudBackups} showRestorePrompt={showCloudRestorePrompt} latestCloudBackup={latestCloudBackup} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onNavigateBackup={() => navigate('backup')} onRestoreLatest={() => latestCloudBackup ? handleCloudRestore(latestCloudBackup.id, 'replace') : Promise.resolve()} onDismissRestorePrompt={handleDismissCloudRestorePrompt} onSetCloudReminder={handleSetCloudReminder} onDeleteAllCloudBackups={handleCloudDeleteAll} />}
       {route.page === 'settings' && <SettingsPage configured={isSupabaseConfigured} authLoading={authLoading} session={authSession} authMessage={authMessage} settings={settings} syncMetadata={syncMetadata} flights={flights} allFlights={allFlights} allTripMetadata={allTripMetadata} providerAirports={providerAirportState} appMetadata={appMetadata} syncStatus={syncStatus} cloud={cloudControls} syncComparison={syncComparison} currentChecksum={currentBackupChecksum} liveApiStatus={liveApiStatus} standalone={isStandalone} installPromptAvailable={installPrompt.canPrompt} onInstallPrompt={installPrompt.promptInstall} onGoogleSignIn={handleGoogleSignIn} onEmailSignIn={handleEmailSignIn} onSignOut={handleSignOut} onSettingsChange={handleSettingsChange} onNavigateBackup={() => navigate('backup')} onNavigateSync={() => navigate('sync')} onNavigateTrash={() => navigate('trash')} onExportBackup={handleExportFullBackup} onRepairData={handleRepairData} onClearLocalData={handleClearLocalData} onRunLiveApiTest={handleRunLiveApiTest} onCompareSync={authSession ? handleSyncCompare : undefined} />}
       {route.page === 'sync' && <SyncPage configured={isSupabaseConfigured} session={authSession} cloudBackups={cloudBackups} syncMetadata={syncMetadata} status={syncStatus} comparison={syncComparison} syncEvents={syncEvents} syncDevices={syncDevices} deviceName={deviceName} busy={syncBusy} message={syncMessage} onCompare={handleSyncCompare} onCreateSafetyBackup={handleCreateSafetyBackup} onPushLocal={handleSyncPushLocalOnly} onPullRemote={handleSyncPullRemoteOnly} onPushTombstones={handleSyncPushTombstones} onPullTombstones={handleSyncPullTombstones} onSyncSafe={handleSyncSafeChanges} onResolveConflict={handleResolveConflict} onResolveAll={handleResolveAllConflicts} onMergeFields={handleMergeConflictFields} onRenameDevice={handleRenameDevice} onNavigateSettings={() => navigate('settings')} onNavigateBackup={() => navigate('backup')} onUnlockSealed={handleUnlockSealedRecords} />}

@@ -216,11 +216,11 @@ Goal: make FlightLog outlive its original author — sustainable, governed, acce
 - Document a **zero-cost operating baseline** (what must always run on free tiers).
 - ⚠️ **Human decision:** if optional shared/provider infrastructure ever needs funding, choose a model (donations, sponsor-run Workers, self-host-only) that never gates the core app behind payment — recorded in §10.
 
-### v5.3 — "Archive": lifetime data stewardship (autonomous)
+### v5.3 — "Archive": lifetime data stewardship (autonomous) — ✅ shipped
 
-- **Lifetime export**: a single portable archive (data + generated passport + wrapped pages) designed to be readable decades later without the app.
-- **Print/PDF passport**: a high-quality printable passport and yearly report via the Canvas/PDF path.
-- **Import from archive**: full round-trip from the lifetime export.
+- **Lifetime export (shipped)**: a single self-contained `.html` archive (lifetime stats, achievements, and passport stamp pages rendered as a readable page, no external stylesheet/script/network reference) with the full flight data embedded for round-trip re-import. `docs/DATA_FORMAT.md` documents the `ArchivePayload` shape.
+- **Print/PDF passport (shipped)**: the same renderer, reused rather than duplicated, feeds an offscreen iframe on the Passport page that calls the browser's native print/Save-as-PDF — no separate print template or popup window, and the embedded-data/checksum step is skipped since a print is ephemeral.
+- **Import from archive (shipped)**: Backup Center's existing restore-file picker also accepts a lifetime archive `.html` file, detected and checksum-verified automatically, previewed and merged/replaced through the same pipeline a plain backup already uses.
 
 ### ∞ — HORIZON (revisited each cycle, none committed)
 

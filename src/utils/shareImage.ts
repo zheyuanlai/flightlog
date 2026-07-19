@@ -218,12 +218,14 @@ export function drawShareCard(ctx: CanvasRenderingContext2D, data: ShareCardData
   ctx.fillText('local-first personal flight passport', left, SHARE_CARD_HEIGHT - 56)
 }
 
-export async function renderShareCardPng(data: ShareCardData): Promise<Blob> {
+export async function renderShareCardPng(data: ShareCardData, options: { scale?: 1 | 2 } = {}): Promise<Blob> {
+  const scale = options.scale ?? 1
   const canvas = document.createElement('canvas')
-  canvas.width = SHARE_CARD_WIDTH
-  canvas.height = SHARE_CARD_HEIGHT
+  canvas.width = SHARE_CARD_WIDTH * scale
+  canvas.height = SHARE_CARD_HEIGHT * scale
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('PNG export is unavailable because Canvas 2D is not supported in this browser.')
+  if (scale !== 1) ctx.scale(scale, scale)
   drawShareCard(ctx, data)
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
