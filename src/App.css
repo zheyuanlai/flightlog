@@ -57,6 +57,15 @@
   --shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.12);
   --ring: 0 0 0 3px rgba(15, 118, 110, 0.22);
   --tap-target: 44px;
+  /* Motion tokens (v5.4). Strong custom curves — the built-in CSS easings are
+     too weak to feel intentional. Durations stay crisp (<300ms) to suit a
+     utility dashboard, not a playful consumer app. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 140ms;
+  --dur: 190ms;
+  --dur-slow: 300ms;
   min-height: 100vh;
   background:
     radial-gradient(1200px 600px at 100% -5%, rgba(15, 118, 110, 0.1), transparent 55%),
@@ -327,7 +336,7 @@ button,
   letter-spacing: 0.01em;
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(15, 118, 110, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, filter 0.15s ease;
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), filter var(--dur-fast) var(--ease-out);
   text-decoration: none;
 }
 
@@ -337,12 +346,25 @@ button,
   padding: 8px;
 }
 
-button:hover,
-.file-drop:hover,
-.button-link:hover {
-  transform: translateY(-1px);
-  filter: brightness(1.04);
-  box-shadow: 0 8px 22px rgba(15, 118, 110, 0.22);
+/* The hover lift is movement, so gate it behind a real pointer -- touch
+   devices fire :hover on tap, which would jump the button under the finger. */
+@media (hover: hover) and (pointer: fine) {
+  button:hover,
+  .file-drop:hover,
+  .button-link:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.04);
+    box-shadow: 0 8px 22px rgba(15, 118, 110, 0.22);
+  }
+}
+
+/* Press feedback: instant confirmation the interface heard the tap. Subtle
+   (0.97) and applies to every pressable element (buttons, icon buttons, nav
+   pills, segmented controls -- all real <button>s). Excludes disabled. */
+button:not(:disabled):active,
+.file-drop:active,
+.button-link:active {
+  transform: scale(0.97);
 }
 
 button:focus-visible,
@@ -590,12 +612,14 @@ nav button.active,
   padding: 18px 20px;
   display: grid;
   gap: 6px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out);
 }
 
-.stat-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
+@media (hover: hover) and (pointer: fine) {
+  .stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+  }
 }
 
 .stat-card svg {
@@ -862,7 +886,7 @@ textarea {
   color: #0f172a;
   background: #ffffff;
   font: inherit;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 
 input:hover,
@@ -1077,7 +1101,7 @@ textarea {
   font-weight: 600;
   font-size: 14px;
   text-decoration: none;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
 
 .settings-nav a:hover {
@@ -2394,4 +2418,98 @@ a {
   color: #64748b;
   font-size: 12px;
   text-align: center;
+}
+
+/* ============================================================================
+   v5.4 Motion — tasteful, restrained enter animations.
+   Applies Emil Kowalski's design-engineering principles (emilkowalski/skills,
+   MIT): strong custom easing, movement paired with opacity (nothing appears
+   from nothing), origin-aware where it matters, and enter-only (React unmounts
+   these instantly, and enter is where motion carries the most meaning). Pure
+   CSS via @starting-style — no libraries, no JS state machines. Every movement
+   below is opacity-preserving under prefers-reduced-motion (see the block at
+   the end), so reduced motion still fades but never travels.
+   ============================================================================ */
+
+/* Route/page swaps used to teleport. A fast, small rise + fade prevents the
+   jarring content jump. Kept minimal because navigation is frequent. */
+.page {
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Toast: enters from its own corner (bottom-right), so the slight upward slide
+   reads as "arriving from off-screen." Uses ease (slightly more elegant than
+   ease-out) at a hair slower duration, matching the toast's informational mood. */
+.toast {
+  transition: opacity var(--dur) ease, transform var(--dur) ease;
+  @starting-style {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* Status banners drop in from just above — they belong to the top of the shell. */
+.offline-banner,
+.storage-issue-banner {
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* Passphrase modal: centered, so it scales from center (correct for a modal —
+   it is not anchored to a trigger). scale(0.97), never scale(0). */
+.passphrase-overlay {
+  transition: opacity var(--dur) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+.passphrase-dialog {
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* Mobile "More" sheet: a bottom sheet, so it slides up its own full height with
+   the iOS-like drawer curve. translateY(100%) adapts to any sheet height. */
+.mobile-more-sheet {
+  transition: opacity var(--dur-slow) var(--ease-drawer), transform var(--dur-slow) var(--ease-drawer);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+}
+
+/* Reduced motion: keep the fades (opacity aids comprehension), drop all travel.
+   By transitioning opacity only, the transform in each @starting-style above is
+   applied instantly (untransitioned) instead of animating — so elements fade in
+   place with no movement. Press/hover lifts are neutralized too. */
+@media (prefers-reduced-motion: reduce) {
+  .page,
+  .toast,
+  .offline-banner,
+  .storage-issue-banner,
+  .passphrase-overlay,
+  .passphrase-dialog,
+  .mobile-more-sheet {
+    transition-property: opacity;
+  }
+
+  button:not(:disabled):active,
+  .file-drop:active,
+  .button-link:active,
+  button:hover,
+  .file-drop:hover,
+  .button-link:hover,
+  .stat-card:hover {
+    transform: none;
+  }
 }

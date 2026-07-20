@@ -204,6 +204,17 @@ FlightLog v5.3 is about lifetime data stewardship: your travel history should ou
 - **Import from archive**: Backup Center's "Restore backup" file picker now also accepts a lifetime archive `.html` file directly — it's detected automatically, previewed the same way a full backup is (with a checksum-integrity check), and can be merged or replaced, same as any other backup.
 - **Format**: `docs/DATA_FORMAT.md` documents the new `ArchivePayload` shape — a `FlightLogBackup` extended with a frozen point-in-time stats/achievements snapshot and its own independent version number, following the same "extend, don't replace" pattern the v4.2 trip-share format already established.
 
+## v5.4 Motion
+
+FlightLog v5.4 is a motion-polish pass — no new features, just making the (previously almost entirely static) UI feel considered. It applies [Emil Kowalski's design-engineering skills](.claude/skills/) (vendored under `.claude/skills/`, MIT © Emil Kowalski), **pure CSS, no new dependencies** — honoring the "no heavy dependencies" non-negotiable (a motion library like Motion/Framer was explicitly declined; see `docs/ROADMAP.md` §10).
+
+- **Motion tokens**: strong custom easing curves (`--ease-out`, `--ease-in-out`, `--ease-drawer`) and a crisp duration scale replace the previous bare `ease` — the built-in CSS easings are too weak to feel intentional.
+- **Press feedback**: every pressable element now scales to `0.97` on `:active` — instant confirmation the interface heard the tap. The app had *zero* press feedback before.
+- **Accessibility**: a `prefers-reduced-motion` block keeps opacity fades (they aid comprehension) but drops all movement; hover *lifts* are gated behind `@media (hover: hover) and (pointer: fine)` so they don't fire on touch taps.
+- **Enter animations**: subtle `@starting-style` transitions for the toast (slides up from its corner), status banners (drop in from the top), the passphrase modal (centered scale), the mobile "More" sheet (drawer slide-up), and route/page swaps (a fast fade + rise that prevents jarring content teleports).
+
+Every value was checked against the vendored `review-animations` standard, and an independent adversarial review of the diff confirmed it. Bundle impact: CSS only, well within the size budget.
+
 ## Timezones
 
 FlightLog displays flight times in airport-local time, not the browser timezone. Departure labels use the origin airport timezone and arrival labels use the destination airport timezone. Live provider responses preserve local and UTC timestamps when available, and calendar exports use UTC event times. If a saved flight has provider local time but no reliable timezone or offset, FlightLog shows the provider-local value with a warning and disables unsafe calendar exports.

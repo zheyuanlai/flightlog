@@ -225,6 +225,16 @@ Goal: make FlightLog outlive its original author — sustainable, governed, acce
 - **Print/PDF passport (shipped)**: the same renderer, reused rather than duplicated, feeds an offscreen iframe on the Passport page that calls the browser's native print/Save-as-PDF — no separate print template or popup window, and the embedded-data/checksum step is skipped since a print is ephemeral.
 - **Import from archive (shipped)**: Backup Center's existing restore-file picker also accepts a lifetime archive `.html` file, detected and checksum-verified automatically, previewed and merged/replaced through the same pipeline a plain backup already uses.
 
+### v5.4 — "Motion": feel & polish (owner-requested) — ✅ shipped
+
+Not on the original plan; a polish pass requested by the owner. Applies Emil Kowalski's
+design-engineering skills (vendored under `.claude/skills/`, MIT © Emil Kowalski) to the
+previously-static UI: motion tokens (strong custom easing + a crisp duration scale), press
+feedback on every pressable element, a `prefers-reduced-motion` block, hover-lift gating for
+touch, and subtle `@starting-style` enter animations (toast, banners, passphrase modal, mobile
+sheet, route swaps). **Pure CSS, no new runtime dependencies** — see the §10 ledger entry.
+Reviewed against the vendored `review-animations` standard plus an independent adversarial pass.
+
 ### ∞ — HORIZON (revisited each cycle, none committed)
 
 Speculative bets to reconsider as the platform and web evolve — each would require re-testing against the non-negotiables and an explicit §10 entry before promotion out of the horizon:
@@ -303,6 +313,7 @@ The non-negotiables are a contract; this ledger is where the owner records any d
 | 2026-07-19 | — (security design) | v3.1 Sealed Sync key management | **Decided: passphrase re-entry per device** over wrapped-key escrow — zero-knowledge, consistent with the already-shipped encrypted-backup model, no server-stored key material even wrapped. | zheyuanlai |
 | 2026-07-19 | — (data licensing) | v4.3 Deep parity data sources | **Researched and decided.** Aircraft tail history: ships two ways — "you've flown this tail before" from the user's own logged flights (no external data, no license question) plus an aircraft-lookup enrichment via AeroDataBox, the provider already integrated and paid for since v2.7 (confirmed to offer a registration-lookup endpoint, works globally, no non-commercial restriction). Historical route analytics: **declined** — OpenSky Network's terms require a separate written license for use in any live product regardless of non-commercial status; US DOT/BTS is public-domain but US-domestic-only with no API (bulk monthly files only, would require building and hosting a full ETL pipeline for a feature that would then only cover a fraction of routes); OpenFlights' routes data is stale since ~2014 and has no aircraft/on-time fields. No source met the bar of free + globally applicable + safe for a public open-source app without a bespoke agreement or major new infrastructure — skipped rather than shipped on a shaky license or with US-only coverage presented as general. | zheyuanlai |
 | 2026-07-19 | — (governance) | v5.1 License, governance, code of conduct | **Decided.** License: **MIT** — permissive, standard for a small tool with no existing forks/external contributors to disrupt, easy to revisit later since nothing depends on the choice yet. Governance: **single maintainer** (`GOVERNANCE.md`), documenting current reality rather than adopting a committee structure prematurely; describes a path to a maintainer team if sustained outside contribution happens. Code of conduct: **Contributor Covenant v2.1** (`CODE_OF_CONDUCT.md`), the de facto standard. Deliberately excludes the fourth item bundled with these in earlier drafts of this ledger — **whether/how to announce the project** — since that's an exposure decision that needs the owner's explicit go-ahead at the time, not a default. | zheyuanlai |
+| 2026-07-20 | no heavy dependencies | v5.4 Motion polish | **Held the line: CSS only.** Owner asked to apply Emil Kowalski's design-eng skills. A richer "Emil experience" can lean on his libraries (Sonner, Vaul, Motion springs), but adding a motion/animation runtime dependency was **declined** to honor the non-negotiable — the whole pass is pure CSS (custom easing tokens, `:active` press feedback, `prefers-reduced-motion`, hover gating, `@starting-style` enter animations). The skills themselves are vendored as inert docs under `.claude/skills/` (MIT © Emil Kowalski), which adds no runtime weight. | zheyuanlai |
 
 Candidate future entries (pending, not decided): whether/how to announce the project; push relay vs. "no server"; live collaboration vs. "no server"; any funded infra vs. "free to run."
 
